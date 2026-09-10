@@ -1,0 +1,13 @@
+{
+  "name": "tableforge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Tampermonkey client and minimal Python relay for collaborative D&D",
+  "scripts": {
+    "test": "node --test tests/client.test.cjs && python3 -m unittest discover -s tests -p 'test_*.py' -v",
+    "test:client": "node --test tests/client.test.cjs",
+    "test:relay": "python3 -m unittest discover -s tests -p 'test_*.py' -v",
+    "test:browser": "node tests/browser.cjs"
+  },
+  "devDependencies": { "playwright": "^1.58.0" }
+}

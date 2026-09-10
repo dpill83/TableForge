@@ -1,0 +1,24 @@
+# Optional Linux service. Replace User/Group/WorkingDirectory/ExecStart to match your installation.
+# Create the service account and copy the project to /opt/tableforge before using this template.
+# Create the table as this same account with --db /var/lib/tableforge/tableforge.sqlite3.
+[Unit]
+Description=TableForge text relay
+After=network.target
+
+[Service]
+Type=simple
+User=tableforge
+Group=tableforge
+WorkingDirectory=/opt/tableforge
+StateDirectory=tableforge
+UMask=0077
+ExecStart=/usr/bin/python3 /opt/tableforge/server.py --db /var/lib/tableforge/tableforge.sqlite3 serve --host 127.0.0.1 --port 8787
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
