@@ -6,12 +6,14 @@ import json
 import os
 import re
 import secrets
+import socket
 import sqlite3
 import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from words import WORDS
 
 MAX_TEXT = 50_000
 MAX_BODY = 310_000  # Allows JSON escaping of MAX_TEXT characters.
@@ -56,6 +58,23 @@ def digest(value):
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def new_table_code(db):
+    used = {row[0] for row in db.execute("SELECT code FROM tables")}
+    available = [word for word in WORDS if word not in used]
+    if not available:
+        raise ValueError("All table words are in use. Add more words to words.py.")
+    return secrets.choice(available)
+
+
+def new_passphrase(db):
+    used = {row[0] for row in db.execute("SELECT token_hash FROM actors")}
+    available = [f"{first}-{second}" for first in WORDS for second in WORDS
+                 if digest(f"{first}-{second}") not in used]
+    if not available:
+        raise ValueError("All participant passphrases are in use. Add more words to words.py.")
+    return secrets.choice(available)
+
+
 def create_table(path, name, players):
     if not name.strip() or len(name) > 80:
         raise ValueError("Table name must contain 1–80 characters.")
@@ -67,14 +86,15 @@ def create_table(path, name, players):
     if len(set(n.casefold() for n in names)) != len(names):
         raise ValueError("Player names must be unique and cannot be AI-DM.")
     initialize(path)
-    code = secrets.token_hex(5)
     keys = []
     db = connect(path)
     try:
         with db:
+            db.execute("BEGIN IMMEDIATE")
+            code = new_table_code(db)
             db.execute("INSERT INTO tables VALUES (?,?)", (code, name.strip()))
             for index, actor_name in enumerate(names):
-                token = secrets.token_urlsafe(32)
+                token = new_passphrase(db)
                 role = "dm" if index == 0 else "player"
                 db.execute("INSERT INTO actors VALUES (?,?,?,?,?)",
                            (secrets.token_hex(16), code, actor_name, role, digest(token)))
@@ -123,7 +143,7 @@ class RelayHandler(BaseHTTPRequestHandler):
             if url.path == "/health" and method == "GET":
                 self.send_json(200, {"ok": True, "service": "tableforge", "api_version": 1})
                 return
-            match = re.fullmatch(r"/v1/tables/([a-f0-9]{10})/(state|scenes|replies)", url.path)
+            match = re.fullmatch(r"/v1/tables/([a-z]+|[a-f0-9]{10})/(state|scenes|replies)", url.path)
             if not match:
                 raise APIError(404, "Endpoint not found.")
             code, action = match.groups()
@@ -261,6 +281,19 @@ def make_server(path, host="127.0.0.1", port=8787):
     return server
 
 
+def lan_addresses():
+    """Find local IPv4 addresses without sending network traffic."""
+    addresses = set()
+    try:
+        for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
+            address = info[4][0]
+            if not address.startswith(("127.", "169.254.")) and address != "0.0.0.0":
+                addresses.add(address)
+    except OSError:
+        pass
+    return sorted(addresses)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--db", default=os.environ.get("TABLEFORGE_DB", "tableforge.sqlite3"))
@@ -269,7 +302,8 @@ def main():
     create.add_argument("--name", required=True)
     create.add_argument("--players", nargs="+", required=True)
     serve = commands.add_parser("serve", help="Run the relay.")
-    serve.add_argument("--host", default="127.0.0.1")
+    serve.add_argument("--host", default="0.0.0.0",
+                       help="Address to listen on (default: 0.0.0.0 for LAN access).")
     serve.add_argument("--port", type=int, default=8787)
     rotate = commands.add_parser("rotate-key", help="Revoke a participant's old key and print a new one.")
     rotate.add_argument("--table", required=True)
@@ -286,18 +320,27 @@ def main():
         initialize(args.db)
         db = connect(args.db)
         try:
-            token = secrets.token_urlsafe(32)
             with db:
+                db.execute("BEGIN IMMEDIATE")
+                token = new_passphrase(db)
                 changed = db.execute("UPDATE actors SET token_hash=? WHERE table_code=? AND name=?",
                                      (digest(token), args.table, args.name)).rowcount
             if not changed:
                 parser.error("Participant not found.")
             print(json.dumps({"table_code": args.table, "name": args.name, "key": token}, indent=2))
+        except ValueError as exc:
+            parser.error(str(exc))
         finally:
             db.close()
     else:
         server = make_server(args.db, args.host, args.port)
         print(f"TableForge listening on {args.host}:{server.server_port}", flush=True)
+        if args.host == "0.0.0.0":
+            addresses = lan_addresses()
+            for address in addresses:
+                print(f"LAN URL: http://{address}:{server.server_port}", flush=True)
+            if not addresses:
+                print("LAN access enabled, but no LAN IPv4 address was detected. Run ipconfig to find it.", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:

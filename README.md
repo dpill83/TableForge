@@ -18,11 +18,15 @@ python3 server.py serve
 
 The first command prints the table code, an **AI-DM key**, and a different key for each named player. Keep these somewhere private; keys are printed once and stored only as hashes in the database. Give each participant the relay URL, table code, and **their own key**. Do not distribute the DM key to players.
 
-The second command starts the relay at `http://127.0.0.1:8787`. The SQLite database is created in this folder. Keep using the same database when restarting. Do not run `create` again to resume the same table.
+New table codes are one randomly chosen word, such as `lantern`. Participant keys are now two randomly chosen words joined by a hyphen, such as `otter-maple`. Copy the passphrase including its hyphen. The built-in dictionary is in `words.py`; codes and passphrases already in use are excluded from generation. These short passphrases are intended for your trusted LAN group. Existing table codes and keys still work. `rotate-key` generates a new two-word passphrase for an existing participant without changing their history; existing table codes remain unchanged.
+
+The second command listens on all IPv4 interfaces (`0.0.0.0:8787`) so LAN access stays enabled after restarting. On this computer, use `http://127.0.0.1:8787`; on another computer, use `http://YOUR_LAN_IP:8787`. The SQLite database is created in this folder. Keep using the same database when restarting. Do not run `create` again to resume the same table. For a localhost-only listener, use `python server.py serve --host 127.0.0.1`.
 
 For participants on other computers, place the relay behind your HTTPS reverse proxy, forwarding the entire path to `http://127.0.0.1:8787`. Use a dedicated hostname such as `https://tableforge.example.com`. That hostname must be reachable from every participant's computer. Do not use `localhost` on players' computers unless each has a tunnel to the actual relay.
 
-The userscript accepts HTTP only on loopback addresses. Shared relays require HTTPS. It uses Tampermonkey's cross-origin requests, so the relay does not need permissive CORS or access to ChatGPT cookies. Configure the proxy to preserve `Authorization` and avoid redirects on API routes. Use its normal connection/request limits; this small standard-library HTTP server is intended for a trusted small group behind a proxy, not direct public exposure.
+For testing on the same trusted LAN, run `python server.py serve --host 0.0.0.0 --port 8787`. On the other computer, use `http://YOUR_LAN_IP:8787` as the relay URL and open `http://YOUR_LAN_IP:8787/health` to check connectivity. Find the host's IPv4 address with `ipconfig` on Windows. Keep using the same database and give the tester their own participant key. Install the updated userscript on their computer. If Windows Firewall blocks access, allow inbound TCP port 8787 on the Private profile from LocalSubnet only. Keep the server computer running; its LAN IP may change after reconnecting.
+
+The userscript accepts HTTP on loopback and private IPv4 LAN addresses (10.x.x.x, 172.16–31.x.x, and 192.168.x.x). LAN HTTP sends keys and messages unencrypted, so use it only for trusted-network testing. Other shared relays require HTTPS. It uses Tampermonkey's cross-origin requests, so the relay does not need permissive CORS or access to ChatGPT cookies. Configure the proxy to preserve `Authorization` and avoid redirects on API routes. Use its normal connection/request limits; this small standard-library HTTP server is intended for a trusted small group behind a proxy, not direct public exposure.
 
 For an existing Caddy installation, the complete site block is:
 
@@ -36,13 +40,13 @@ Replace the hostname and configure DNS/TLS as appropriate for your proxy. Do not
 
 ## 2. Install the client
 
-1. Install or open Tampermonkey in your browser.
-2. Choose **Create a new script**, replace the template with all of `tableforge.user.js`, and save. Alternatively, open an HTTPS URL serving that file as a userscript.
+1. Install or open Tampermonkey or Violentmonkey in your browser.
+2. Open the [TableForge userscript](https://raw.githubusercontent.com/dpill83/TableForge/main/tableforge.user.js) and approve the installation. The script checks that URL for newer versions; each published change must increment `@version`.
 3. Reload ChatGPT and open the **existing conversation** used by that participant. The script intentionally does not bind a blank/new chat.
 4. Click **TableForge** in the lower-right corner. Enter the relay URL, table code, and your participant key, then **Connect this chat**.
 5. If Tampermonkey asks to allow a connection to your relay, allow that hostname. The role and player name come from the key automatically.
 
-The connection is saved separately for each ChatGPT conversation. DM and player chats can be open in the same browser without sharing their connection settings. Navigation to an unbound chat disconnects the panel until you bind it. Use one active tab per bound conversation: concurrent tabs for the same conversation share draft storage and are not coordinated.
+The connection is saved separately for each ChatGPT conversation. DM and player chats can be open in the same browser without sharing their connection settings. Navigation to an unbound chat disconnects the panel until you bind it. Tabs open to the same conversation synchronize saved drafts and send completion through the userscript manager, preventing a second tab from retaining a stale retry after another tab finishes the send. Simultaneous edits are still last-write-wins, so use one tab as the active editor.
 
 If the script does not run at all, check that it is enabled and that your browser permits userscripts. Current browser-specific instructions are in the [Tampermonkey FAQ](https://www.tampermonkey.net/faq.php). Its network and storage APIs are documented in the [Tampermonkey documentation](https://www.tampermonkey.net/documentation.php).
 
@@ -135,10 +139,19 @@ npx playwright install chromium
 npm run test:browser
 ```
 
-Node is needed for the client helper tests, and Playwright is needed for browser tests. Neither is a runtime dependency of the client or relay. `tests/browser.cjs` is an integration harness for the actual userscript against a real local relay using controlled ChatGPT DOM fixtures and a Tampermonkey API shim. It is designed to exercise the complete round trip, privacy extraction, draft review, grouping, composer insertion, retry after a lost acknowledgement and reload, scene targeting, malformed tags, clipboard fallbacks, and SPA navigation. The Python suite covers permissions, table isolation, validation, concurrent retries, late replies, and restart persistence.
+Node is needed for the client helper tests, and Playwright is needed for browser tests. Neither is a runtime dependency of the client or relay. If Playwright expects a different Chromium build than the one installed locally, point the harness at a compatible browser executable:
 
-**Validation for this delivery:** all six Python integration tests and all six JavaScript helper tests passed. Both JavaScript files passed syntax checks. The browser harness could not run because Chromium was absent and the browser download timed out in the build environment. Therefore composer behavior, rendered panel layout, SPA navigation, and live Tampermonkey behavior remain unverified in a real browser.
+```powershell
+$env:PLAYWRIGHT_EXECUTABLE_PATH = 'C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe'
+npm run test:browser
+```
 
-These fixtures do **not** certify the current live ChatGPT DOM or the actual Tampermonkey permission flow. Make one live smoke-test round after installation. ChatGPT selectors are concentrated in `adapter` in the userscript. The rich composer adapter uses `execCommand('insertText')` where supported to preserve editor handling and undo; this is deprecated and may break, as described in [MDN's documentation](https://developer.mozilla.org/en-US/docs/Web/API/Document/execCommand). It checks insertion, reports failure, and leaves the manual copy/paste path available. There are no private ChatGPT API calls or stable DOM guarantees.
+On macOS or Linux, use the same environment variable before the command: `PLAYWRIGHT_EXECUTABLE_PATH=/path/to/chromium npm run test:browser`.
+
+`tests/browser.cjs` is an integration harness for the actual userscript against a real local relay using controlled ChatGPT DOM fixtures and a Tampermonkey API shim. Its rich-response fixture includes nested list markup, a syntax-highlighted code block with a language header, and a table. The harness exercises the complete round trip, privacy extraction, draft review, grouping, composer insertion, retry after a lost acknowledgement and reload, request conflicts, scene targeting, malformed tags, clipboard fallbacks, multi-tab synchronization, notifications, and SPA navigation. The Python suite covers permissions, table isolation, validation, concurrent retries, late replies, and restart persistence.
+
+**Validation for this delivery:** all nine Python integration tests, all eight JavaScript helper tests, and all 21 browser behavior checks passed. The browser harness ran headlessly against the installed Microsoft Edge executable, with no page errors. Live ChatGPT and userscript-manager behavior still require a manual smoke test.
+
+These fixtures do **not** certify the current live ChatGPT DOM or the actual Tampermonkey permission flow. Make one live smoke-test round after installation. ChatGPT selectors are concentrated in `adapter` in the userscript. The rich composer adapter first uses `execCommand('insertText')` where supported to preserve editor handling and undo. Because that API is deprecated, a failed or unverified insertion falls back to a synthetic plain-text paste event that preserves paragraph breaks for editors such as ProseMirror. It verifies the result after either method, reports failure, and leaves the manual copy/paste path available. There are no private ChatGPT API calls or stable DOM guarantees.
 
 Licensed under MIT. See `LICENSE`.

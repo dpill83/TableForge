@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-labelledby="title">
+  <title id="title">TableForge</title>
+  <rect width="128" height="128" rx="24" fill="#17202d"/>
+  <path d="M64 13 108 39v50l-44 26-44-26V39Z" fill="#293548" stroke="#d9b779" stroke-width="6"/>
+  <path d="M35 40h58v15H72v48H56V55H35Z" fill="#f2d8a8"/>
+  <path d="M42 76h44" fill="none" stroke="#d96552" stroke-width="8" stroke-linecap="round"/>
+</svg>

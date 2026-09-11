@@ -2,9 +2,11 @@ import concurrent.futures
 import json
 import os
 import sys
+import subprocess
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -61,6 +63,49 @@ class RelayTests(unittest.TestCase):
         self.assertEqual([r["name"] for r in player["replies"]], ["George"])
         self.assertEqual(player["scenes"][0]["reply_count"], 1)
         self.assertNotIn("token", json.dumps(dm))
+
+    def test_readable_credentials_and_rotation(self):
+        self.assertIn(self.table["table_code"], server.WORDS)
+        keys = [c["key"] for table in (self.table, self.other) for c in table["credentials"]]
+        self.assertEqual(len(keys), len(set(keys)))
+        for key in keys:
+            self.assertEqual(len(key.split("-")), 2)
+            self.assertTrue(all(word in server.WORDS for word in key.split("-")))
+        scene_id = self.scene()
+        output = subprocess.check_output([
+            sys.executable, str(Path(server.__file__)), "--db", self.db,
+            "rotate-key", "--table", self.table["table_code"], "--name", "AI-DM"], text=True)
+        new_key = json.loads(output)["key"]
+        self.assertNotIn(new_key, keys)
+        self.assertEqual(self.api()[0], 401)
+        status, state = self.api(key=new_key)
+        self.assertEqual(status, 200)
+        self.assertEqual(state["scene"]["id"], scene_id)
+
+    def test_legacy_credentials_still_work(self):
+        legacy = {"table_code": "012345abcd", "credentials": [{"key": "old_LONG-token_123"}]}
+        db = server.connect(self.db)
+        try:
+            with db:
+                db.execute("INSERT INTO tables VALUES (?, ?)", (legacy["table_code"], "Legacy"))
+                db.execute("INSERT INTO actors VALUES (?, ?, ?, ?, ?)",
+                           ("legacy", legacy["table_code"], "AI-DM", "dm", server.digest(legacy["credentials"][0]["key"])))
+            self.assertEqual(self.api(table=legacy)[0], 200)
+        finally:
+            db.close()
+
+    def test_dictionary_exhaustion_is_explicit_and_atomic(self):
+        with patch.object(server, "WORDS", ("tiny",)):
+            with self.assertRaisesRegex(ValueError, "passphrases"):
+                server.create_table(self.db, "Too small", ["Player"])
+        db = server.connect(self.db)
+        try:
+            self.assertIsNone(db.execute("SELECT code FROM tables WHERE code='tiny'").fetchone())
+            with patch.object(server, "WORDS", (self.table["table_code"],)):
+                with self.assertRaisesRegex(ValueError, "table words"):
+                    server.new_table_code(db)
+        finally:
+            db.close()
 
     def test_auth_roles_and_cross_table_isolation(self):
         self.assertEqual(self.api(key="invalid")[0], 401)
