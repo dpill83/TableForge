@@ -125,7 +125,7 @@ function pass(name) { console.log('PASS ' + name); }
       const body = document.createElement('div'); body.className = 'markdown'; body.textContent = text;
       node.append(body); document.getElementById('messages').append(node);
     }, text);
-    await client.page.locator('.tf-response-action').last().waitFor();
+    await client.page.waitForFunction(() => document.querySelectorAll('.tf-response-action').length === document.querySelectorAll('[data-message-author-role="assistant"]').length);
     await client.page.locator('.tf-response-action').last().click();
   }
   async function responseHTML(client, html) {
@@ -134,7 +134,7 @@ function pass(name) { console.log('PASS ' + name); }
       const body = document.createElement('div'); body.className = 'markdown'; body.innerHTML = html;
       node.append(body); document.getElementById('messages').append(node);
     }, html);
-    await client.page.locator('.tf-response-action').last().waitFor();
+    await client.page.waitForFunction(() => document.querySelectorAll('.tf-response-action').length === document.querySelectorAll('[data-message-author-role="assistant"]').length);
     await client.page.locator('.tf-response-action').last().click();
   }
   async function refresh(client) {
@@ -152,6 +152,21 @@ function pass(name) { console.log('PASS ' + name); }
   assert.equal(await george.el('scene-text').textContent(), 'You enter the candlelit study.');
   assert.ok(!(await george.el('scene-text').textContent()).includes(privateDM));
   pass('only PLAYER_VIEW shared, with explicit review before transmission');
+
+  assert.equal(await george.el('manual').evaluate(drawer => drawer.open), false);
+  await george.el('manual').locator('summary').click();
+  assert.equal(await george.el('source').isVisible(), true);
+  await george.el('manual').locator('summary').click();
+  assert.equal(await george.el('scene-prev').isDisabled(), true);
+  assert.equal(await george.el('scene-next').isDisabled(), true);
+  assert.equal(await george.el('connection-state').textContent(), '● Live');
+  assert.equal(await dm.el('insert-scene').isVisible(), false);
+  assert.equal(await dm.el('copy-scene').isVisible(), false);
+  assert.equal(await dm.el('prepare-footer').isVisible(), true);
+  assert.equal(await dm.el('prepare-footer').isDisabled(), true);
+  assert.equal(await dm.el('prepare-replies').isDisabled(), true);
+  assert.equal(await dm.el('mark-reviewed').count(), 0);
+  pass('redesigned panel starts with collapsed fallback, live status, and bounded scene navigation');
 
   await george.el('insert-scene').click();
   const composer = await george.page.locator('#prompt-textarea').innerText();
@@ -225,39 +240,112 @@ function pass(name) { console.log('PASS ' + name); }
   await george.el('discard').click();
   pass('request-ID conflicts preserve an editable draft without unsafe retry guidance');
 
+  await viktor.el('manual').evaluate(drawer => { drawer.open = true; });
   await viktor.el('source').fill('Viktor examines the grimoire.');
   await viktor.el('stage-manual').click();
   await viktor.el('send').click();
   await viktor.el('draft-area').waitFor({ state: 'hidden' });
   await refresh(dm);
   assert.equal(await dm.el('replies').locator('.reply').count(), 2);
-  await dm.el('prepare-replies').click();
+  assert.equal(await dm.el('prepare-footer').isEnabled(), true);
+  assert.equal(await dm.el('prepare-replies').isEnabled(), true);
+  for (const check of await dm.el('replies').locator('input[type=checkbox]').all()) await check.uncheck();
+  assert.equal(await dm.el('prepare-footer').isDisabled(), true);
+  assert.equal(await dm.el('prepare-replies').isDisabled(), true);
+  await refresh(dm);
+  assert.equal(await dm.el('prepare-replies').isDisabled(), true);
+  for (const check of await dm.el('replies').locator('input[type=checkbox]').all()) await check.check();
+  assert.equal(await dm.el('prepare-footer').isEnabled(), true);
+  assert.equal(await dm.el('prepare-replies').isEnabled(), true);
+  await dm.el('prepare-footer').click();
+  assert.equal(await dm.el('prepare-footer').isVisible(), false);
+  assert.equal(await dm.el('insert-bundle').isVisible(), true);
+  assert.equal(await dm.el('insert-bundle').evaluate(button => !!button.closest('#scene-actions')), true);
+  assert.equal(await dm.el('insert-scene').isVisible(), false);
   const bundle = await dm.el('bundle').inputValue();
   assert.ok(bundle.includes('## George\n'));
   assert.ok(bundle.includes('## Viktor\n'));
   await dm.el('bundle').fill(bundle + '\n\nDM context: resolve George first.');
+  const directorNotes = await dm.page.locator('#prompt-textarea').innerText();
   await dm.el('insert-bundle').click();
-  assert.ok((await dm.page.locator('#prompt-textarea').innerText()).includes('DM context: resolve George first.'));
+  const directorComposer = await dm.page.locator('#prompt-textarea').innerText();
+  const normalizeComposer = value => value.replace(/\s+/g, ' ').trim();
+  assert.equal(normalizeComposer(directorComposer), normalizeComposer(bundle + '\n\nDM context: resolve George first.\n\n' + directorNotes));
+  assert.ok(directorComposer.includes('DM context: resolve George first.'));
   assert.equal(await dm.page.evaluate(() => window.submits), 0);
-  await dm.el('mark-reviewed').click();
+  for (const check of await dm.el('replies').locator('input[type=checkbox]').all()) await check.uncheck();
   await refresh(dm);
   assert.equal(await dm.el('replies').locator('input:checked').count(), 0);
-  pass('full DM → two players → DM loop, grouped editable text and local review marks');
+  pass('full DM → two players → DM loop; prepare buttons follow reply selection across polls');
 
   // A new public scene must not silently retarget an already staged player response.
   await response(george, 'A later thought about the first scene.');
   const firstScene = await george.el('target').inputValue();
+  await dm.el('manual').evaluate(drawer => { drawer.open = true; });
   await dm.el('source').fill('[PLAYER_VIEW]The door slams shut.[/PLAYER_VIEW]');
-  await dm.el('stage-manual').click(); await dm.el('send').click();
+  await dm.el('stage-manual').click();
+  const priorBundle = bundle + '\n\nDM context: resolve George first.';
+  assert.equal(await dm.el('draft-heading').textContent(), 'Review new scene');
+  assert.equal(await dm.el('draft-area').evaluate(area => area.nextElementSibling.id), 'scene-nav');
+  assert.equal(await dm.el('send').textContent(), 'Share new scene');
+  assert.equal(await dm.el('send').evaluate(button => !!button.closest('#scene-actions')), true);
+  assert.equal(await dm.el('bundle-area').isVisible(), false);
+  assert.equal(await dm.el('insert-bundle').isVisible(), false);
+  assert.equal(await dm.el('bundle').inputValue(), priorBundle);
+  assert.equal(await dm.page.evaluate(() => window.submits), 0);
+  fs.mkdirSync(path.join(project, 'test-output'), { recursive: true });
+  await dm.el('panel').screenshot({ path: path.join(project, 'test-output', 'tableforge-scene-review.png') });
+  await dm.el('discard').click();
+  assert.equal(await dm.el('bundle-area').isVisible(), true);
+  assert.equal(await dm.el('bundle').inputValue(), priorBundle);
+  await response(dm, '[PLAYER_VIEW]The door slams shut.[/PLAYER_VIEW]');
+  dm.losePost();
+  await dm.el('send').click();
+  await dm.page.waitForFunction(() => document.querySelector('#tableforge-client').shadowRoot.getElementById('status').textContent.includes('timed out'));
+  assert.equal(await dm.el('bundle').inputValue(), priorBundle);
+  await dm.reload();
+  assert.equal(await dm.el('draft-heading').textContent(), 'Review new scene');
+  assert.equal(await dm.el('bundle').inputValue(), priorBundle);
+  await dm.el('send').click();
   await dm.el('draft-area').waitFor({ state: 'hidden' });
+  assert.equal(await dm.el('bundle').inputValue(), '');
+  assert.equal(await dm.el('bundle-area').isVisible(), false);
+  await dm.reload();
+  assert.equal(await dm.el('bundle').inputValue(), '');
+  assert.equal(await dm.el('bundle-area').isVisible(), false);
+  assert.equal(await dm.el('prepare-footer').isVisible(), true);
+  pass('scene review takes priority; old context survives discard and timeout, then clears after confirmed sharing and reload');
   await refresh(george);
   const options = await george.el('scenes').locator('option').evaluateAll(items => items.map(i => i.value));
   assert.equal(options.length, 2);
-  await george.el('scenes').selectOption(options[0]);
+  assert.equal(await george.el('scenes').inputValue(), firstScene);
+  assert.equal(await george.el('scene-next').evaluate(button => getComputedStyle(button).animationName), 'reply-pulse');
+  await george.page.emulateMedia({ reducedMotion: 'reduce' });
+  assert.equal(await george.el('scene-next').evaluate(button => getComputedStyle(button).animationName), 'none');
+  assert.notEqual(await george.el('scene-next').evaluate(button => getComputedStyle(button).boxShadow), 'none');
+  await george.page.emulateMedia({ reducedMotion: 'no-preference' });
+  await george.el('scene-next').click();
   await george.page.waitForTimeout(300);
+  assert.equal(await george.el('scene-next').evaluate(button => getComputedStyle(button).animationName), 'none');
+  assert.equal(await george.el('scene-next').isDisabled(), true);
   assert.equal(await george.el('target').inputValue(), firstScene);
+  await george.el('scene-prev').click();
+  await george.page.waitForFunction(id => document.querySelector('#tableforge-client').shadowRoot.getElementById('scenes').value === id, firstScene);
+  assert.equal(await george.el('scene-prev').isDisabled(), true);
+  await george.el('scene-next').click();
+  await george.page.waitForFunction(id => document.querySelector('#tableforge-client').shadowRoot.getElementById('scenes').value === id, options[0]);
+  assert.equal(await george.el('target').inputValue(), firstScene);
+  await george.el('scene-all').click();
+  await george.el('scene-search').fill('candlelit');
+  assert.equal(await george.el('scenes').locator('option').count(), 1);
+  await george.el('scenes').selectOption(firstScene);
+  assert.equal(await george.el('scene-picker').isVisible(), false);
+  await george.el('scene-next').click();
+  await george.page.waitForFunction(id => document.querySelector('#tableforge-client').shadowRoot.getElementById('scenes').value === id, options[0]);
+  assert.equal(await george.el('target').inputValue(), firstScene);
+  pass('new-scene arrow pulses until opened; navigation and search preserve the draft target');
   await george.el('send').click(); await george.el('draft-area').waitFor({ state: 'hidden' });
-  await dm.el('scenes').selectOption(firstScene); await dm.page.waitForTimeout(300);
+  await dm.el('scene-all').click(); await dm.el('scenes').selectOption(firstScene); await dm.page.waitForTimeout(300);
   assert.equal(await dm.el('replies').locator('.reply').count(), 3);
   pass('scene changes never silently retarget a staged reply; late replies reach original scene');
 
@@ -282,10 +370,12 @@ function pass(name) { console.log('PASS ' + name); }
   await george.el('draft-area').waitFor({ state: 'hidden' });
   pass('a second tab adopts pending and completed draft state without a stale retry');
 
+  await dm.el('manual').evaluate(drawer => { drawer.open = true; });
   await dm.el('source').fill('[PLAYER_VIEW]Outer [PLAYER_VIEW]Nested[/PLAYER_VIEW][/PLAYER_VIEW]');
   await dm.el('stage-manual').click();
   assert.ok((await dm.el('status').textContent()).includes('Nested'));
   assert.equal(await dm.el('draft-area').isVisible(), false);
+  await dm.el('manual').evaluate(drawer => { drawer.open = true; });
   await dm.el('source').fill('[PLAYER_VIEW]unfinished');
   await dm.el('stage-manual').click();
   assert.ok((await dm.el('status').textContent()).includes('incomplete'));
@@ -298,29 +388,47 @@ function pass(name) { console.log('PASS ' + name); }
       document.getElementById('prompt-textarea').addEventListener('paste', event => {
         event.preventDefault();
         const text = event.clipboardData.getData('text/plain').replace(/^\n+/, '');
-        for (const value of text.split(/\n{2,}/)) {
+        const fragment = document.createDocumentFragment();
+        for (const value of text.trimEnd().split(/\n{2,}/)) {
           const paragraph = document.createElement('p'); paragraph.textContent = value;
-          event.currentTarget.append(paragraph);
+          fragment.append(paragraph);
         }
+        const range = window.getSelection().getRangeAt(0);
+        range.insertNode(fragment);
       }, { once: true });
     };
     window.installPasteHandler(false);
   });
+  await dm.el('prepare-replies').click();
   await dm.el('bundle').fill('Paste fallback one.\n\nPaste fallback two.');
   await dm.el('insert-bundle').click();
   await dm.page.locator('#prompt-textarea p', { hasText: 'Paste fallback two.' }).waitFor();
   let pastedParagraphs = await dm.page.locator('#prompt-textarea > p').allTextContents();
-  assert.deepEqual(pastedParagraphs.slice(-2), ['Paste fallback one.', 'Paste fallback two.']);
+  assert.deepEqual(pastedParagraphs.slice(0, 2), ['Paste fallback one.', 'Paste fallback two.']);
+  assert.ok((await dm.page.locator('#prompt-textarea').innerText()).endsWith('Existing note.'));
 
   await dm.page.evaluate(() => window.installPasteHandler(true));
   await dm.el('bundle').fill('Verification fallback one.\n\nVerification fallback two.');
   await dm.el('insert-bundle').click();
   await dm.page.locator('#prompt-textarea p', { hasText: 'Verification fallback two.' }).waitFor();
   pastedParagraphs = await dm.page.locator('#prompt-textarea > p').allTextContents();
-  assert.deepEqual(pastedParagraphs.slice(-2), ['Verification fallback one.', 'Verification fallback two.']);
+  assert.deepEqual(pastedParagraphs.slice(0, 2), ['Verification fallback one.', 'Verification fallback two.']);
+  assert.ok((await dm.page.locator('#prompt-textarea').innerText()).endsWith('Existing note.'));
   assert.equal(await dm.page.evaluate(() => window.submits), 0);
   await dm.page.evaluate(() => { document.execCommand = window.originalExecCommand; });
   pass('synthetic paste preserves paragraphs after insertText failure or failed verification');
+
+  await dm.page.evaluate(() => {
+    document.getElementById('prompt-textarea').remove();
+    const composer = document.createElement('textarea'); composer.id = 'prompt-textarea';
+    composer.value = 'Dani: keep this note.\nAnd this second line.';
+    document.getElementById('chat-form').prepend(composer);
+  });
+  await dm.el('bundle').fill('Grouped replies go first.');
+  await dm.el('insert-bundle').click();
+  assert.equal(await dm.page.locator('#prompt-textarea').inputValue(), 'Grouped replies go first.\n\nDani: keep this note.\nAnd this second line.');
+  assert.equal(await dm.page.evaluate(() => window.submits), 0);
+  pass('grouped replies prepend to a textarea and preserve director notes without submitting');
 
   await george.page.locator('#prompt-textarea').evaluate(el => el.remove());
   await george.el('insert-scene').click();
@@ -363,7 +471,7 @@ function pass(name) { console.log('PASS ' + name); }
 
   const latestScene = await george.el('scenes').locator('option').first().getAttribute('value');
   await george.el('scenes').evaluate(select => select.add(new Option('#999999 · removed scene', '999999')));
-  await george.el('scenes').selectOption('999999');
+  await george.el('scene-all').click(); await george.el('scenes').selectOption('999999');
   await george.page.waitForFunction(expected => document.querySelector('#tableforge-client').shadowRoot.getElementById('scenes').value === expected, latestScene);
   assert.equal(await george.el('scene-text').textContent(), 'The door slams shut.');
   pass('missing selected scene clears the stale selection and loads the latest scene');
@@ -383,6 +491,7 @@ function pass(name) { console.log('PASS ' + name); }
   pass('authentication failure hides stale state, opens settings, and stops polling until reconnect');
 
   await george.el('close').click();
+  await dm.el('manual').evaluate(drawer => { drawer.open = true; });
   await dm.el('source').fill('[PLAYER_VIEW]A distant bell rings.[/PLAYER_VIEW]');
   await dm.el('stage-manual').click();
   await dm.el('send').click();
@@ -403,12 +512,43 @@ function pass(name) { console.log('PASS ' + name); }
   await dm.el('refresh').evaluate(button => button.click());
   await dm.el('attention').waitFor({ state: 'visible' });
   assert.equal(await dm.el('attention').textContent(), '1');
+  assert.equal(await dm.el('launcher').evaluate(button => getComputedStyle(button).animationName), 'reply-pulse');
+  await dm.el('refresh').evaluate(button => button.click());
+  await dm.page.waitForTimeout(250);
+  assert.equal(await dm.el('attention').textContent(), '1', 'Unchanged polls do not add alerts');
+  await dm.page.emulateMedia({ reducedMotion: 'reduce' });
+  assert.equal(await dm.el('launcher').evaluate(button => getComputedStyle(button).animationName), 'none');
+  assert.notEqual(await dm.el('launcher').evaluate(button => getComputedStyle(button).boxShadow), 'none');
+  await dm.page.emulateMedia({ reducedMotion: 'no-preference' });
   await dm.el('launcher').click();
   assert.equal(await dm.el('attention').isVisible(), false);
-  pass('a new player reply shows a launcher badge while the DM panel is closed');
+  assert.equal(await dm.el('launcher').evaluate(button => getComputedStyle(button).animationName), 'none');
+  await dm.el('close').click();
+  assert.equal(await dm.el('launcher').evaluate(button => getComputedStyle(button).animationName), 'none');
+  await dm.el('launcher').click();
+  pass('new DM replies pulse the launcher until opened, with a static glow for reduced motion');
 
   assert.deepEqual(errors, []);
+  await george.el('refresh').click();
+  await george.page.waitForTimeout(250);
+  await george.el('panel-scroll').evaluate(scroller => { scroller.scrollTop = 0; });
+  await george.page.setViewportSize({ width: 390, height: 844 });
+  const layout = await george.page.evaluate(() => {
+    const root = document.querySelector('#tableforge-client').shadowRoot;
+    const panel = root.getElementById('panel').getBoundingClientRect();
+    const footer = root.getElementById('scene-actions').getBoundingClientRect();
+    const scroll = root.getElementById('panel-scroll');
+    scroll.scrollTop = scroll.scrollHeight;
+    return { left: panel.left, right: panel.right, bottom: panel.bottom, footerBottom: footer.bottom, width: innerWidth, height: innerHeight, overflow: scroll.scrollWidth > scroll.clientWidth };
+  });
+  assert.ok(layout.left >= 0 && layout.right <= layout.width && layout.bottom <= layout.height);
+  assert.ok(Math.abs(layout.footerBottom - layout.bottom) <= 2);
+  assert.equal(layout.overflow, false);
+  pass('narrow panel stays within the viewport with its composer action pinned');
+  await george.page.setViewportSize({ width: 1280, height: 900 });
+  await george.el('panel-scroll').evaluate(scroller => { scroller.scrollTop = 0; });
   fs.mkdirSync(path.join(project, 'test-output'), { recursive: true });
+  await george.page.screenshot({ path: path.join(project, 'test-output', 'tableforge-player.png'), fullPage: true });
   await dm.page.screenshot({ path: path.join(project, 'test-output', 'tableforge-dm.png'), fullPage: true });
   pass('no browser errors; fixture screenshot saved');
 })().catch(error => { console.error(error); process.exitCode = 1; }).finally(async () => {

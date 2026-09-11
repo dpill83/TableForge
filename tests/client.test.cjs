@@ -7,7 +7,7 @@ const { extractPlayerView, formatReplies, validURL } = require('../tableforge.us
 test('userscript metadata enables managed updates without a manager-specific redirect option', () => {
   const source = fs.readFileSync(path.join(__dirname, '..', 'tableforge.user.js'), 'utf8');
   const metadata = source.slice(0, source.indexOf('// ==/UserScript=='));
-  assert.match(metadata, /^\/\/ @version\s+1\.1\.2$/m);
+  assert.match(metadata, /^\/\/ @version\s+1\.2\.5$/m);
   assert.match(metadata, /^\/\/ @updateURL\s+https:\/\/raw\.githubusercontent\.com\/dpill83\/TableForge\/main\/tableforge\.user\.js$/m);
   assert.match(metadata, /^\/\/ @downloadURL\s+https:\/\/raw\.githubusercontent\.com\/dpill83\/TableForge\/main\/tableforge\.user\.js$/m);
   assert.match(metadata, /^\/\/ @supportURL\s+https:\/\/github\.com\/dpill83\/TableForge\/issues$/m);

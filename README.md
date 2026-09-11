@@ -2,7 +2,7 @@
 
 A Tampermonkey client and a small persistent relay for collaborative D&D using **existing ChatGPT conversations**. No OpenAI API key, Discord bot, extra website, or campaign manager is required.
 
-Every handoff is human-controlled. Selecting an assistant response opens an editable draft. Sharing sends only that draft to the relay. Inserting incoming text appends it to ChatGPT's composer; **TableForge never submits the composer**.
+Every handoff is human-controlled. Selecting an assistant response opens an editable draft. Sharing sends only that draft to the relay. Scene insertion appends to ChatGPT's composer; grouped player replies are inserted above existing director notes; **TableForge never submits the composer**.
 
 ## 1. Start the relay
 
@@ -63,19 +63,23 @@ The characters enter a candlelit study. An open crimson book rests on the desk.
 [/PLAYER_VIEW]
 ```
 
-After generation finishes, click **Share PLAYER_VIEW** beside the chosen assistant response. Review or edit the extracted public text and click **Share scene**. Multiple complete sections are joined in order. Nested, unmatched, or incomplete tags stop extraction. Text outside the tags is excluded.
+After generation finishes, click **Share PLAYER_VIEW** beside the chosen assistant response. The panel switches to **Review new scene**, temporarily hiding the old scene and reply bundle. Review or edit the extracted public text and click the pinned **Share new scene** button. A confirmed share creates the scene and clears the previous **Review or add context** text. Discarding restores the previous view; a failed or unconfirmed send preserves the old context until sharing succeeds. Multiple complete sections are joined in order. Nested, unmatched, or incomplete tags stop extraction. Text outside the tags is excluded.
 
-**Each player:** The new scene appears in the TableForge panel. Click **Insert scene** to append it to the player's existing ChatGPT composer. Edit or add context and submit it yourself. After the player AI responds, click **Send to Table** beside the chosen response, review the draft and target scene, and then click **Send to Table** inside the panel.
+**Each player:** The new scene appears in the TableForge panel. Click **Insert scene into composer** in the pinned footer to append it to the player's existing ChatGPT composer. Edit or add context and submit it yourself. After the player AI responds, click **Send to Table** beside the chosen response, review the draft and target scene, and then click **Send to Table** inside the panel.
 
-**AI-DM:** Select the scene in the panel. Player replies appear with names and checkboxes. Select the contributions you want, click **Prepare selected replies**, and edit the grouped text or add your own context. Click **Insert grouped replies** and submit in ChatGPT yourself. Once handled, use **Mark selected reviewed**. Inserting alone does not mark anything reviewed or delete any relay history.
+Use **‹ / ›** to move between older and newer scenes, or **All** to search recent scene previews and IDs. When a newer scene is available, **›** pulses purple until you reach the latest scene (a steady glow with reduced motion enabled). Your current scene and draft target stay in place until you choose to navigate. The step rail tracks scene reading, composer context, and draft review. The header's **Live / Offline / Setup** button opens connection settings; **↻** refreshes the table. Players see their latest reply for the selected scene with earlier replies in the expandable **Reply log**. DM reply selection stays expanded. **Paste a response manually** opens a fallback for sharing a copied AI response with TableForge participants when its response button is missing. Pasting into the ChatGPT composer instead sends text to that chat's AI.
+
+**AI-DM:** Select the scene in the panel. Player replies appear with names and checkboxes. The pinned footer is for player replies: select the contributions you want, click **Prepare selected replies**, and edit the grouped text or add your own context. The footer then offers **Insert grouped replies** and a copy button. Insertion places the grouped replies before any text already in the ChatGPT composer, leaving the director's notes underneath with a blank line between. You can edit everything there and submit in ChatGPT yourself. To prepare another group, use **Prepare selected replies** in the reply log. Prepare buttons stay disabled until at least one reply is selected. Replies remain in the log for reuse.
 
 You can start the next scene whenever you choose. There is no automatic wait for all players and no enforced turn order. Players see public scenes and their own replies; only the DM can see all player replies.
+
+When a player reply arrives while the DM panel is closed, the TableForge launcher glows and gently pulses beside its unread badge. Opening the panel clears the alert. Reduced-motion settings use a steady glow instead. Alerts appear on the next poll while the ChatGPT tab is active.
 
 ## Manual fallbacks and recovery
 
 | Situation | What to do |
 | --- | --- |
-| Assistant response buttons disappear | Copy the response yourself, paste into **Manual fallback**, and click **Review pasted response**. DM text still needs the tags. |
+| Assistant response buttons disappear | Open **Paste a response manually**, paste the copied response, and click **Review pasted response**. DM text still needs the tags. |
 | ChatGPT composer cannot be found or insertion fails | Use **Copy scene** or **Copy grouped replies**, then paste manually. If clipboard permission also fails, select and copy the visible text. |
 | Rich-text insertion appears partial | Check the composer before retrying. Copy/paste the prepared text if necessary. Automatic insertion is never retried in the background. |
 | Relay is unavailable | Your draft stays saved in Tampermonkey. Restore connectivity and click **Retry send** yourself. |
@@ -83,7 +87,7 @@ You can start the next scene whenever you choose. There is no automatic wait for
 | A newer scene appears while you are responding | The scene view stays on your current scene. A staged reply retains its target even if you change the view. Check **Reply to scene** before sending. |
 | An old response needs a different scene | Change **Reply to scene** while reviewing, before the first send attempt. Pending retries are immutable. |
 | A reply arrives late | It remains under its original scene. The scene menu shows reply counts, including late replies to recent scenes. |
-| You need to reuse reviewed replies | Select their checkboxes again and prepare another group. Reviewed marks are local to the DM's browser and chat. |
+| You need to reuse replies | Select their checkboxes and prepare another group. |
 
 Copying or inserting a scene remembers it as the default target for the next player draft. The target is always visible and editable before sending. TableForge cannot infer which scene an arbitrary historical assistant response belongs to; choose the right scene yourself.
 
@@ -91,7 +95,7 @@ Nothing is automatically transmitted on reload. Polling only reads relay state: 
 
 ## Persistence and administration
 
-The server stores tables, participant identities, public scenes, replies, and deduplication receipts in SQLite. It has no ChatGPT integration, model calls, transcript scraper, or background game logic. Conversation URLs and private assistant text outside extracted tags are not sent to it. Manually pasted sources, drafts, credentials, and review marks are stored in Tampermonkey for the bound chat; use **Disconnect** to remove that local state.
+The server stores tables, participant identities, public scenes, replies, and deduplication receipts in SQLite. It has no ChatGPT integration, model calls, transcript scraper, or background game logic. Conversation URLs and private assistant text outside extracted tags are not sent to it. Manually pasted sources, drafts, and credentials are stored in Tampermonkey for the bound chat; use **Disconnect** to remove that local state.
 
 History is retained until you delete the database. The client lists the **50 most recent scenes**, while previously selected older scenes remain retrievable by ID through the API. All replies for the selected scene are returned. There is no campaign archive UI. Text is limited to 50,000 characters per message. Each key identifies its holder; TableForge does not independently verify who is using a shared or stolen key.
 
@@ -101,7 +105,7 @@ To replace a lost or disclosed key without losing history:
 python3 server.py rotate-key --table YOUR_TABLE_CODE --name "George"
 ```
 
-Use `"AI-DM"` for the DM key. The old key immediately stops working. Reconnect that participant's chat using the new key. Save any local draft first: changing the connection clears local drafts and review marks.
+Use `"AI-DM"` for the DM key. The old key immediately stops working. Reconnect that participant's chat using the new key. Save any local draft first: changing the connection clears local drafts.
 
 For another database location, put the option **before** the subcommand:
 
@@ -150,7 +154,7 @@ On macOS or Linux, use the same environment variable before the command: `PLAYWR
 
 `tests/browser.cjs` is an integration harness for the actual userscript against a real local relay using controlled ChatGPT DOM fixtures and a Tampermonkey API shim. Its rich-response fixture includes nested list markup, a syntax-highlighted code block with a language header, and a table. The harness exercises the complete round trip, privacy extraction, draft review, grouping, composer insertion, retry after a lost acknowledgement and reload, request conflicts, scene targeting, malformed tags, clipboard fallbacks, multi-tab synchronization, notifications, and SPA navigation. The Python suite covers permissions, table isolation, validation, concurrent retries, late replies, and restart persistence.
 
-**Validation for this delivery:** all nine Python integration tests, all eight JavaScript helper tests, and all 21 browser behavior checks passed. The browser harness ran headlessly against the installed Microsoft Edge executable, with no page errors. Live ChatGPT and userscript-manager behavior still require a manual smoke test.
+**Validation for this delivery:** all nine Python integration tests, all eight JavaScript helper tests, and all 26 browser behavior checks passed. Browser coverage includes grouped replies inserted before director notes in rich-text and textarea composers, focused scene review, context clearing after confirmed sharing, recovery from an unconfirmed share across reloads, scene navigation/search, preservation of draft targets, and a narrow viewport with pinned composer actions. The browser harness ran headlessly against the installed Microsoft Edge executable, with no page errors. Live ChatGPT and userscript-manager behavior still require a manual smoke test.
 
 These fixtures do **not** certify the current live ChatGPT DOM or the actual Tampermonkey permission flow. Make one live smoke-test round after installation. ChatGPT selectors are concentrated in `adapter` in the userscript. The rich composer adapter first uses `execCommand('insertText')` where supported to preserve editor handling and undo. Because that API is deprecated, a failed or unverified insertion falls back to a synthetic plain-text paste event that preserves paragraph breaks for editors such as ProseMirror. It verifies the result after either method, reports failure, and leaves the manual copy/paste path available. There are no private ChatGPT API calls or stable DOM guarantees.
 
