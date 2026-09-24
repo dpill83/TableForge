@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TableForge</title>
+<style>
+:root{
+  --bg:#0e1013;--panel:#171a20;--panel2:#1d2128;--text:#f3ead8;--muted:#9aa1ad;
+  --border:#343943;--accent:#c89a57;--good:#5fbf7f;--warn:#d6a64a;--bad:#d65e5e;
+}
+*{box-sizing:border-box} html,body{height:100%}
+body{
+  margin:0;font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:var(--text);
+  background:radial-gradient(circle at 50% 28%,rgba(200,154,87,.10),transparent 35%),
+  linear-gradient(rgba(8,10,13,.80),rgba(8,10,13,.95)),#0e1013;overflow:hidden;
+}
+button,input,select{font:inherit}
+.app{height:100%;display:grid;place-items:center;padding:24px}
+.screen{width:min(920px,100%);display:none}.screen.active{display:block}
+.title-screen{text-align:center;transform:translateY(-3vh)}
+.logo{margin:0 0 52px;font-family:Georgia,"Times New Roman",serif;font-weight:600;font-size:clamp(54px,8vw,104px);letter-spacing:-.04em;color:#ead6ad;text-shadow:0 2px 18px rgba(0,0,0,.55)}
+.menu{width:min(430px,100%);margin:0 auto;display:grid;gap:14px}
+.menu button,.primary,.secondary,.danger{
+  min-height:54px;border:1px solid var(--border);border-radius:10px;color:var(--text);
+  background:linear-gradient(180deg,#1d2128,#15181e);cursor:pointer;transition:.15s ease;
+}
+.menu button{width:100%;font-family:Georgia,"Times New Roman",serif;font-size:26px}
+.menu button:hover,.menu button:focus-visible,.primary:hover,.secondary:hover,.danger:hover{
+  border-color:var(--accent);box-shadow:0 0 0 1px rgba(200,154,87,.25),0 0 24px rgba(200,154,87,.09);outline:none
+}
+.screen-head{display:flex;align-items:center;gap:14px;margin-bottom:18px}
+.back{width:42px;height:42px;border-radius:9px;border:1px solid var(--border);color:var(--text);background:var(--panel);cursor:pointer;font-size:22px}
+h2{margin:0;font-size:28px}
+.card{border:1px solid var(--border);background:rgba(23,26,32,.94);border-radius:14px;padding:20px}
+.drop{
+  min-height:160px;display:grid;place-items:center;text-align:center;border:1px dashed #555d6a;border-radius:12px;
+  background:rgba(255,255,255,.015);padding:24px
+}
+.drop.drag{border-color:var(--accent);background:rgba(200,154,87,.06)}
+.drop strong{display:block;font-size:20px;margin-bottom:6px}
+.muted{color:var(--muted);font-size:13px}
+.actions{display:flex;gap:10px;justify-content:flex-end;align-items:center;margin-top:16px;flex-wrap:wrap}
+.primary,.secondary,.danger{width:auto;padding:0 16px;min-height:42px}.primary{background:#74562f;border-color:#9a713d}.secondary{background:var(--panel2)}.danger{background:#3a2020;border-color:#734040}
+.primary:disabled{opacity:.4;cursor:not-allowed;box-shadow:none;border-color:var(--border)}
+.summary{display:none;margin-top:18px}.summary.show{display:block}
+.hero-line{display:flex;justify-content:space-between;gap:16px;align-items:flex-start;margin-bottom:14px}
+.adventure-title{font-size:20px;font-weight:700}.pill{border:1px solid var(--border);border-radius:999px;padding:5px 9px;font-size:12px;color:var(--muted)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.binding{border:1px solid var(--border);border-radius:10px;background:#12151a;padding:12px}
+.binding.required.missing{border-color:var(--bad);background:rgba(214,94,94,.05)}
+.binding.optional.missing{border-color:var(--warn);background:rgba(214,166,74,.045)}
+.binding.ok{border-color:rgba(95,191,127,.45)}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.label{font-weight:650;font-size:14px}.status{font-size:12px}.ok .status{color:var(--good)}.required.missing .status{color:var(--bad)}.optional.missing .status{color:var(--warn)}
+.binding select{width:100%;margin-top:9px;min-height:38px;border:1px solid var(--border);border-radius:8px;background:#0e1116;color:var(--text);padding:0 9px}
+.footer-note{margin-top:14px;padding-top:12px;border-top:1px solid var(--border);display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap}
+.hidden-input{display:none}
+.player-row{display:grid;grid-template-columns:1fr 1fr auto;gap:10px;align-items:end;border:1px solid var(--border);border-radius:10px;background:#12151a;padding:12px}
+.player-row input{width:100%;min-height:38px;border:1px solid var(--border);border-radius:8px;background:#0e1116;color:var(--text);padding:0 9px}
+.icon-btn{width:40px;height:40px;border:1px solid var(--border);border-radius:8px;background:var(--panel2);color:var(--text);cursor:pointer}
+@media(max-width:680px){body{overflow:auto}.app{place-items:start center}.grid{grid-template-columns:1fr}.hero-line{flex-direction:column}.menu button{font-size:22px}.player-row{grid-template-columns:1fr}.icon-btn{width:100%}}
+</style>
+</head>
+<body>
+<main class="app">
+<section id="title" class="screen title-screen active">
+  <h1 class="logo">TableForge</h1>
+  <div class="menu">
+    <button data-go="new">New Adventure</button>
+    <button data-go="load">Load Adventure</button>
+    <button data-go="options">Options</button>
+    <button data-go="exit">Exit</button>
+  </div>
+</section>
+
+<section id="new" class="screen">
+  <div class="screen-head">
+    <button class="back" data-go="title" aria-label="Back">←</button>
+    <h2>New Adventure</h2>
+  </div>
+
+  <div class="card">
+    <div id="dropZone" class="drop">
+      <div>
+        <strong>Insert Cartridge</strong>
+        <div class="muted">Select the AdventureForge Stage 2 files. ZIP support can be wired in when the cartridge format is finalized.</div>
+        <div class="actions" style="justify-content:center">
+          <button class="secondary" id="browseFiles">Browse Files</button>
+          <button class="secondary" id="browseFolder">Browse Folder</button>
+          <button class="secondary" id="loadDemo">Load Demo Cartridge</button>
+        </div>
+      </div>
+    </div>
+
+    <input id="filesInput" class="hidden-input" type="file" multiple>
+    <input id="folderInput" class="hidden-input" type="file" multiple webkitdirectory>
+
+    <div id="summary" class="summary">
+      <div class="hero-line">
+        <div>
+          <div class="adventure-title" id="detectedTitle">Adventure Cartridge</div>
+          <div class="muted" id="detectedCount"></div>
+        </div>
+        <span class="pill" id="validationPill">Checking…</span>
+      </div>
+
+      <div class="grid" id="bindings"></div>
+
+      <div class="footer-note">
+        <div class="muted" id="validationText"></div>
+        <div class="actions" style="margin-top:0">
+          <button class="secondary" id="clearCartridge">Remove Cartridge</button>
+          <button class="primary" id="startAdventure" disabled>Start Adventure</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="load" class="screen">
+  <div class="screen-head"><button class="back" data-go="title">←</button><h2>Load Adventure</h2></div>
+  <div class="card"><div class="muted">Next step: memory-card / saved-adventure browser.</div></div>
+</section>
+
+<section id="options" class="screen">
+  <div class="screen-head"><button class="back" data-go="title">←</button><h2>Options</h2></div>
+  <div class="card"><div class="muted">Next step: application-wide options.</div></div>
+</section>
+
+<section id="exit" class="screen">
+  <div class="screen-head"><button class="back" data-go="title">←</button><h2>Exit</h2></div>
+  <div class="card"><div class="muted">In a packaged desktop build, this will close TableForge.</div></div>
+</section>
+
+<section id="setup" class="screen">
+  <div class="screen-head">
+    <button class="back" data-go="new" aria-label="Back">←</button>
+    <h2>Adventure Setup</h2>
+  </div>
+
+  <div class="card">
+    <div class="hero-line">
+      <div>
+        <div class="adventure-title" id="setupTitle">Dress Rehearsal at Hollow Well</div>
+        <div class="muted">New playthrough</div>
+      </div>
+      <span class="pill">Cartridge Ready</span>
+    </div>
+
+    <div class="grid">
+      <div class="binding ok">
+        <div class="label">Save Name</div>
+        <input id="saveName" type="text" value="Dress Rehearsal at Hollow Well">
+      </div>
+      <div class="binding ok">
+        <div class="label">Starting Mode</div>
+        <select id="startingMode">
+          <option>Begin Adventure</option>
+          <option>Start from custom point</option>
+        </select>
+      </div>
+    </div>
+
+    <div style="margin-top:18px">
+      <div class="row">
+        <div>
+          <div class="label" style="font-size:16px">Players</div>
+          <div class="muted">Characters can be auto-populated from the cartridge and corrected here.</div>
+        </div>
+        <button class="secondary" id="addPlayer">Add Player</button>
+      </div>
+
+      <div id="playerRows" style="display:grid;gap:10px;margin-top:12px"></div>
+    </div>
+
+    <div style="margin-top:18px" class="binding">
+      <div class="row">
+        <div>
+          <div class="label">Pilot Mode</div>
+          <div class="muted">No Pilot is assigned. Any player may enable Pilot Mode during play.</div>
+        </div>
+        <span class="pill">Shared</span>
+      </div>
+    </div>
+
+    <details style="margin-top:18px">
+      <summary style="cursor:pointer;font-weight:650">Cartridge Resources</summary>
+      <div id="setupResources" class="grid" style="margin-top:12px"></div>
+    </details>
+
+    <div class="footer-note">
+      <div class="muted">Starting creates a new memory-card save. The cartridge remains unchanged.</div>
+      <div class="actions" style="margin-top:0">
+        <button class="secondary" data-go="new">Back</button>
+        <button class="primary" id="beginSession">Begin Adventure</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section id="play" class="screen">
+  <div class="screen-head">
+    <button class="back" data-go="setup" aria-label="Back">←</button>
+    <h2>Table</h2>
+  </div>
+  <div class="card">
+    <div class="adventure-title">Dress Rehearsal at Hollow Well</div>
+    <div class="muted" style="margin-top:6px">Adventure setup complete.</div>
+    <div style="margin-top:22px;padding:28px;border:1px dashed var(--border);border-radius:12px;text-align:center">
+      <div style="font-size:20px;font-weight:700">Play Screen</div>
+      <div class="muted" style="margin-top:7px">Next: build the ChatGPT + Discord table interface.</div>
+    </div>
+  </div>
+</section>
+
+</main>
+
+<script>
+(() => {
+  const screens=[...document.querySelectorAll('.screen')];
+  const show=id=>screens.forEach(s=>s.classList.toggle('active',s.id===id));
+  document.querySelectorAll('[data-go]').forEach(b=>b.addEventListener('click',()=>show(b.dataset.go)));
+
+  const expected=[
+    {key:'module',label:'Module View',names:['module.md'],required:true},
+    {key:'runData',label:'Run Data',names:['run-data.json'],required:true},
+    {key:'cast',label:'Cast / NPCs',names:['cast.json','cast.md'],required:false},
+    {key:'scenes',label:'Scenes',names:['scenes.json'],required:false},
+    {key:'continuity',label:'Continuity',names:['continuity.json'],required:false},
+    {key:'music',label:'Music Cues',names:['music-cues.json'],required:false},
+    {key:'mapBrief',label:'Map Art Brief',names:['map-art-brief.md'],required:false},
+    {key:'map',label:'Map',names:['random-dungeon.png','map.png','dungeon.png'],required:false}
+  ];
+
+  let selectedFiles=[];
+  const summary=document.getElementById('summary');
+  const bindings=document.getElementById('bindings');
+  const start=document.getElementById('startAdventure');
+  const pill=document.getElementById('validationPill');
+  const validationText=document.getElementById('validationText');
+
+  function normalizeName(file){return (file.webkitRelativePath || file.name).split('/').pop().toLowerCase()}
+  function detect(item){
+    const exact=selectedFiles.find(f=>item.names.includes(normalizeName(f)));
+    if(exact) return exact;
+    if(item.key==='map'){
+      return selectedFiles.find(f=>/\\.(png|jpg|jpeg|webp)$/i.test(f.name) && /map|dungeon/i.test(f.name));
+    }
+    return null;
+  }
+
+  function render(){
+    summary.classList.add('show');
+    bindings.innerHTML='';
+    document.getElementById('detectedCount').textContent=`${selectedFiles.length} file${selectedFiles.length===1?'':'s'} detected`;
+    const found={};
+    expected.forEach(item=>found[item.key]=detect(item));
+
+    expected.forEach(item=>{
+      const file=found[item.key];
+      const box=document.createElement('div');
+      box.className='binding '+(item.required?'required':'optional')+' '+(file?'ok':'missing');
+      const options=['<option value="">Not assigned</option>'].concat(
+        selectedFiles.map((f,i)=>`<option value="${i}" ${file===f?'selected':''}>${f.webkitRelativePath || f.name}</option>`)
+      ).join('');
+      box.innerHTML=`
+        <div class="row">
+          <div class="label">${item.label}${item.required?' *':''}</div>
+          <div class="status">${file?'Found':(item.required?'Missing required':'Missing optional')}</div>
+        </div>
+        <select data-key="${item.key}">${options}</select>`;
+      bindings.appendChild(box);
+    });
+
+    const missingRequired=expected.filter(x=>x.required && !found[x.key]);
+    start.disabled=missingRequired.length>0;
+    if(missingRequired.length){
+      pill.textContent='Needs attention';
+      pill.style.color='var(--bad)';
+      validationText.textContent=`${missingRequired.length} required item${missingRequired.length===1?' is':'s are'} missing. Correct the bindings before starting.`;
+    }else{
+      const optionalMissing=expected.filter(x=>!x.required && !found[x.key]).length;
+      pill.textContent='Ready';
+      pill.style.color='var(--good)';
+      validationText.textContent=optionalMissing?`Required files are present. ${optionalMissing} optional resource${optionalMissing===1?' is':'s are'} missing.`:'All known cartridge resources were found.';
+    }
+
+    const moduleFile=found.module;
+    if(moduleFile){
+      document.getElementById('detectedTitle').textContent='Adventure cartridge detected';
+    }
+  }
+
+  function loadFiles(files){
+    selectedFiles=[...files];
+    if(!selectedFiles.length) return;
+    render();
+  }
+
+  document.getElementById('browseFiles').addEventListener('click',()=>document.getElementById('filesInput').click());
+  document.getElementById('browseFolder').addEventListener('click',()=>document.getElementById('folderInput').click());
+  document.getElementById('filesInput').addEventListener('change',e=>loadFiles(e.target.files));
+  document.getElementById('folderInput').addEventListener('change',e=>loadFiles(e.target.files));
+
+  const drop=document.getElementById('dropZone');
+  ['dragenter','dragover'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.add('drag')}));
+  ['dragleave','drop'].forEach(ev=>drop.addEventListener(ev,e=>{e.preventDefault();drop.classList.remove('drag')}));
+  drop.addEventListener('drop',e=>loadFiles(e.dataTransfer.files));
+
+  document.getElementById('loadDemo').addEventListener('click',()=>{
+    selectedFiles=[
+      {name:'module.md'},{name:'run-data.json'},{name:'continuity.json'},{name:'cast.md'},
+      {name:'cast.json'},{name:'scenes.json'},{name:'music-cues.json'},{name:'map-art-brief.md'},
+      {name:'random-dungeon.png'}
+    ];
+    render();
+  });
+
+  document.getElementById('clearCartridge').addEventListener('click',()=>{
+    selectedFiles=[];summary.classList.remove('show');bindings.innerHTML='';start.disabled=true;
+    document.getElementById('filesInput').value='';document.getElementById('folderInput').value='';
+  });
+
+  start.addEventListener('click',()=>{
+    buildSetupFromCartridge();
+    show('setup');
+  });
+
+
+  const playerRows=document.getElementById('playerRows');
+  const setupResources=document.getElementById('setupResources');
+
+  function playerRow(player='',character=''){
+    const row=document.createElement('div');
+    row.className='player-row';
+    row.innerHTML=`
+      <label>Player<input type="text" value="${player}" placeholder="Player name"></label>
+      <label>Character<input type="text" value="${character}" placeholder="Character name"></label>
+      <button class="icon-btn" type="button" title="Remove player">×</button>`;
+    row.querySelector('.icon-btn').addEventListener('click',()=>row.remove());
+    playerRows.appendChild(row);
+  }
+
+  function buildSetupFromCartridge(){
+    playerRows.innerHTML='';
+    playerRow('Dan','George');
+    playerRow('Dani','Ethereal');
+    playerRow('Ted','Viktor');
+
+    setupResources.innerHTML='';
+    const resourceMap=[
+      ['Module','module.md'],
+      ['Run Data','run-data.json'],
+      ['Cast / NPCs','cast.json'],
+      ['Scenes','scenes.json'],
+      ['Continuity','continuity.json'],
+      ['Music','music-cues.json'],
+      ['Map Art Brief','map-art-brief.md'],
+      ['Map','random-dungeon.png']
+    ];
+    resourceMap.forEach(([label,name])=>{
+      const present=selectedFiles.some(f=>normalizeName(f)===name.toLowerCase()) ||
+        (label==='Map' && selectedFiles.some(f=>/\.(png|jpg|jpeg|webp)$/i.test(f.name) && /map|dungeon/i.test(f.name)));
+      const box=document.createElement('div');
+      box.className='binding '+(present?'ok':'optional missing');
+      box.innerHTML=`<div class="row"><div class="label">${label}</div><div class="status">${present?'Loaded':'Not found'}</div></div>`;
+      setupResources.appendChild(box);
+    });
+  }
+
+  document.getElementById('addPlayer').addEventListener('click',()=>playerRow('',''));
+  document.getElementById('beginSession').addEventListener('click',()=>show('play'));
+
+  bindings.addEventListener('change',()=>{
+    // Prototype leaves manual mappings editable but does not persist them yet.
+  });
+})();
+</script>
+</body>
+</html>

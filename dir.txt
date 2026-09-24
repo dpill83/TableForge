@@ -1,0 +1,37 @@
+ Volume in drive C is Master
+ Volume Serial Number is B6A8-BDD6
+
+ Directory of C:\DnD\repo\TableForge
+
+2026-09-24  03:57 PM    <DIR>          .
+2026-09-24  03:32 PM    <DIR>          ..
+2026-09-24  03:39 PM            15,145 AGENTS.md
+2026-09-24  03:57 PM                 0 dir.txt
+2026-09-24  03:57 PM    <DIR>          docs
+2026-09-24  03:44 PM    <DIR>          prototypes
+2026-09-24  03:42 PM            10,264 README.md
+2026-09-24  03:48 PM            16,434 ROADMAP.md
+               4 File(s)         41,843 bytes
+
+ Directory of C:\DnD\repo\TableForge\docs
+
+2026-09-24  03:57 PM    <DIR>          .
+2026-09-24  03:57 PM    <DIR>          ..
+2026-09-24  03:55 PM            26,840 ARCHITECTURE.md
+2026-09-24  03:41 PM            18,150 CARTRIDGE-SPEC.md
+2026-09-24  03:57 PM            18,392 DECISIONS.md
+2026-09-24  03:53 PM            22,869 SAVE-SPEC.md
+2026-09-24  03:36 PM            20,125 SESSION-WORKFLOW.md
+2026-09-24  03:51 PM            23,129 UI-UX.md
+               6 File(s)        129,505 bytes
+
+ Directory of C:\DnD\repo\TableForge\prototypes
+
+2026-09-24  03:44 PM    <DIR>          .
+2026-09-24  03:57 PM    <DIR>          ..
+2026-09-24  03:35 PM            17,707 TableForge-prototype-03-adventure-setup.html
+               1 File(s)         17,707 bytes
+
+     Total Files Listed:
+              11 File(s)        189,055 bytes
+               8 Dir(s)  276,880,105,472 bytes free
