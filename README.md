@@ -16,7 +16,7 @@ New Adventure reads resource paths from `manifest.json` when present and detects
 
 For local network testing, launch with `python3 server.py --host 0.0.0.0` and use the host computer's LAN address. This initial server has no login or access control, so only expose it on a trusted network.
 
-The current build provides real cartridge validation, SQLite saves, messages, Ready, Load Adventure, AI-DM advance (mock or OpenAI), and basic Pilot/Combat controls. Attachments, spoiler-safe references and map rendering are still pending. The visual shell follows the approved Play Screen prototype; the older standalone prototypes remain in `prototypes/`.
+The current build provides real cartridge validation, SQLite saves, messages, Ready, Load Adventure, AI-DM advance (mock or OpenAI), and basic Pilot/Combat controls. In Pilot Mode, **End Session** records a checkpoint and closes the current session. Continue on an ended save starts the next session when a player joins; an open save resumes the same session after a restart. **Resume AI-DM** in Combat Mode asks for a short outcome note, saves it, and includes it in later AI context. If a cartridge is missing, Load Adventure offers **Locate ZIP** or **Locate Folder** and checks its contents against the original before restoring access. Attachments, spoiler-safe references and map rendering are still pending. The visual shell follows the approved Play Screen prototype; the older standalone prototypes remain in `prototypes/`.
 
 Run the HTTP workflow tests with `python3 -m unittest discover -s tests -v`.
 

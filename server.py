@@ -77,6 +77,12 @@ def initialize():
                 body TEXT NOT NULL, created_at TEXT NOT NULL,
                 FOREIGN KEY(save_id) REFERENCES saves(id)
             );
+            CREATE TABLE IF NOT EXISTS pilot_messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, save_id TEXT NOT NULL,
+                player_id TEXT, kind TEXT NOT NULL, name TEXT NOT NULL,
+                body TEXT NOT NULL, created_at TEXT NOT NULL,
+                FOREIGN KEY(save_id) REFERENCES saves(id)
+            );
             CREATE TABLE IF NOT EXISTS sessions (
                 id TEXT PRIMARY KEY, save_id TEXT NOT NULL, number INTEGER NOT NULL,
                 started_at TEXT NOT NULL, ended_at TEXT, ended_by TEXT,
@@ -112,7 +118,7 @@ def initialize():
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(cartridges)')}
         if 'content_hash' not in columns:
             conn.execute('ALTER TABLE cartridges ADD COLUMN content_hash TEXT')
-        for cartridge in conn.execute('SELECT id FROM cartridges WHERE content_hash IS NULL'):
+        for cartridge in list(conn.execute('SELECT id FROM cartridges WHERE content_hash IS NULL')):
             path = DATA / 'cartridges' / (cartridge['id'] + '.zip')
             if path.is_file():
                 try:
@@ -120,7 +126,7 @@ def initialize():
                     conn.execute('UPDATE cartridges SET content_hash=? WHERE id=?', (fingerprint, cartridge['id']))
                 except (OSError, ValueError, zipfile.BadZipFile):
                     pass
-        for save in conn.execute('SELECT id,created_at FROM saves WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.save_id=saves.id)'):
+        for save in list(conn.execute('SELECT id,created_at FROM saves WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.save_id=saves.id)')):
             session_id = str(uuid.uuid4())
             participants = [row['id'] for row in conn.execute('SELECT id FROM players WHERE save_id=? ORDER BY rowid', (save['id'],))]
             conn.execute('INSERT INTO sessions (id,save_id,number,started_at,participants) VALUES (?,?,?,?,?)',
@@ -272,22 +278,64 @@ def unpack_payload(payload):
     raise ValueError('Choose a ZIP file or a folder')
 
 
+def active_session(conn, save_id):
+    return conn.execute('SELECT * FROM sessions WHERE save_id=? AND ended_at IS NULL ORDER BY number DESC LIMIT 1',
+                        (save_id,)).fetchone()
+
+
+def start_session(conn, save_id):
+    if active_session(conn, save_id):
+        return
+    number = conn.execute('SELECT COALESCE(MAX(number),0)+1 FROM sessions WHERE save_id=?', (save_id,)).fetchone()[0]
+    participants = [row['id'] for row in conn.execute('SELECT id FROM players WHERE save_id=? ORDER BY rowid', (save_id,))]
+    conn.execute('INSERT INTO sessions (id,save_id,number,started_at,participants) VALUES (?,?,?,?,?)',
+                 (str(uuid.uuid4()), save_id, number, utc(), json.dumps(participants)))
+    if number > 1:
+        conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
+    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+
+
+def require_player(state, player_id):
+    player = next((item for item in state['players'] if item['id'] == player_id), None)
+    if not player:
+        raise ValueError('Select a player first')
+    return player
+
+
 def snapshot(conn, save_id):
     save = conn.execute('SELECT * FROM saves WHERE id=?', (save_id,)).fetchone()
     if not save:
         raise ValueError('Save not found')
+    if save['format_version'] != 1:
+        raise ValueError('Unsupported save format version')
     cartridge = conn.execute('SELECT * FROM cartridges WHERE id=?', (save['cartridge_id'],)).fetchone()
     resources = json.loads(save['resource_bindings']) if save['resource_bindings'] else json.loads(cartridge['resources'])
+    sessions = [dict(row) for row in conn.execute('SELECT * FROM sessions WHERE save_id=? ORDER BY number', (save_id,))]
+    for session in sessions:
+        session['participants'] = json.loads(session['participants'])
+    checkpoint = conn.execute('SELECT * FROM checkpoints WHERE save_id=? ORDER BY id DESC LIMIT 1', (save_id,)).fetchone()
+    checkpoint = dict(checkpoint) if checkpoint else None
+    if checkpoint:
+        checkpoint['ready'] = json.loads(checkpoint['ready'])
     return {
         'save': dict(save),
-        'cartridge': {'id': cartridge['id'], 'title': save['adventure_title'] or cartridge['title'], 'resources': resources},
+        'cartridge': {'id': cartridge['id'], 'title': save['adventure_title'] or cartridge['title'],
+                      'resources': resources, 'available': (DATA / 'cartridges' / (cartridge['id'] + '.zip')).is_file()},
         'players': [dict(row) for row in conn.execute('SELECT * FROM players WHERE save_id=? ORDER BY rowid', (save_id,))],
         'messages': [dict(row) for row in conn.execute('SELECT * FROM messages WHERE save_id=? ORDER BY id', (save_id,))],
+        'pilot': [dict(row) for row in conn.execute('SELECT * FROM pilot_messages WHERE save_id=? ORDER BY id', (save_id,))],
+        'sessions': sessions,
+        'events': [dict(row) for row in conn.execute('SELECT * FROM session_events WHERE save_id=? ORDER BY id', (save_id,))],
+        'checkpoint': checkpoint,
     }
 
 
 def begin_advance(conn, save_id, payload):
     state = snapshot(conn, save_id)
+    if not state['cartridge']['available']:
+        raise ValueError('Locate the cartridge before advancing')
+    if not active_session(conn, save_id):
+        raise ValueError('Start the next session before advancing')
     if state['save']['mode'] != 'normal':
         raise ValueError('Resume combat explicitly')
     if not payload.get('override') and not all(p['ready'] for p in state['players']):
@@ -302,13 +350,45 @@ def begin_advance(conn, save_id, payload):
     return context
 
 
-def publish_advance(conn, save_id, text):
+def begin_ask(conn, save_id, payload):
+    state = snapshot(conn, save_id)
+    if not state['cartridge']['available']:
+        raise ValueError('Locate the cartridge before asking the AI-DM')
+    if not active_session(conn, save_id):
+        raise ValueError('Start the next session before playing')
+    player = require_player(state, payload.get('playerId'))
+    body = str(payload.get('text', '')).strip()
+    if not body or len(body) > 20000:
+        raise ValueError('Message must contain 1 to 20,000 characters')
+    if save_id in GENERATING:
+        raise ValueError('The AI-DM is already responding')
     conn.execute(
-        'INSERT INTO messages (save_id,kind,name,body,created_at) VALUES (?,?,?,?,?)',
-        (save_id, 'ai', 'AI-DM', text, utc()),
+        'INSERT INTO pilot_messages (save_id,player_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?)',
+        (save_id, player['id'], 'pilot', player['character'], body, utc()),
+    )
+    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+    context = ai.build_context(snapshot(conn, save_id), DATA, purpose='ask')
+    GENERATING.add(save_id)
+    return context
+
+
+def publish_advance(conn, save_id, text):
+    session = active_session(conn, save_id)
+    conn.execute(
+        'INSERT INTO messages (save_id,session_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?)',
+        (save_id, session['id'], 'ai', 'AI-DM', text, utc()),
     )
     conn.execute('UPDATE saves SET beat=beat+1, updated_at=? WHERE id=?', (utc(), save_id))
     conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
+    return snapshot(conn, save_id)
+
+
+def publish_ask(conn, save_id, text):
+    conn.execute(
+        'INSERT INTO pilot_messages (save_id,kind,name,body,created_at) VALUES (?,?,?,?,?)',
+        (save_id, 'ai', 'AI-DM', text, utc()),
+    )
+    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
     return snapshot(conn, save_id)
 
 
@@ -335,8 +415,19 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(ai.runtime_status())
             if path == '/api/saves':
                 with LOCK, db() as conn:
-                    rows = conn.execute('SELECT s.id,s.name,s.updated_at,COALESCE(s.adventure_title,c.title) AS title FROM saves s JOIN cartridges c ON c.id=s.cartridge_id ORDER BY s.updated_at DESC').fetchall()
-                    return self.respond({'saves': [dict(row) for row in rows]})
+                    rows = conn.execute('''
+                        SELECT s.id,s.name,s.updated_at,s.cartridge_id,
+                               COALESCE(s.adventure_title,c.title) AS title,
+                               (SELECT number FROM sessions WHERE save_id=s.id ORDER BY number DESC LIMIT 1) AS session_number,
+                               (SELECT ended_at FROM sessions WHERE save_id=s.id ORDER BY number DESC LIMIT 1) AS session_ended_at
+                        FROM saves s JOIN cartridges c ON c.id=s.cartridge_id ORDER BY s.updated_at DESC
+                    ''').fetchall()
+                    saves = []
+                    for row in rows:
+                        item = dict(row)
+                        item['cartridgeAvailable'] = (DATA / 'cartridges' / (item['cartridge_id'] + '.zip')).is_file()
+                        saves.append(item)
+                    return self.respond({'saves': saves})
             if path.startswith('/api/saves/'):
                 with LOCK, db() as conn:
                     return self.respond(snapshot(conn, path.rsplit('/', 1)[-1]))
@@ -362,12 +453,18 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.strip('/').split('/')
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'advance':
                 return self.handle_advance(parts[2], payload)
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'ask':
+                return self.handle_ask(parts[2], payload)
             with LOCK, db() as conn:
                 if path == '/api/cartridges':
                     files, raw = unpack_payload(payload)
                     info = inspect_cartridge(files)
                     cartridge_id = hashlib.sha256(raw or b''.join(k.encode()+v for k,v in sorted(files.items()))).hexdigest()
-                    conn.execute('INSERT OR IGNORE INTO cartridges VALUES (?,?,?,?,?)', (cartridge_id, info['title'], payload.get('kind', 'zip'), json.dumps(info['resources']), utc()))
+                    conn.execute('INSERT OR IGNORE INTO cartridges (id,title,source,resources,created_at,content_hash) VALUES (?,?,?,?,?,?)',
+                                 (cartridge_id, info['title'], payload.get('kind', 'zip'),
+                                  json.dumps(info['resources']), utc(), content_fingerprint(files)))
+                    conn.execute('UPDATE cartridges SET content_hash=COALESCE(content_hash,?) WHERE id=?',
+                                 (content_fingerprint(files), cartridge_id))
                     # Keep authored bytes outside the mutable save database.
                     if raw:
                         directory = DATA / 'cartridges'
@@ -401,31 +498,91 @@ class Handler(BaseHTTPRequestHandler):
                                   json.dumps(info['resources']), info['title']))
                     for player in roster:
                         conn.execute('INSERT INTO players (id,save_id,name,character) VALUES (?,?,?,?)', (str(uuid.uuid4()), save_id, player['name'].strip(), player['character'].strip()))
+                    start_session(conn, save_id)
                     return self.respond(snapshot(conn, save_id), 201)
                 if len(parts) != 4 or parts[:2] != ['api', 'saves']:
                     return self.send_error(404)
                 save_id, action = parts[2:]
+                state = snapshot(conn, save_id)
                 if save_id in GENERATING:
                     raise ValueError('The AI-DM is already responding')
-                state = snapshot(conn, save_id)
+                if action == 'locate-cartridge':
+                    cartridge = conn.execute('SELECT content_hash FROM cartridges WHERE id=?', (state['cartridge']['id'],)).fetchone()
+                    files, raw = unpack_payload(payload)
+                    expected = cartridge['content_hash']
+                    if expected and content_fingerprint(files) != expected:
+                        raise ValueError('This package does not match the save cartridge')
+                    if not expected and hashlib.sha256(raw).hexdigest() != state['cartridge']['id']:
+                        raise ValueError('This older save requires its original cartridge package')
+                    validation = validate_bindings(files, state['cartridge']['resources'])
+                    if validation['missing'] or validation['invalid']:
+                        raise ValueError('The package cannot satisfy the saved resource bindings')
+                    directory = DATA / 'cartridges'
+                    directory.mkdir(parents=True, exist_ok=True)
+                    target = directory / (state['cartridge']['id'] + '.zip')
+                    temporary = directory / (state['cartridge']['id'] + '.' + uuid.uuid4().hex + '.tmp')
+                    try:
+                        temporary.write_bytes(raw)
+                        os.replace(temporary, target)
+                    finally:
+                        temporary.unlink(missing_ok=True)
+                    return self.respond(snapshot(conn, save_id))
+                if action == 'start-session':
+                    if not state['cartridge']['available']:
+                        raise ValueError('Locate the cartridge before continuing')
+                    require_player(state, payload.get('playerId'))
+                    start_session(conn, save_id)
+                    return self.respond(snapshot(conn, save_id))
+                session = active_session(conn, save_id)
+                if not session:
+                    raise ValueError('Start the next session before playing')
+                if action == 'end-session':
+                    require_player(state, payload.get('playerId'))
+                    note = str(payload.get('note') or '').strip()
+                    if len(note) > 10000:
+                        raise ValueError('Session note must be 10,000 characters or less')
+                    last_message = conn.execute('SELECT MAX(id) FROM messages WHERE save_id=?', (save_id,)).fetchone()[0]
+                    ready = {player['id']: bool(player['ready']) for player in state['players']}
+                    stamp = utc()
+                    conn.execute('INSERT INTO checkpoints (save_id,session_id,beat,mode,last_message_id,ready,note,created_at) VALUES (?,?,?,?,?,?,?,?)',
+                                 (save_id, session['id'], state['save']['beat'], state['save']['mode'],
+                                  last_message, json.dumps(ready), note, stamp))
+                    conn.execute('UPDATE sessions SET ended_at=?,ended_by=? WHERE id=?',
+                                 (stamp, payload['playerId'], session['id']))
+                    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (stamp, save_id))
+                    return self.respond(snapshot(conn, save_id))
+                if action == 'combat-outcome':
+                    if state['save']['mode'] != 'combat':
+                        raise ValueError('The table is not in Combat Mode')
+                    require_player(state, payload.get('playerId'))
+                    outcome = str(payload.get('text') or '').strip()
+                    if not outcome or len(outcome) > 20000:
+                        raise ValueError('Combat outcome must contain 1 to 20,000 characters')
+                    conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
+                                 (save_id, session['id'], payload['playerId'], 'combat_outcome', outcome, utc()))
+                    conn.execute("UPDATE saves SET mode='normal',updated_at=? WHERE id=?", (utc(), save_id))
+                    conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
+                    return self.respond(snapshot(conn, save_id))
                 if action == 'messages':
-                    player = next((p for p in state['players'] if p['id'] == payload.get('playerId')), None)
-                    if not player:
-                        raise ValueError('Select a player first')
+                    player = require_player(state, payload.get('playerId'))
                     body = str(payload.get('text', '')).strip()
                     if not body or len(body) > 20000:
                         raise ValueError('Message must contain 1 to 20,000 characters')
-                    conn.execute('INSERT INTO messages (save_id,player_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?)', (save_id, player['id'], 'player', player['character'], body, utc()))
+                    conn.execute('INSERT INTO messages (save_id,session_id,player_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?,?)',
+                                 (save_id, session['id'], player['id'], 'player', player['character'], body, utc()))
                 elif action == 'ready':
-                    player = next((p for p in state['players'] if p['id'] == payload.get('playerId')), None)
-                    if not player:
-                        raise ValueError('Select a player first')
+                    player = require_player(state, payload.get('playerId'))
                     conn.execute('UPDATE players SET ready=? WHERE id=?', (int(bool(payload.get('ready'))), player['id']))
                 elif action == 'mode':
                     mode = payload.get('mode')
-                    if mode not in ('normal', 'combat'):
-                        raise ValueError('Invalid mode')
-                    conn.execute('UPDATE saves SET mode=? WHERE id=?', (mode, save_id))
+                    if mode != 'combat' or state['save']['mode'] != 'normal':
+                        raise ValueError('Record a combat outcome to resume normal play')
+                    player_id = payload.get('playerId')
+                    if player_id is not None:
+                        require_player(state, player_id)
+                    conn.execute("UPDATE saves SET mode='combat' WHERE id=?", (save_id,))
+                    conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
+                                 (save_id, session['id'], player_id, 'combat_started', '', utc()))
                 else:
                     return self.send_error(404)
                 conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
@@ -433,9 +590,9 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, KeyError, TypeError, json.JSONDecodeError, zipfile.BadZipFile, UnicodeDecodeError) as error:
             self.respond({'error': str(error)}, 400)
 
-    def handle_advance(self, save_id, payload):
+    def run_generation(self, save_id, begin, publish, payload):
         with LOCK, db() as conn:
-            context = begin_advance(conn, save_id, payload)
+            context = begin(conn, save_id, payload)
         try:
             text = str(ai.current_provider().generate(context) or '').strip()
             if not text:
@@ -448,9 +605,15 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError(f'AI-DM request failed: {error}') from error
         with LOCK, db() as conn:
             try:
-                return self.respond(publish_advance(conn, save_id, text))
+                return self.respond(publish(conn, save_id, text))
             finally:
                 GENERATING.discard(save_id)
+
+    def handle_advance(self, save_id, payload):
+        return self.run_generation(save_id, begin_advance, publish_advance, payload)
+
+    def handle_ask(self, save_id, payload):
+        return self.run_generation(save_id, begin_ask, publish_ask, payload)
 
 
 if __name__ == '__main__':

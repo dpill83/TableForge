@@ -34,6 +34,21 @@ class BoomProvider:
         raise ValueError('provider down')
 
 
+class GateProvider:
+    def __init__(self, text='slow reply'):
+        self.context = None
+        self.text = text
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def generate(self, context):
+        self.context = context
+        self.started.set()
+        if not self.release.wait(timeout=5):
+            raise ValueError('timed out waiting to finish generation')
+        return self.text
+
+
 class FlowTest(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -274,6 +289,153 @@ class FlowTest(unittest.TestCase):
         with self.assertRaises(urllib.error.HTTPError):
             self.cartridge_zip({'../outside.md':'# A'})
 
+    def test_session_checkpoint_and_restart(self):
+        save_id = self.ready_save()
+        original = self.api(f'/api/saves/{save_id}')
+        player_id = original['players'][0]['id']
+        self.assertEqual(len(original['sessions']), 1)
+        self.assertIsNone(original['sessions'][0]['ended_at'])
+        server.initialize()  # Opening the database after a crash must keep the same session.
+        self.assertEqual(len(self.api(f'/api/saves/{save_id}')['sessions']), 1)
+        self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
+        ended = self.api(f'/api/saves/{save_id}/end-session', {'playerId': player_id, 'note': 'At the well.'})
+        self.assertEqual(ended['checkpoint']['beat'], 2)
+        self.assertEqual(ended['checkpoint']['note'], 'At the well.')
+        self.assertEqual(ended['checkpoint']['last_message_id'], ended['messages'][-1]['id'])
+        self.assertEqual(ended['sessions'][0]['ended_by'], player_id)
+        self.assertTrue(ended['sessions'][0]['ended_at'])
+        self.assertIn('Start the next session', self.api_error(f'/api/saves/{save_id}/messages',
+            {'playerId': player_id, 'text': 'Hello'})['error'])
+        self.assertTrue(self.api('/api/saves')['saves'][0]['session_ended_at'])
+        server.initialize()
+        self.assertEqual(len(self.api(f'/api/saves/{save_id}')['sessions']), 1)
+        resumed = self.api(f'/api/saves/{save_id}/start-session', {'playerId': player_id})
+        self.assertEqual([session['number'] for session in resumed['sessions']], [1, 2])
+        self.assertIsNone(resumed['sessions'][-1]['ended_at'])
+        self.assertFalse(any(p['ready'] for p in resumed['players']))
+        self.api(f'/api/saves/{save_id}/start-session', {'playerId': player_id})
+        self.assertEqual(len(self.api(f'/api/saves/{save_id}')['sessions']), 2)
+        context = ai.build_context(self.api(f'/api/saves/{save_id}'), self.path)
+        self.assertEqual(context['checkpoint']['note'], 'At the well.')
+        self.assertIn('At the well.', ai.chat_messages(context)[0]['content'])
+
+    def test_combat_outcome_is_append_only_and_used_by_ai(self):
+        save_id = self.ready_save()
+        player_id = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        combat = self.api(f'/api/saves/{save_id}/mode', {'mode': 'combat', 'playerId': player_id})
+        self.assertEqual(combat['save']['mode'], 'combat')
+        self.assertEqual(combat['events'][-1]['kind'], 'combat_started')
+        self.assertIn('Record a combat outcome', self.api_error(f'/api/saves/{save_id}/mode',
+            {'mode': 'normal'})['error'])
+        self.assertIn('Combat outcome', self.api_error(f'/api/saves/{save_id}/combat-outcome',
+            {'playerId': player_id, 'text': '  '})['error'])
+        result = self.api(f'/api/saves/{save_id}/combat-outcome',
+                          {'playerId': player_id, 'text': 'The ogre fled; nobody died.'})
+        self.assertEqual(result['save']['mode'], 'normal')
+        self.assertEqual(result['events'][-1]['player_id'], player_id)
+        self.assertEqual(result['events'][-1]['body'], 'The ogre fled; nobody died.')
+        self.assertFalse(any(p['ready'] for p in result['players']))
+        context = ai.build_context(result, self.path)
+        self.assertIn('The ogre fled', ai.chat_messages(context)[0]['content'])
+        self.assertEqual(self.api(f'/api/saves/{save_id}')['events'][-1]['body'], result['events'][-1]['body'])
+
+    def test_missing_cartridge_recovery_requires_exact_content(self):
+        contents = {'module.md': '# Original', 'run-data.json': '{"title":"Original"}'}
+        cartridge = self.cartridge_zip(contents)
+        save = self.api('/api/saves', {'cartridgeId': cartridge['id'], 'players':
+                                     [{'name': 'Dan', 'character': 'George'}]})
+        save_id = save['save']['id']
+        cartridge_path = self.path / 'cartridges' / (cartridge['id'] + '.zip')
+        cartridge_path.unlink()
+        self.assertFalse(self.api('/api/saves')['saves'][0]['cartridgeAvailable'])
+        player_id = save['players'][0]['id']
+        self.assertIn('Locate the cartridge', self.api_error(f'/api/saves/{save_id}/advance',
+            {'beat': 1, 'override': True})['error'])
+        self.assertIn('Locate the cartridge', self.api_error(f'/api/saves/{save_id}/start-session',
+            {'playerId': player_id})['error'])
+        def payload(entries):
+            return {'kind': 'files', 'files': [{'name': name, 'data': base64.b64encode(value.encode()).decode()}
+                                             for name, value in entries.items()]}
+        self.assertIn('does not match', self.api_error(f'/api/saves/{save_id}/locate-cartridge',
+            payload(dict(contents, **{'module.md': '# Changed'})))['error'])
+        self.assertFalse(cartridge_path.exists())
+        recovered = self.api(f'/api/saves/{save_id}/locate-cartridge', payload(contents))
+        self.assertTrue(recovered['cartridge']['available'])
+        self.assertTrue(cartridge_path.is_file())
+        self.assertEqual(len(recovered['sessions']), 1)
+        self.assertIn('# Original', ai.build_context(recovered, self.path)['module'])
+
+    def test_ask_does_not_change_table_or_ready(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        result = self.api(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'What would Shenka do?'})
+        self.assertEqual(result['save']['beat'], 1)
+        self.assertTrue(all(p['ready'] for p in result['players']))
+        self.assertEqual([m['kind'] for m in result['messages']], ['player'])
+        self.assertEqual([m['kind'] for m in result['pilot']], ['pilot', 'ai'])
+        self.assertEqual(result['pilot'][0]['name'], 'George')
+        self.assertIn('operational', result['pilot'][-1]['body'].lower())
+        self.assertNotIn('Mock AI-DM, beat', result['pilot'][-1]['body'])
+
+    def test_ask_uses_provider_context(self):
+        fake = FakeProvider('Shenka would likely flee north.')
+        save_id = self.ready_save('# Test adventure')
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        with patch.object(ai, 'current_provider', return_value=fake):
+            result = self.api(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'Would Shenka flee?'})
+        self.assertEqual(result['pilot'][-1]['body'], 'Shenka would likely flee north.')
+        self.assertEqual(result['save']['beat'], 1)
+        self.assertEqual(fake.context['purpose'], 'ask')
+        self.assertIn('# Test adventure', fake.context['module'])
+        self.assertTrue(any(m['body'] == 'I look ahead.' for m in fake.context['messages']))
+        self.assertTrue(any(m['body'] == 'Would Shenka flee?' for m in fake.context['pilot']))
+
+    def test_ask_provider_error_keeps_question(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        with patch.object(ai, 'current_provider', return_value=BoomProvider()):
+            error = self.api_error(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'Would Shenka flee?'})
+        self.assertIn('provider down', error['error'])
+        restored = self.api(f'/api/saves/{save_id}')
+        self.assertEqual(restored['save']['beat'], 1)
+        self.assertTrue(all(p['ready'] for p in restored['players']))
+        self.assertEqual([m['kind'] for m in restored['messages']], ['player'])
+        self.assertEqual([m['kind'] for m in restored['pilot']], ['pilot'])
+        self.assertEqual(restored['pilot'][0]['body'], 'Would Shenka flee?')
+        self.assertEqual(server.GENERATING, set())
+
+    def test_ask_and_advance_cannot_run_together(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        gate = GateProvider('Narrated slowly.')
+        with patch.object(ai, 'current_provider', return_value=gate):
+            errors = []
+            worker = threading.Thread(target=lambda: errors.append(self.api(f'/api/saves/{save_id}/advance', {'beat': 1})))
+            worker.start()
+            self.assertTrue(gate.started.wait(2))
+            blocked = self.api_error(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'Would Shenka flee?'})
+            self.assertIn('already responding', blocked['error'])
+            gate.release.set()
+            worker.join(5)
+        self.assertEqual(len(errors), 1)
+        self.assertEqual(errors[0]['messages'][-1]['body'], 'Narrated slowly.')
+        self.assertEqual(self.api(f'/api/saves/{save_id}')['pilot'], [])
+
+        gate = GateProvider('Operational slowly.')
+        with patch.object(ai, 'current_provider', return_value=gate):
+            errors = []
+            worker = threading.Thread(target=lambda: errors.append(self.api(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'Would Shenka flee?'})))
+            worker.start()
+            self.assertTrue(gate.started.wait(2))
+            blocked = self.api_error(f'/api/saves/{save_id}/advance', {'beat': 2, 'override': True})
+            self.assertIn('already responding', blocked['error'])
+            gate.release.set()
+            worker.join(5)
+        self.assertEqual(len(errors), 1)
+        restored = self.api(f'/api/saves/{save_id}')
+        self.assertEqual(restored['save']['beat'], 2)
+        self.assertEqual(restored['pilot'][-1]['body'], 'Operational slowly.')
+
 
 class MigrationTest(unittest.TestCase):
     def test_existing_save_uses_original_bindings_after_migration(self):
@@ -299,6 +461,11 @@ class MigrationTest(unittest.TestCase):
                     state = server.snapshot(conn, 'old-save')
                 self.assertEqual(state['cartridge']['title'], 'Old Adventure')
                 self.assertEqual(state['cartridge']['resources'], {'module.md':'module.md'})
+                self.assertEqual(len(state['sessions']), 1)
+                self.assertIsNone(state['sessions'][0]['ended_at'])
+                server.initialize()
+                with server.db() as conn:
+                    self.assertEqual(len(server.snapshot(conn, 'old-save')['sessions']), 1)
             finally:
                 server.DATA = old_data
 

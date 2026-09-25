@@ -11,6 +11,11 @@ SYSTEM_PROMPT = (
     'Narrate the scene and play NPCs. Treat the transcript as what has already happened. '
     'Do not run combat turns. Do not ask players to reconfirm actions they already declared.'
 )
+ASK_PROMPT = (
+    'You are the AI-DM for TableForge in an operational Pilot console. '
+    'Answer the Pilot. Do not narrate a new table beat. '
+    'Do not treat this reply as public #table narration.'
+)
 MODULE_CAP = 60_000
 TRANSCRIPT_CAP = 40_000
 OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
@@ -57,19 +62,37 @@ def trim_transcript(messages, cap=TRANSCRIPT_CAP):
     return kept
 
 
-def build_context(state, data_dir):
+def build_context(state, data_dir, purpose='advance'):
     cartridge = state['cartridge']
     messages = trim_transcript(state['messages'])
-    return {
+    context = {
+        'purpose': purpose,
         'title': cartridge['title'],
         'module': read_module(data_dir, cartridge['id'], cartridge['resources']),
         'beat': state['save']['beat'],
         'messages': [{'kind': m['kind'], 'name': m['name'], 'body': m['body']} for m in messages],
     }
+    if purpose == 'ask':
+        context['pilot'] = [{'kind': m['kind'], 'name': m['name'], 'body': m['body']}
+                            for m in trim_transcript(state.get('pilot') or [])]
+        return context
+    outcomes = [event for event in state.get('events', []) if event['kind'] == 'combat_outcome'][-5:]
+    context['checkpoint'] = state.get('checkpoint')
+    context['combatOutcomes'] = [{'body': event['body'], 'createdAt': event['created_at']} for event in outcomes]
+    return context
 
 
 def chat_messages(context):
+    if context.get('purpose') == 'ask':
+        return ask_chat_messages(context)
     system = SYSTEM_PROMPT + f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
+    checkpoint = context.get('checkpoint')
+    if checkpoint:
+        system += (f"\n\nLast session checkpoint (beat {checkpoint['beat']}, mode {checkpoint['mode']}): "
+                   + (checkpoint['note'] or 'No additional table note.'))
+    outcomes = context.get('combatOutcomes') or []
+    if outcomes:
+        system += '\n\nRecorded combat outcomes:\n' + '\n'.join('- ' + item['body'] for item in outcomes)
     messages = [{'role': 'system', 'content': system}]
     for item in context['messages']:
         if item['kind'] == 'ai':
@@ -81,8 +104,27 @@ def chat_messages(context):
     return messages
 
 
+def ask_chat_messages(context):
+    system = ASK_PROMPT + f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
+    table = context.get('messages') or []
+    if table:
+        system += '\n\nRecent table transcript (background only):\n' + '\n'.join(
+            f"{item['name']}: {item['body']}" for item in table)
+    messages = [{'role': 'system', 'content': system}]
+    for item in context.get('pilot') or []:
+        if item['kind'] == 'ai':
+            messages.append({'role': 'assistant', 'content': item['body']})
+        else:
+            messages.append({'role': 'user', 'content': f"{item['name']}: {item['body']}"})
+    if not any(item['role'] == 'user' for item in messages):
+        messages.append({'role': 'user', 'content': 'The Pilot is waiting for an operational answer.'})
+    return messages
+
+
 class MockProvider:
     def generate(self, context):
+        if context.get('purpose') == 'ask':
+            return 'Mock AI-DM (Pilot): This is an operational answer. No table beat was advanced.'
         beat = context['beat']
         return (
             'Mock AI-DM, beat ' + str(beat) + ': The party has a moment to consider what happens next. '

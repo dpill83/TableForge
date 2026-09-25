@@ -2,7 +2,7 @@
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const screens = [...document.querySelectorAll('.screen')];
-  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, composer:false, generating:false, updating:false, bindingRequest:0};
+  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, composer:false, generating:false, asking:false, updating:false, bindingRequest:0};
   $('appVersion').textContent = 'v2.0';
   const request = async (path, body) => {
     const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST', headers:{'Content-Type':'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
@@ -33,6 +33,9 @@
     for(let i=0;i<bytes.length;i+=8192) out += String.fromCharCode(...bytes.subarray(i,i+8192));
     return btoa(out);
   };
+  const cartridgePayload = async items => items.length === 1 && /\.zip$/i.test(items[0].name)
+    ? {kind:'zip', data:await bytes64(items[0])}
+    : {kind:'files', files:await Promise.all(items.map(async file => ({name:file.webkitRelativePath || file.name,data:await bytes64(file)})))};
   const selectedFiles = async files => {
     const items = [...files];
     if(!items.length) return;
@@ -40,10 +43,7 @@
     state.cartridge=null;
     renderCartridge();
     try {
-      let payload;
-      if(items.length === 1 && /\.zip$/i.test(items[0].name)) payload = {kind:'zip', data:await bytes64(items[0])};
-      else payload = {kind:'files', files:await Promise.all(items.map(async file => ({name:file.webkitRelativePath || file.name,data:await bytes64(file)})))};
-      const cartridge = await request('cartridges', payload);
+      const cartridge = await request('cartridges', await cartridgePayload(items));
       if(upload!==state.bindingRequest) return;
       state.cartridge = cartridge;
       $('setupSaveName').value=state.cartridge.title;
@@ -151,9 +151,24 @@
     const panel=$('load').querySelector('.card'); panel.replaceChildren();
     if(!result.saves.length){panel.textContent='No saved adventures yet.'; return;}
     result.saves.forEach(save=>{
-      const row=document.createElement('div');row.className='binding ok';
-      row.innerHTML=`<div class="row"><div><strong>${esc(save.name)}</strong><div class="muted">${esc(save.title)} · ${new Date(save.updated_at).toLocaleString()}</div></div><button class="btn primary">Continue</button></div>`;
-      row.querySelector('button').onclick=async()=>{try{state.save=await request('saves/'+save.id);renderJoin();show('join');}catch(error){notify(error);}};
+      const row=document.createElement('div');row.className='binding '+(save.cartridgeAvailable?'ok':'bad');
+      const session=save.session_ended_at?`Session ${save.session_number} ended · Next: Session ${save.session_number+1}`:`Session ${save.session_number} open`;
+      row.innerHTML=`<div class="row"><div><strong>${esc(save.name)}</strong><div class="muted">${esc(save.title)} · ${esc(session)} · ${new Date(save.updated_at).toLocaleString()}</div>${save.cartridgeAvailable?'':'<div class="binding-issue">Cartridge missing. Locate the original package to continue.</div>'}</div><div class="actions" style="margin-top:0"><button class="btn primary continue-save" ${save.cartridgeAvailable?'':'disabled'}>Continue</button>${save.cartridgeAvailable?'':'<button class="btn locate-zip">Locate ZIP</button><button class="btn locate-folder">Locate Folder</button>'}</div></div>`;
+      row.querySelector('.continue-save').onclick=async()=>{try{state.save=await request('saves/'+save.id);renderJoin();show('join');}catch(error){notify(error);}};
+      if(!save.cartridgeAvailable){
+        for(const [selector,folder] of [['.locate-zip',false],['.locate-folder',true]]){
+          const input=document.createElement('input');input.type='file';input.className='hidden';
+          if(folder){input.multiple=true;input.setAttribute('webkitdirectory','');}else input.accept='.zip';
+          row.append(input);
+          row.querySelector(selector).onclick=()=>input.click();
+          input.onchange=async()=>{
+            const items=[...input.files];if(!items.length)return;
+            row.querySelectorAll('button').forEach(button=>button.disabled=true);
+            try{await request('saves/'+save.id+'/locate-cartridge',await cartridgePayload(items));await refreshSaves();}
+            catch(error){notify(error);row.querySelectorAll('button').forEach(button=>button.disabled=false);}
+          };
+        }
+      }
       panel.append(row);
     });
   };
@@ -162,7 +177,13 @@
     state.save?.players.forEach(player=>{
       const button=document.createElement('button');button.className='identity-choice';
       button.innerHTML=`<div class="party-avatar">${esc(player.character[0])}</div><div><strong>${esc(player.character)}</strong><span>${esc(player.name)}</span></div><span class="pill">Join</span>`;
-      button.onclick=()=>{state.identity=player.id;sessionStorage.setItem('tableforge-player',player.id);render();show('play');};wrap.append(button);
+      button.onclick=async()=>{
+        button.disabled=true;
+        try{
+          if(state.save.sessions.at(-1)?.ended_at) state.save=await request('saves/'+state.save.save.id+'/start-session',{playerId:player.id});
+          state.identity=player.id;sessionStorage.setItem('tableforge-player',player.id);render();await show('play');
+        }catch(error){notify(error);button.disabled=false;}
+      };wrap.append(button);
     });
   };
   const update=async (action,body) => {
@@ -172,6 +193,27 @@
     try {state.save=await request('saves/'+state.save.save.id+'/'+action,body);return true;}
     catch(error){notify(error);return false;}
     finally {state.updating=false;render();}
+  };
+  const fillPilotThread = () => {
+    const thread=$('pilotThread');
+    if(!thread||!state.save) return;
+    const atBottom=thread.scrollHeight-thread.scrollTop-thread.clientHeight<48;
+    thread.replaceChildren();
+    for(const m of state.save.pilot||[]){
+      const row=document.createElement('div');
+      row.className='pilot-line'+(m.kind==='ai'?' ai':'');
+      const name=document.createElement('strong');
+      name.textContent=m.name;
+      const body=document.createElement('div');
+      body.textContent=m.body;
+      row.append(name, body);
+      thread.append(row);
+    }
+    if(atBottom) thread.scrollTop=thread.scrollHeight;
+    const send=$('pilotSend'), field=$('pilotAsk'), status=$('pilotAskStatus');
+    if(send) send.disabled=!state.identity||state.asking||state.generating;
+    if(field) field.disabled=!!(state.asking||state.generating);
+    if(status) status.textContent=state.asking?'The AI-DM is responding…':'';
   };
   const render=()=>{
     const s=state.save;if(!s)return;
@@ -193,12 +235,16 @@
     $('composer').disabled=state.generating||state.updating;
     $('readyBtn').querySelector('.ready-label').textContent=current?.ready?'Unready':'Ready';
     $('readyBtn').classList.toggle('ready',!!current?.ready);
-    $('tableStatus').textContent=state.generating?'The AI-DM is responding…':`${s.save.mode==='combat'?'Combat Mode · ':''}${s.players.filter(p=>p.ready).length} of ${s.players.length} Ready`;
+    $('tableStatus').textContent=state.generating?'The AI-DM is responding…':`Session ${s.sessions.at(-1)?.number || 1} · ${s.save.mode==='combat'?'Combat Mode · ':''}${s.players.filter(p=>p.ready).length} of ${s.players.length} Ready`;
     $('combatToggle').classList.toggle('hidden',s.save.mode==='combat');
     $('resumeCombat').classList.toggle('hidden',s.save.mode!=='combat');
+    $('combatToggle').disabled=state.generating||state.updating;
+    $('resumeCombat').disabled=state.generating||state.updating;
+    $('endSession').disabled=state.generating||state.updating;
+    fillPilotThread();
   };
   const advanceTable = async (extra={}) => {
-    if(state.generating || state.updating) return;
+    if(state.generating || state.updating || state.asking) return;
     state.generating = true;
     render();
     try {
@@ -222,8 +268,21 @@
        state.save.save.mode==='normal' && state.save.players.every(p=>p.ready)) await advanceTable();
   };
   $('readyOverride').onclick=()=>confirmBox('Ready Override','Advance the table without waiting for every player?',()=>advanceTable({override:true}));
-  $('combatToggle').onclick=()=>update('mode',{mode:'combat'});
-  $('resumeCombat').onclick=()=>confirmBox('Resume AI-DM','End Combat Mode and return to normal play?',()=>update('mode',{mode:'normal'}));
+  $('combatToggle').onclick=()=>update('mode',{mode:'combat',playerId:state.identity});
+  $('resumeCombat').onclick=()=>{
+    modal('<h3>Resume AI-DM</h3><p>Summarize the combat outcome. It will be saved and included when the AI-DM next advances.</p><label>Combat outcome<textarea id="combatOutcome" rows="5" maxlength="20000" placeholder="What happened in combat?"></textarea></label><div class="actions"><button class="btn" data-close>Cancel</button><button class="btn good" id="submitCombatOutcome">Save outcome</button></div>');
+    $('submitCombatOutcome').onclick=async()=>{
+      const outcome=$('combatOutcome').value.trim();if(!outcome)return notify(Error('Enter a combat outcome.'));
+      if(await update('combat-outcome',{playerId:state.identity,text:outcome})) $('modalRoot').replaceChildren();
+    };
+  };
+  $('endSession').onclick=()=>{
+    modal('<h3>End Session</h3><p>Save a checkpoint and close this session. Continuing later opens the next session.</p><label>Session note (optional)<textarea id="sessionNote" rows="4" maxlength="10000" placeholder="Where did the table leave off?"></textarea></label><div class="actions"><button class="btn" data-close>Cancel</button><button class="btn warn" id="submitEndSession">End Session</button></div>');
+    $('submitEndSession').onclick=async()=>{
+      const note=$('sessionNote').value.trim();
+      if(await update('end-session',{playerId:state.identity,note})){$('modalRoot').replaceChildren();await show('load');}
+    };
+  };
   const field=$('composer');
   function resize(){field.style.height='auto';field.style.height=(field.value?Math.min(Math.max(field.scrollHeight,48),184):48)+'px';field.style.overflowY=field.scrollHeight>184?'auto':'hidden';}
   field.addEventListener('input',resize);
