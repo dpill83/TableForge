@@ -2,6 +2,24 @@
 
 TableForge is a shared runtime for playing AI-assisted tabletop RPG adventures created by AdventureForge.
 
+## Run the first application build
+
+Requires Python 3.10 or newer. From this repository:
+
+```bash
+python3 server.py
+```
+
+Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in a browser. On Windows, `py server.py` also works. Use **New Adventure** to select a Stage 2 folder or ZIP containing `module.md` and `run-data.json`, or **Load Demo Cartridge** to try the interface. Add players, begin, choose your identity, send a message, and mark Ready. The last player's Ready action advances the table. Without `TABLEFORGE_OPENAI_API_KEY`, the server uses a local mock AI-DM. Set `TABLEFORGE_OPENAI_API_KEY` on the host to use OpenAI; `TABLEFORGE_MODEL` defaults to `gpt-4o-mini`. The key stays on the server. **Load Adventure** restores the saved transcript and Ready state after restart. Data is stored in `data/` and excluded from Git.
+
+New Adventure reads resource paths from `manifest.json` when present and detects known filenames otherwise. Review the bindings before continuing; each resource selector can correct a missing or mistaken path. Required resources and invalid selections block Begin Adventure. The selected bindings are saved with that playthrough, leaving the cartridge and other saves unchanged.
+
+For local network testing, launch with `python3 server.py --host 0.0.0.0` and use the host computer's LAN address. This initial server has no login or access control, so only expose it on a trusted network.
+
+The current build provides real cartridge validation, SQLite saves, messages, Ready, Load Adventure, AI-DM advance (mock or OpenAI), and basic Pilot/Combat controls. Attachments, spoiler-safe references and map rendering are still pending. The visual shell follows the approved Play Screen prototype; the older standalone prototypes remain in `prototypes/`.
+
+Run the HTTP workflow tests with `python3 -m unittest discover -s tests -v`.
+
 The core model is simple:
 
 - **AdventureForge** creates the adventure.
