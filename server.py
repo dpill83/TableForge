@@ -1,28 +1,41 @@
 """Local TableForge server. Start with: python3 server.py"""
 import argparse
 import base64
+import binascii
 import hashlib
 import io
 import json
 import os
 import sqlite3
 import threading
+import time
 import uuid
 import zipfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 import ai
+import metering
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
 DATA = Path(os.environ.get("TABLEFORGE_DATA", ROOT / "data"))
 LOCK = threading.RLock()
-GENERATING = set()
+# save_id -> 'advance' | 'ask' while the AI-DM is generating.
+GENERATING = {}
+# save_id -> {player_id: monotonic expiry}; presence only, never saved.
+TYPING = {}
+TYPING_SECONDS = 6
 MAX_REQUEST = 32 * 1024 * 1024
+MAX_PORTRAIT_BYTES = 5 * 1024 * 1024
+PORTRAIT_SIGNATURES = {
+    'image/png': lambda data: data.startswith(b'\x89PNG\r\n\x1a\n'),
+    'image/jpeg': lambda data: data.startswith(b'\xff\xd8\xff') and data.endswith(b'\xff\xd9'),
+    'image/webp': lambda data: data.startswith(b'RIFF') and data[8:12] == b'WEBP',
+}
 REQUIRED = ("module.md", "run-data.json")
 OPTIONAL = ("cast.json", "cast.md", "continuity.json", "scenes.json", "music-cues.json", "map-art-brief.md")
 RESOURCE_KEYS = {
@@ -31,6 +44,14 @@ RESOURCE_KEYS = {
     'continuity.json': 'continuity', 'scenes.json': 'scenes',
     'music-cues.json': 'musicCues', 'map-art-brief.md': 'mapArtBrief',
 }
+
+
+class StaleBeat(ValueError):
+    """A contribution was drafted for a beat the table has already left."""
+
+    def __init__(self, beat):
+        super().__init__('The AI-DM continued while you were writing. Review your message before sending it.')
+        self.beat = beat
 
 
 def utc():
@@ -71,6 +92,12 @@ def initialize():
                 character TEXT NOT NULL, ready INTEGER NOT NULL DEFAULT 0,
                 FOREIGN KEY(save_id) REFERENCES saves(id)
             );
+            CREATE TABLE IF NOT EXISTS player_portraits (
+                player_id TEXT PRIMARY KEY, save_id TEXT NOT NULL,
+                mime TEXT NOT NULL, image BLOB NOT NULL, updated_at TEXT NOT NULL,
+                FOREIGN KEY(player_id) REFERENCES players(id),
+                FOREIGN KEY(save_id) REFERENCES saves(id)
+            );
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, save_id TEXT NOT NULL,
                 player_id TEXT, kind TEXT NOT NULL, name TEXT NOT NULL,
@@ -101,6 +128,18 @@ def initialize():
                 session_id TEXT NOT NULL UNIQUE, beat INTEGER NOT NULL,
                 mode TEXT NOT NULL, last_message_id INTEGER,
                 ready TEXT NOT NULL, note TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL,
+                FOREIGN KEY(save_id) REFERENCES saves(id),
+                FOREIGN KEY(session_id) REFERENCES sessions(id)
+            );
+            CREATE TABLE IF NOT EXISTS ai_usage (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                save_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                purpose TEXT NOT NULL, model TEXT NOT NULL,
+                input_tokens INTEGER, cached_tokens INTEGER NOT NULL DEFAULT 0,
+                cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                output_tokens INTEGER, total_tokens INTEGER,
+                estimated_cost_usd REAL, service_tier TEXT,
+                created_at TEXT NOT NULL,
                 FOREIGN KEY(save_id) REFERENCES saves(id),
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
             );
@@ -154,12 +193,15 @@ def package_manifest(files):
     return manifest, path
 
 
-def validate_bindings(files, resources):
+def validate_bindings(files, resources, require_manifest=True):
     if not isinstance(resources, dict) or any(key not in RESOURCE_KEYS for key in resources):
         raise ValueError('Invalid resource bindings')
+    manifest, manifest_path = package_manifest(files)
     bindings = {}
-    missing = []
+    missing = ['manifest.json'] if require_manifest and not manifest_path else []
     invalid = {}
+    if manifest_path and not str(manifest.get('title') or '').strip():
+        invalid['manifest.json'] = 'Manifest needs a title'
     for role in REQUIRED + OPTIONAL:
         path = resources.get(role)
         if path == '':
@@ -187,12 +229,11 @@ def validate_bindings(files, resources):
                 raise ValueError('Run data must contain a JSON object')
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
             invalid['run-data.json'] = 'Run data must contain a UTF-8 JSON object'
-    manifest, _ = package_manifest(files)
     title = str(manifest.get('title') or '').strip()
     if not title and run_data:
-        title = str(run_data.get('title') or run_data.get('adventureTitle') or '').strip()
+        title = str(run_data.get('title') or run_data.get('adventureTitle') or run_data.get('adventureName') or '').strip()
     return {'title': title or 'Untitled Adventure', 'resources': bindings,
-            'missing': missing, 'invalid': invalid}
+            'missing': missing, 'invalid': invalid, 'manifest': manifest_path}
 
 
 def inspect_cartridge(files):
@@ -317,17 +358,41 @@ def snapshot(conn, save_id):
     checkpoint = dict(checkpoint) if checkpoint else None
     if checkpoint:
         checkpoint['ready'] = json.loads(checkpoint['ready'])
+    players = [dict(row) for row in conn.execute('SELECT * FROM players WHERE save_id=? ORDER BY rowid', (save_id,))]
+    portraits = {row['player_id']: row['updated_at'] for row in conn.execute(
+        'SELECT player_id,updated_at FROM player_portraits WHERE save_id=?', (save_id,))}
+    for player in players:
+        player['portraitUrl'] = (f'/api/saves/{save_id}/players/{player["id"]}/portrait?v={quote(portraits[player["id"]], safe="")}'
+                                 if player['id'] in portraits else None)
     return {
         'save': dict(save),
         'cartridge': {'id': cartridge['id'], 'title': save['adventure_title'] or cartridge['title'],
                       'resources': resources, 'available': (DATA / 'cartridges' / (cartridge['id'] + '.zip')).is_file()},
-        'players': [dict(row) for row in conn.execute('SELECT * FROM players WHERE save_id=? ORDER BY rowid', (save_id,))],
+        'players': players,
         'messages': [dict(row) for row in conn.execute('SELECT * FROM messages WHERE save_id=? ORDER BY id', (save_id,))],
         'pilot': [dict(row) for row in conn.execute('SELECT * FROM pilot_messages WHERE save_id=? ORDER BY id', (save_id,))],
         'sessions': sessions,
         'events': [dict(row) for row in conn.execute('SELECT * FROM session_events WHERE save_id=? ORDER BY id', (save_id,))],
         'checkpoint': checkpoint,
+        'activity': activity(save_id),
+        'usage': {
+            'session': metering.summary(conn, 'WHERE session_id=?', (sessions[-1]['id'],)) if sessions else metering.summary(conn, 'WHERE 0'),
+            'save': metering.summary(conn, 'WHERE save_id=?', (save_id,)),
+            'pricingAsOf': metering.PRICING_AS_OF,
+            'pricingUrl': metering.PRICING_URL,
+        },
     }
+
+
+def typing_players(save_id):
+    now = time.monotonic()
+    typing = {pid: expiry for pid, expiry in TYPING.get(save_id, {}).items() if expiry > now}
+    TYPING[save_id] = typing
+    return sorted(typing)
+
+
+def activity(save_id):
+    return {'aiDm': GENERATING.get(save_id), 'typing': typing_players(save_id)}
 
 
 def begin_advance(conn, save_id, payload):
@@ -346,7 +411,7 @@ def begin_advance(conn, save_id, payload):
     if save_id in GENERATING:
         raise ValueError('The AI-DM is already responding')
     context = ai.build_context(state, DATA)
-    GENERATING.add(save_id)
+    GENERATING[save_id] = 'advance'
     return context
 
 
@@ -368,7 +433,7 @@ def begin_ask(conn, save_id, payload):
     )
     conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
     context = ai.build_context(snapshot(conn, save_id), DATA, purpose='ask')
-    GENERATING.add(save_id)
+    GENERATING[save_id] = 'ask'
     return context
 
 
@@ -411,8 +476,28 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         try:
+            parts = path.strip('/').split('/')
+            if len(parts) == 6 and parts[:2] == ['api', 'saves'] and parts[3] == 'players' and parts[5] == 'portrait':
+                with LOCK, db() as conn:
+                    portrait = conn.execute('SELECT mime,image FROM player_portraits WHERE save_id=? AND player_id=?',
+                                            (parts[2], parts[4])).fetchone()
+                    if not portrait:
+                        return self.send_error(404)
+                    image = portrait['image']
+                    self.send_response(200)
+                    self.send_header('Content-Type', portrait['mime'])
+                    self.send_header('Content-Length', str(len(image)))
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('X-Content-Type-Options', 'nosniff')
+                    self.end_headers()
+                    return self.wfile.write(image)
             if path == '/api/runtime':
                 return self.respond(ai.runtime_status())
+            if path == '/api/usage':
+                with LOCK, db() as conn:
+                    return self.respond({'usage': metering.summary(conn),
+                                         'pricingAsOf': metering.PRICING_AS_OF,
+                                         'pricingUrl': metering.PRICING_URL})
             if path == '/api/saves':
                 with LOCK, db() as conn:
                     rows = conn.execute('''
@@ -456,6 +541,28 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'ask':
                 return self.handle_ask(parts[2], payload)
             with LOCK, db() as conn:
+                if len(parts) == 6 and parts[:2] == ['api', 'saves'] and parts[3] == 'players' and parts[5] == 'portrait':
+                    save_id, player_id = parts[2], parts[4]
+                    if not conn.execute('SELECT 1 FROM players WHERE id=? AND save_id=?', (player_id, save_id)).fetchone():
+                        raise ValueError('Choose a player in this save')
+                    if payload.get('remove') is True:
+                        conn.execute('DELETE FROM player_portraits WHERE player_id=? AND save_id=?', (player_id, save_id))
+                    else:
+                        mime, encoded = payload.get('mime'), payload.get('data')
+                        if mime not in PORTRAIT_SIGNATURES or not isinstance(encoded, str) or len(encoded) > ((MAX_PORTRAIT_BYTES + 2) // 3) * 4:
+                            raise ValueError('Choose a PNG, JPEG, or WebP image up to 5 MB')
+                        try:
+                            image = base64.b64decode(encoded, validate=True)
+                        except (binascii.Error, ValueError) as error:
+                            raise ValueError('Portrait image data is invalid') from error
+                        if not image or len(image) > MAX_PORTRAIT_BYTES or not PORTRAIT_SIGNATURES[mime](image):
+                            raise ValueError('Portrait image data is invalid')
+                        conn.execute('''INSERT INTO player_portraits (player_id,save_id,mime,image,updated_at)
+                                        VALUES (?,?,?,?,?) ON CONFLICT(player_id) DO UPDATE SET
+                                        mime=excluded.mime,image=excluded.image,updated_at=excluded.updated_at''',
+                                     (player_id, save_id, mime, image, utc()))
+                    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+                    return self.respond(snapshot(conn, save_id))
                 if path == '/api/cartridges':
                     files, raw = unpack_payload(payload)
                     info = inspect_cartridge(files)
@@ -503,6 +610,16 @@ class Handler(BaseHTTPRequestHandler):
                 if len(parts) != 4 or parts[:2] != ['api', 'saves']:
                     return self.send_error(404)
                 save_id, action = parts[2:]
+                if action == 'typing':
+                    player_id = payload.get('playerId')
+                    if not conn.execute('SELECT 1 FROM players WHERE id=? AND save_id=?', (player_id, save_id)).fetchone():
+                        raise ValueError('Choose a player in this save')
+                    typing = TYPING.setdefault(save_id, {})
+                    if payload.get('typing'):
+                        typing[player_id] = time.monotonic() + TYPING_SECONDS
+                    else:
+                        typing.pop(player_id, None)
+                    return self.respond(activity(save_id))
                 state = snapshot(conn, save_id)
                 if save_id in GENERATING:
                     raise ValueError('The AI-DM is already responding')
@@ -514,8 +631,8 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError('This package does not match the save cartridge')
                     if not expected and hashlib.sha256(raw).hexdigest() != state['cartridge']['id']:
                         raise ValueError('This older save requires its original cartridge package')
-                    validation = validate_bindings(files, state['cartridge']['resources'])
-                    if validation['missing'] or validation['invalid']:
+                    validation = validate_bindings(files, state['cartridge']['resources'], require_manifest=False)
+                    if any(role in validation['missing'] for role in REQUIRED) or validation['invalid']:
                         raise ValueError('The package cannot satisfy the saved resource bindings')
                     directory = DATA / 'cartridges'
                     directory.mkdir(parents=True, exist_ok=True)
@@ -568,8 +685,13 @@ class Handler(BaseHTTPRequestHandler):
                     body = str(payload.get('text', '')).strip()
                     if not body or len(body) > 20000:
                         raise ValueError('Message must contain 1 to 20,000 characters')
+                    # Drafts carry the beat they were started in so they never slip into a later one.
+                    if payload.get('beat') is not None and int(payload['beat']) != state['save']['beat']:
+                        raise StaleBeat(state['save']['beat'])
                     conn.execute('INSERT INTO messages (save_id,session_id,player_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?,?)',
                                  (save_id, session['id'], player['id'], 'player', player['character'], body, utc()))
+                    conn.execute('UPDATE players SET ready=1 WHERE id=?', (player['id'],))
+                    TYPING.get(save_id, {}).pop(player['id'], None)
                 elif action == 'ready':
                     player = require_player(state, payload.get('playerId'))
                     conn.execute('UPDATE players SET ready=? WHERE id=?', (int(bool(payload.get('ready'))), player['id']))
@@ -587,6 +709,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.send_error(404)
                 conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
                 return self.respond(snapshot(conn, save_id))
+        except StaleBeat as error:
+            self.respond({'error': str(error), 'code': 'stale_beat', 'beat': error.beat}, 409)
         except (ValueError, KeyError, TypeError, json.JSONDecodeError, zipfile.BadZipFile, UnicodeDecodeError) as error:
             self.respond({'error': str(error)}, 400)
 
@@ -594,20 +718,35 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK, db() as conn:
             context = begin(conn, save_id, payload)
         try:
-            text = str(ai.current_provider().generate(context) or '').strip()
+            generated = ai.current_provider().generate(context)
+            text = str(generated or '').strip()
             if not text:
                 raise ValueError('The AI-DM returned an empty response')
         except Exception as error:
             with LOCK:
-                GENERATING.discard(save_id)
+                GENERATING.pop(save_id, None)
             if isinstance(error, ValueError):
                 raise
             raise ValueError(f'AI-DM request failed: {error}') from error
-        with LOCK, db() as conn:
+        with LOCK:
             try:
-                return self.respond(publish(conn, save_id, text))
+                with db() as conn:
+                    if isinstance(generated, ai.GeneratedText):
+                        session = active_session(conn, save_id)
+                        if not session:
+                            raise ValueError('Start the next session before playing')
+                        values = metering.record(generated.model or 'unknown', generated.usage,
+                                                 generated.service_tier)
+                        conn.execute('''INSERT INTO ai_usage
+                            (save_id,session_id,purpose,model,input_tokens,cached_tokens,cache_write_tokens,
+                             output_tokens,total_tokens,estimated_cost_usd,service_tier,created_at)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                            (save_id, session['id'], context['purpose'], *values, utc()))
+                    result = publish(conn, save_id, text)
             finally:
-                GENERATING.discard(save_id)
+                GENERATING.pop(save_id, None)
+            result['activity'] = activity(save_id)
+        return self.respond(result)
 
     def handle_advance(self, save_id, payload):
         return self.run_generation(save_id, begin_advance, publish_advance, payload)

@@ -22,6 +22,17 @@ OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
 OPENAI_TIMEOUT = 60
 
 
+class GeneratedText(str):
+    """AI text with provider-reported usage; mock providers may return plain strings."""
+
+    def __new__(cls, text, *, usage=None, model=None, service_tier=None):
+        result = super().__new__(cls, text)
+        result.usage = usage
+        result.model = model
+        result.service_tier = service_tier
+        return result
+
+
 def runtime_status():
     key = os.environ.get('TABLEFORGE_OPENAI_API_KEY', '').strip()
     model = os.environ.get('TABLEFORGE_MODEL', '').strip() or 'gpt-4o-mini'
@@ -158,4 +169,5 @@ class OpenAIProvider:
         text = str((choices[0].get('message') or {}).get('content') or '').strip()
         if not text:
             raise ValueError('OpenAI returned an empty response')
-        return text
+        return GeneratedText(text, usage=data.get('usage'), model=data.get('model') or self.model,
+                             service_tier=data.get('service_tier'))

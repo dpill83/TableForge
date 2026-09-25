@@ -133,9 +133,11 @@ Missing optional resources should be shown as warnings rather than errors.
 
 Current AdventureForge Stage 2 output may not yet include `manifest.json`.
 
-During the transition, TableForge should support **legacy cartridge detection**.
+New TableForge adventures require a manifest. A ZIP without one remains visible in the New Adventure screen so its files and missing requirement can be reviewed, but Begin Adventure is blocked. Previously created saves can still locate and use their original pre-manifest cartridge.
 
-For a selected folder, file collection, or ZIP without a manifest, TableForge may look for known filenames:
+During the transition, TableForge may use **legacy filename detection** to prefill resource selectors during inspection.
+
+For a selected ZIP, TableForge looks for known filenames when the manifest does not bind a resource:
 
 ```text
 module.md
@@ -156,11 +158,7 @@ It may also attempt conservative asset detection, for example:
 *dungeon*.png
 ```
 
-Legacy detection is a convenience feature only.
-
-TableForge must show the inferred bindings to the user before starting the adventure so they can correct incorrect guesses.
-
-Once `manifest.json` becomes standard, manifest-driven loading should be preferred.
+Filename detection only prefills the visible bindings. The user can correct those bindings before starting, and a missing manifest still blocks a new save.
 
 ---
 

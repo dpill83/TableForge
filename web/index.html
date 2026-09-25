@@ -28,27 +28,22 @@
       <div id="dropZone" class="drop">
         <div>
           <strong>Insert Cartridge</strong>
-          <div class="muted">Select an AdventureForge package or folder.</div>
+          <div class="muted">Load one AdventureForge ZIP containing manifest.json, module.md, and run-data.json.</div>
           <div class="actions" style="justify-content:center">
-            <button class="btn" id="browseFiles" type="button">Browse Files</button>
-            <button class="btn" id="browseFolder" type="button">Browse Folder</button>
-            <button class="btn" id="demoCartridge" type="button">Load Demo Cartridge</button>
+            <button class="btn" id="browseFiles" type="button">Load ZIP</button>
           </div>
         </div>
       </div>
-      <input id="filesInput" class="hidden" type="file" multiple>
-      <input id="folderInput" class="hidden" type="file" multiple webkitdirectory>
+      <input id="filesInput" class="hidden" type="file" accept=".zip,application/zip">
       <div id="cartridgeSummary" class="hidden" style="margin-top:16px">
         <div class="row">
           <div><strong>Dress Rehearsal at Hollow Well</strong><div class="muted" style="font-size:12px">Adventure cartridge detected</div></div>
           <span class="pill"><span class="dot good"></span>Ready</span>
         </div>
-        <div class="grid" style="margin-top:12px">
-          <div class="binding ok"><div class="row"><strong>Module View</strong><span style="color:var(--good);font-size:12px">Found</span></div><div class="muted" style="font-size:12px;margin-top:5px">module.md</div></div>
-          <div class="binding ok"><div class="row"><strong>Run Data</strong><span style="color:var(--good);font-size:12px">Found</span></div><div class="muted" style="font-size:12px;margin-top:5px">run-data.json</div></div>
-          <div class="binding ok"><div class="row"><strong>Cast / NPCs</strong><span style="color:var(--good);font-size:12px">Found</span></div><div class="muted" style="font-size:12px;margin-top:5px">cast.json</div></div>
-          <div class="binding warn"><div class="row"><strong>Music</strong><span style="color:var(--warn);font-size:12px">Optional</span></div><div class="muted" style="font-size:12px;margin-top:5px">music-cues.json</div></div>
-        </div>
+        <div id="manifestBinding" class="binding" style="margin-top:12px"></div>
+        <div class="muted" style="margin-top:14px">Choose which file in the ZIP fills each resource.</div>
+        <div class="grid" style="margin-top:8px"></div>
+        <div class="cartridge-files"><strong>Files in ZIP</strong><ul id="cartridgeFiles"></ul></div>
         <div class="actions"><button class="btn" id="removeCartridge">Remove</button><button class="btn primary" data-go="setup">Continue</button></div>
       </div>
     </div>
@@ -99,6 +94,7 @@
         <div><div class="muted" style="font-size:12px">Model</div><strong id="runtimeModel">local mock runtime</strong></div>
       </div>
       <div class="muted" style="margin-top:14px;font-size:13px">Set TABLEFORGE_OPENAI_API_KEY on the server to use OpenAI. TABLEFORGE_MODEL defaults to gpt-4o-mini. The key stays on the host.</div>
+      <div class="binding" id="globalUsage" style="margin-top:16px">AI usage is loading…</div>
     </div>
   </div>
 </section>
@@ -209,12 +205,14 @@
         <div id="feed" class="feed">
           <div id="feedInner" class="feed-inner"></div>
         </div>
+        <div id="typingIndicator" class="typing-indicator" aria-live="polite"></div>
       </main>
 
       <aside id="rightSidebar" class="sidebar right">
         <div class="sidebar-inner">
           <div class="section-title" style="margin-top:2px">Party</div>
           <div id="partyList"></div>
+          <div id="usageSummary" class="usage-summary"></div>
 
           <div id="pilotPanel" class="pilot-panel hidden">
             <div class="section-title" style="margin:0 0 8px">Pilot Controls</div>
@@ -234,6 +232,10 @@
       <button class="composer-handle" id="toggleComposer" title="Collapse composer" aria-label="Collapse composer">↓</button>
       <div id="tableStatus" class="sr-only" aria-live="polite">Waiting for table · 0 of 3 Ready</div>
       <div id="attachmentTray" class="attachment-tray hidden"></div>
+      <div id="draftNotice" class="draft-notice hidden" role="status">
+        <span><strong>The story moved on while you were writing.</strong> Your message hasn't been sent — review it against the latest AI-DM reply.</span>
+        <button class="btn small warn" id="keepDraft" type="button">Keep for this beat</button>
+      </div>
       <div class="composer-body">
         <div class="attachment-control">
           <button class="composer-square attachment-btn" id="attachmentBtn" type="button" title="Add attachment" aria-label="Add attachment">+</button>
@@ -270,6 +272,7 @@
 
 </div>
 
+<script src="/js/markdown.js" defer></script>
 <script src="/js/app.js" defer></script>
 </body>
 </html>
