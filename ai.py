@@ -47,7 +47,8 @@ class GeneratedText(str):
 
 def runtime_status():
     key = os.environ.get('TABLEFORGE_OPENAI_API_KEY', '').strip()
-    model = os.environ.get('TABLEFORGE_MODEL', '').strip() or 'gpt-4o-mini'
+    model = (os.environ.get('TABLEFORGE_AIDM_MODEL', '').strip()
+             or os.environ.get('TABLEFORGE_MODEL', '').strip() or 'gpt-4o-mini')
     if key:
         return {'provider': 'openai', 'model': model}
     return {'provider': 'mock', 'model': 'local mock runtime'}
@@ -84,7 +85,7 @@ def message_size(message):
 
 def split_beat(messages):
     """Split messages into completed history and the open beat after the latest AI-DM narration."""
-    messages = list(messages)
+    messages = [m for m in messages if m['kind'] != 'image']
     last_ai = max((index for index, message in enumerate(messages) if message['kind'] == 'ai'), default=-1)
     return messages[:last_ai + 1], messages[last_ai + 1:]
 
@@ -108,6 +109,7 @@ def recent_history(history, budget):
 
 def select_transcript(messages, summary=None, cap=TRANSCRIPT_CAP):
     """Always keep the open beat; fill the remaining budget with the newest unsummarized history."""
+    messages = [m for m in messages if m['kind'] != 'image']
     history, current = split_beat(unsummarized(messages, summary))
     current_chars = sum(message_size(message) for message in current)
     kept = recent_history(history, max(0, cap - current_chars))

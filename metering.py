@@ -66,3 +66,24 @@ def summary(conn, where='', params=()):
         'unmeteredRequests': missing_tokens,
         'unpricedRequests': missing_cost,
     }
+
+
+def image_cost(model, usage):
+    """Text-only image generation; rates verified 2026-09-25 on the model page."""
+    if model not in ('gpt-image-2.5-flare', 'gpt-image-2.5-flare-2026-09-08') or not isinstance(usage, dict):
+        return None
+    incoming, outgoing = token_count(usage.get('input_tokens')), token_count(usage.get('output_tokens'))
+    details = usage.get('input_tokens_details') or {}
+    if not isinstance(details, dict) or details.get('image_tokens', 0) or details.get('cached_tokens', 0):
+        return None
+    if incoming is None or outgoing is None:
+        return None
+    return (incoming * 5 + outgoing * 30) / 1_000_000
+
+
+def image_summary(conn, where='', params=()):
+    rows = conn.execute('SELECT status,completed_at,estimated_cost_usd FROM scene_images ' + where, params).fetchall()
+    missing = sum(row['estimated_cost_usd'] is None for row in rows)
+    return {'requests': len(rows), 'generated': sum(row['completed_at'] is not None for row in rows),
+            'unpricedRequests': missing,
+            'estimatedCostUsd': None if missing else round(sum(row['estimated_cost_usd'] for row in rows), 8)}

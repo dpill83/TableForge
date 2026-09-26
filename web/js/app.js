@@ -21,6 +21,7 @@
     return value>0 && value<0.0001?'≈<$0.0001':`≈$${value.toFixed(4)}`;
   };
   const usageLine = usage => `${tokenLabel(usage.totalTokens)} tokens · ${costLabel(usage)}`;
+  const imageUsageLine = usage => `${usage.generated} image${usage.generated===1?'':'s'} / ${usage.requests} request${usage.requests===1?'':'s'} · ${costLabel(usage)}`;
   const showRuntime = async () => {
     const info = await request('runtime');
     $('runtimeProvider').textContent = info.provider === 'openai' ? 'OpenAI' : 'Mock AI';
@@ -31,6 +32,7 @@
     try {
       const result=await request('usage');
       $('globalUsage').innerHTML=`<strong>All saved adventures</strong><div>${esc(usageLine(result.usage))}</div><div>${tokenLabel(result.usage.inputTokens)} input · ${tokenLabel(result.usage.outputTokens)} output · ${result.usage.requests} AI requests</div><div class="muted">${result.usage.unmeteredRequests?'Some requests did not return token counts. ':''}Tracked requests only; earlier activity is unavailable. Costs are estimates using standard text rates from ${esc(result.pricingAsOf)}. <a href="${esc(result.pricingUrl)}" target="_blank" rel="noopener">Pricing</a></div>`;
+      if(result.imageUsage) $('globalUsage').insertAdjacentHTML('beforeend',`<p><strong>Scene images (separate)</strong><br>${esc(imageUsageLine(result.imageUsage))}</p>`);
     } catch(error) { $('globalUsage').textContent='Restart the TableForge server to enable AI usage tracking.'; }
   };
   const show = async id => {
@@ -251,11 +253,28 @@
     $('partyList').querySelector('.portrait-button')?.addEventListener('click',openPortraitEditor);
     $('usageSummary').innerHTML=s.usage?`<strong>AI usage</strong><div>This session: ${esc(usageLine(s.usage.session))}</div><div>Playthrough: ${esc(usageLine(s.usage.save))}</div><div>${tokenLabel(s.usage.save.inputTokens)} input · ${tokenLabel(s.usage.save.outputTokens)} output</div><div>Estimated USD · <a href="${esc(s.usage.pricingUrl)}" target="_blank" rel="noopener">rates ${esc(s.usage.pricingAsOf)}</a></div>`:'<strong>AI usage</strong><div>Restart the TableForge server to enable tracking.</div>';
     $('feedInner').replaceChildren();
+    if(s.imageUsage) $('usageSummary').insertAdjacentHTML('beforeend',`<div class="image-usage"><strong>Scene images (separate)</strong><div>Session: ${esc(imageUsageLine(s.imageUsage.session))}</div><div>Playthrough: ${esc(imageUsageLine(s.imageUsage.save))}</div></div>`);
+    $('illustrateScene').disabled=!state.identity||!s.messages.some(m=>m.kind==='ai');
     for(const m of s.messages){
       const row=document.createElement('div');row.className='message '+(m.kind==='ai'?'ai':'player');
       row.innerHTML=`${avatar(s.players.find(p=>p.id===m.player_id),'avatar',m.kind==='ai'?'AI':m.name[0])}<div><div class="message-head"><strong>${esc(m.name)}</strong><span class="time">${new Date(m.created_at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</span></div><div class="message-body"></div><div class="message-actions"><button class="copy-message">Copy</button></div></div>`;
       row.querySelector('.message-body').innerHTML=TableForgeMarkdown.render(m.body);
       row.querySelector('.message-body').classList.add('markdown-body');
+      row.id='message-'+m.id;
+      if(m.kind==='image'){
+        const record=s.images?.find(i=>i.id===m.image_id);
+        if(record){
+          const link=document.createElement('a');
+          link.href=`/api/saves/${encodeURIComponent(s.save.id)}/images/${encodeURIComponent(record.id)}`;
+          link.target='_blank';link.rel='noopener';
+          const img=document.createElement('img');img.src=link.href;img.alt='Scene illustration';
+          img.className='scene-image';img.loading='lazy';link.append(img);
+          row.querySelector('.message-body').prepend(link);
+          const source=document.createElement('button');source.className='btn small';source.textContent='View source narration';
+          source.onclick=()=>document.getElementById('message-'+record.source_message_id)?.scrollIntoView({block:'center'});
+          row.querySelector('.message-actions').append(source);
+        }
+      }
       row.querySelector('.copy-message').onclick=async event=>{await navigator.clipboard.writeText(m.body);event.target.textContent='Copied';setTimeout(()=>event.target.textContent='Copy',1200);};
       row.dataset.searchText=(m.name+' '+m.body).toLowerCase();$('feedInner').append(row);
     }
@@ -471,7 +490,88 @@
       modal(`<h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge v2.0</p>${usage?`<p>AI usage this session: ${esc(usageLine(usage.session))}<br>Playthrough: ${esc(usageLine(usage.save))}<br>Estimates use <a href="${esc(usage.pricingUrl)}" target="_blank" rel="noopener">standard text rates</a> from ${esc(usage.pricingAsOf)}. Earlier activity is unavailable.</p>`:''}<div class="actions"><button class="btn" data-close>Close</button></div>`);
     } catch(error) { notify(error); }
   };
-  $('pilotToggle').onclick=()=>{state.pilot=!state.pilot;$('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');$('pilotPanel').classList.toggle('hidden',!state.pilot);refreshContextFlag();};
+  $('pilotToggle').onclick=()=>{state.pilot=!state.pilot;$('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');$('pilotPanel').classList.toggle('hidden',!state.pilot);refreshContextFlag();if(!state.pilot&&$('sceneImageDialog'))$('modalRoot').replaceChildren();};
+  let sceneDialog=null;
+  const imageDialogActive = dialog => sceneDialog===dialog&&!!$('sceneImageDialog')&&state.pilot&&state.save?.save.id===dialog.saveId;
+  const renderSceneImages = dialog => {
+    if(!imageDialogActive(dialog))return;
+    const busy=dialog.submitting||dialog.images.some(i=>i.status==='generating');
+    const enabled=state.save.imageSettings?.enabled;
+    $('generateScene').disabled=busy||!enabled||!!state.save.sessions.at(-1)?.ended_at;
+    $('sceneDirection').disabled=dialog.submitting;
+    $('sceneImageStatus').textContent=!enabled?'Configure the OpenAI API key on the host, then restart the server.':busy?'Generating a draft… You can close this window and keep playing. Reopen Illustrate Scene to review it.':'One low-quality landscape image per click. Each generation is a paid API request.';
+    const latest=state.save.messages.findLast(m=>m.kind==='ai');
+    $('sceneSourceNotice').textContent=latest?.id!==dialog.sourceId?'The story has moved on. This request still uses the narration shown below. Reopen this window to use the latest narration.':'';
+    const rows=dialog.images.filter(i=>['draft','generating','failed'].includes(i.status));
+    const key=JSON.stringify(rows)+String(latest?.id)+String(state.save.sessions.at(-1)?.ended_at);
+    if(dialog.rendered===key)return;
+    dialog.rendered=key;
+    const previews=$('sceneImagePreviews');previews.replaceChildren();
+    for(const item of rows.slice().reverse()){
+      const source=state.save.messages.find(m=>m.id===item.source_message_id);
+      const player=state.save.players.find(p=>p.id===item.player_id);
+      const card=document.createElement('section');card.className='scene-preview';
+      const heading=document.createElement('strong');heading.textContent=`${item.status==='draft'?'Draft illustration':item.status==='failed'?'Image request failed':'Generating illustration'} · ${player?.character||'Player'}`;card.append(heading);
+      const note=document.createElement('p');note.textContent=`Source narration: ${source?new Date(source.created_at).toLocaleString():'earlier narration'}${latest?.id!==item.source_message_id?' · The story has moved on.':''}`;card.append(note);
+      if(item.status==='draft'){
+        const img=document.createElement('img');img.className='scene-image';img.alt='Draft scene illustration';
+        img.src=`/api/saves/${dialog.saveId}/images/${item.id}?playerId=${encodeURIComponent(state.identity)}`;card.append(img);
+      }
+      if(item.error){const error=document.createElement('p');error.className='binding-issue';error.textContent=item.error;card.append(error);}
+      if(item.status==='draft'||item.status==='failed'){
+        const actions=document.createElement('div');actions.className='actions';
+        for(const action of (item.status==='draft'?['share','discard']:['discard'])){
+          const button=document.createElement('button');button.className='btn'+(action==='share'?' primary':'');
+          button.textContent=action==='share'?'Share with Table':'Discard';
+          button.disabled=action==='share'&&!!state.save.sessions.at(-1)?.ended_at;
+          button.onclick=async()=>{
+            if(!imageDialogActive(dialog))return;
+            actions.querySelectorAll('button').forEach(b=>b.disabled=true);
+            try{
+              await request(`saves/${dialog.saveId}/images/${item.id}/${action}`,{playerId:state.identity,pilot:true});
+              await refreshSceneImages(dialog);
+              const updated=await request('saves/'+dialog.saveId);
+              if(state.save?.save.id===dialog.saveId){state.save=updated;render();}
+            }catch(error){if(imageDialogActive(dialog)){$('sceneImageError').textContent=error.message;dialog.rendered=null;renderSceneImages(dialog);}}
+          };actions.append(button);
+        }card.append(actions);
+      }
+      previews.append(card);
+    }
+  };
+  const refreshSceneImages = async dialog => {
+    if(!imageDialogActive(dialog))return;
+    const result=await request(`saves/${dialog.saveId}/images?playerId=${encodeURIComponent(state.identity)}`);
+    if(!imageDialogActive(dialog))return;
+    dialog.images=result.images;renderSceneImages(dialog);
+  };
+  $('illustrateScene').onclick=async()=>{
+    if(!state.pilot||!state.identity||!state.save)return;
+    const source=state.save.messages.findLast(m=>m.kind==='ai');if(!source)return;
+    const dialog={saveId:state.save.save.id,sourceId:source.id,images:[],submitting:false,polling:false,rendered:null};sceneDialog=dialog;
+    modal(`<div id="sceneImageDialog"><h3>Illustrate Scene</h3><p id="sceneSourceNotice" class="binding-issue"></p><details><summary>Source: latest AI-DM narration</summary><div class="scene-source"></div></details><label>Visual direction (optional)<textarea id="sceneDirection" rows="3" maxlength="2000" placeholder="Show the ruined courtyard from the party's viewpoint."></textarea></label><p id="sceneImageStatus" role="status" aria-live="polite"></p><p id="sceneImageError" class="binding-issue" role="alert"></p><div class="actions"><button class="btn" data-close>Close</button><button class="btn primary" id="generateScene" disabled>Generate Draft</button></div><div id="sceneImagePreviews"></div></div>`,'wide');
+    $('sceneImageDialog').querySelector('.scene-source').textContent=source.body;
+    $('generateScene').onclick=async()=>{
+      if(!imageDialogActive(dialog)||dialog.submitting)return;
+      dialog.submitting=true;const direction=$('sceneDirection').value;
+      $('sceneImageError').textContent='';renderSceneImages(dialog);
+      try{
+        const requestId=typeof crypto.randomUUID==='function'?crypto.randomUUID():'10000000-1000-4000-8000-100000000000'.replace(/[018]/g,c=>(Number(c)^crypto.getRandomValues(new Uint8Array(1))[0]&15>>Number(c)/4).toString(16));
+        await request('saves/'+dialog.saveId+'/images',{playerId:state.identity,pilot:true,requestId,sourceMessageId:dialog.sourceId,direction});
+      }catch(error){if(imageDialogActive(dialog))$('sceneImageError').textContent=error.message;}
+      finally{
+        dialog.submitting=false;
+        if(imageDialogActive(dialog)){try{await refreshSceneImages(dialog);}catch(error){$('sceneImageError').textContent=error.message;}renderSceneImages(dialog);}
+      }
+    };
+    try{await refreshSceneImages(dialog);}catch(error){if(imageDialogActive(dialog))$('sceneImageError').textContent=error.message;}
+  };
+  setInterval(async()=>{
+    const dialog=sceneDialog;if(!dialog||!imageDialogActive(dialog)||dialog.polling)return;
+    dialog.polling=true;
+    try{await refreshSceneImages(dialog);}catch(error){if(imageDialogActive(dialog))$('sceneImageError').textContent=error.message;}
+    finally{dialog.polling=false;}
+  },2500);
   $('askAi').onclick=()=>{
     if(!state.pilot||!state.save||!state.identity)return;
     modal('<h3>Ask AI-DM</h3><p>Pilot conversation is saved separately from the table chat. Asking does not change Ready or advance the table.</p><div id="pilotThread" class="pilot-chat-log" role="log" aria-label="Pilot conversation"></div><div id="pilotAskStatus" class="muted" role="status" aria-live="polite"></div><label>Question<textarea id="pilotAsk" rows="4" maxlength="20000" placeholder="Ask the AI-DM a question"></textarea></label><div class="actions"><button class="btn" data-close>Close</button><button class="btn primary" id="pilotSend">Send question</button></div>');

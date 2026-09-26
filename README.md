@@ -10,9 +10,25 @@ Requires Python 3.10 or newer. From this repository:
 python3 server.py
 ```
 
-Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in a browser. On Windows, `py server.py` also works. Use **New Adventure → Load ZIP** to select one cartridge containing `manifest.json`, `module.md`, and `run-data.json`. Review the files and bindings, add players, begin, choose your identity, and send a message. Sending marks that player Ready; players can still Ready without sending or Unready before generation. When everyone is Ready, the table advances in normal play. Without `TABLEFORGE_OPENAI_API_KEY`, the server uses a local mock AI-DM. Set `TABLEFORGE_OPENAI_API_KEY` on the host to use OpenAI; `TABLEFORGE_MODEL` defaults to `gpt-4o-mini`. The key stays on the server. **Load Adventure** restores the saved transcript and Ready state after restart. Data is stored in `data/` and excluded from Git.
+Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in a browser. On Windows, `py server.py` also works. Use **New Adventure → Load ZIP** to select one cartridge containing `manifest.json`, `module.md`, and `run-data.json`. Review the files and bindings, add players, begin, choose your identity, and send a message. Sending marks that player Ready; players can still Ready without sending or Unready before generation. When everyone is Ready, the table advances in normal play. Without `TABLEFORGE_OPENAI_API_KEY`, the server uses a local mock AI-DM. Set `TABLEFORGE_OPENAI_API_KEY` on the host to use OpenAI; `TABLEFORGE_AIDM_MODEL` defaults to `gpt-4o-mini`. The key stays on the server. **Load Adventure** restores the saved transcript and Ready state after restart. Data is stored in `data/` and excluded from Git.
 
 New Adventure requires `manifest.json` with a title and reads its resource paths. It detects known filenames for undeclared roles, lists every file in the ZIP, and lets each resource selector correct a missing or mistaken path. Missing required resources and invalid selections block Begin Adventure. The selected bindings are saved with that playthrough, leaving the cartridge and other saves unchanged. Previously created saves can still locate their original pre-manifest cartridges.
+
+### Keep your API key between restarts
+
+Create a `.env` file alongside `server.py` (copy `.env.example` if needed), then enter your key locally:
+
+```dotenv
+TABLEFORGE_OPENAI_API_KEY=your-api-key-here
+```
+
+TableForge loads this file at startup, including when launched from another working directory. Restart the server after editing it. The same key is used for narration and scene images. Optional settings are `TABLEFORGE_AIDM_MODEL`, `TABLEFORGE_IMAGE_MODEL`, and `TABLEFORGE_DATA`; examples are in `.env.example`.
+
+Variables already set in the launching terminal take precedence over `.env`, including empty values. To use the file instead of a previously entered PowerShell key, remove the terminal override with `Remove-Item Env:TABLEFORGE_OPENAI_API_KEY -ErrorAction SilentlyContinue`, or launch from a new terminal.
+
+`TABLEFORGE_MODEL` is still accepted as a legacy fallback. If both model settings are nonempty, `TABLEFORGE_AIDM_MODEL` wins. Browse the [OpenAI model catalog](https://developers.openai.com/api/docs/models) for narration models and the [image model guide](https://developers.openai.com/api/docs/guides/image-prompting) for image models. Copy the API model ID into the appropriate setting and restart TableForge. Narration currently uses Chat Completions, so choose a text-output model that supports that endpoint; images use the Image API.
+
+The `.env` file is plain text, excluded from Git, and outside the browser-served `web/` directory. Keep it private. The loader supports `KEY=value`, optional quotes, and comments; values are literal, so Windows paths work without escaping backslashes. Do not paste PowerShell assignment commands into `.env`.
 
 For local network testing, launch with `python3 server.py --host 0.0.0.0` and use the host computer's LAN address. This initial server has no login or access control, so only expose it on a trusted network.
 
@@ -21,6 +37,16 @@ The current build provides real cartridge validation, SQLite saves, messages, Re
 Each player can click their portrait in the Party list to open the editor, then click its square preview to choose an image. Drag to position it and zoom before saving a square crop. PNG, JPEG, and WebP source images up to 20 MB are supported; the saved crop is a 320 × 320 image. The same preview can be clicked again to replace the image, and the editor can remove a saved portrait. Portraits are stored with the playthrough in `data/tableforge.sqlite3` (or the configured `TABLEFORGE_DATA` directory), and appear in the join screen, Party list, and table chat.
 
 The Play Screen sidebar shows reported OpenAI tokens and an estimated USD cost for the current session and playthrough. Options shows totals across saved adventures. Tracking begins with requests made after this update; earlier API activity cannot be reconstructed from the save. Estimates use standard text prices dated 2026-09-25 in `metering.py`. Models without a known rate still show tokens, with cost marked unavailable. The OpenAI billing dashboard remains the source of truth for charges.
+
+### Illustrate Scene (experimental)
+
+After an AI-DM narration, enable **Pilot Mode → Illustrate Scene**. Review the source narration, optionally add visual direction, and choose **Generate Draft**. The server uses the existing `TABLEFORGE_OPENAI_API_KEY` with the OpenAI Image API. `TABLEFORGE_IMAGE_MODEL` defaults to `gpt-image-2.5-flare`, independently of the narration model. Each explicit request generates one low-quality 1536 × 1024 JPEG. Your API project must have image-model access and billing enabled; organization verification may be required. See the [OpenAI image guide](https://developers.openai.com/api/docs/guides/image-generation).
+
+Generation uses only the selected public narration and visual direction, without cartridge secrets, summaries, or Pilot conversations. The request keeps its original narration even if play moves on. It runs independently of narration, Ready, and Combat Mode. Only one image request can run per save at a time. Close the dialog to keep playing; reopen it to review saved drafts. Choose **Share with Table** to append the illustration to chat, or **Discard** to remove the draft image. A shared illustration links back to its source narration and is excluded from AI-DM context and campaign summaries.
+
+Image bytes and request metadata are stored with the save in `tableforge.sqlite3`, following the existing portrait storage approach. Shared images and unreviewed drafts survive reloads and server restarts. Discard removes the image bytes while retaining request metadata and usage. Pilot Mode remains a UI safety measure for the trusted table, not an authentication boundary. Any trusted player in Pilot Mode can review a draft.
+
+Image requests and estimated costs appear separately from text usage in the sidebar and Options. The Flare estimate uses reported text input and image output tokens at the [model's rates](https://developers.openai.com/api/docs/models/gpt-image-2.5-flare), dated 2026-09-25. Unknown models, missing usage, and failed or interrupted requests show cost unavailable. Discarding an image does not refund its generation. Requests can take up to a few minutes; failures and interrupted requests are never automatically retried. Check provider usage before explicitly retrying an uncertain request.
 
 Run the HTTP workflow tests with `python3 -m unittest discover -s tests -v`.
 

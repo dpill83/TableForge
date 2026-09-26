@@ -68,7 +68,7 @@ class FlowTest(unittest.TestCase):
         server.DATA = self.path
         server.GENERATING.clear()
         server.initialize()
-        self.env = patch.dict(os.environ, {'TABLEFORGE_OPENAI_API_KEY': '', 'TABLEFORGE_MODEL': ''})
+        self.env = patch.dict(os.environ, {'TABLEFORGE_OPENAI_API_KEY': '', 'TABLEFORGE_AIDM_MODEL': '', 'TABLEFORGE_MODEL': ''})
         self.env.start()
         self.http = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
         self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)

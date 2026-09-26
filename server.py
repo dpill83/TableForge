@@ -15,13 +15,16 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import ai
 import metering
+import scene_images
 import module_context
+from local_config import load_env
 
 ROOT = Path(__file__).resolve().parent
+load_env(ROOT / '.env')
 WEB = ROOT / "web"
 DATA = Path(os.environ.get("TABLEFORGE_DATA", ROOT / "data"))
 LOCK = threading.RLock()
@@ -165,6 +168,9 @@ def initialize():
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(messages)')}
         if 'session_id' not in columns:
             conn.execute('ALTER TABLE messages ADD COLUMN session_id TEXT')
+        if 'image_id' not in columns:
+            conn.execute('ALTER TABLE messages ADD COLUMN image_id TEXT')
+        scene_images.initialize(conn)
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(cartridges)')}
         if 'content_hash' not in columns:
             conn.execute('ALTER TABLE cartridges ADD COLUMN content_hash TEXT')
@@ -390,6 +396,12 @@ def snapshot(conn, save_id):
         'checkpoint': checkpoint,
         'summary': dict(summary) if summary else None,
         'activity': activity(save_id),
+        'images': scene_images.list_images(conn, save_id, shared_only=True),
+        'imageSettings': scene_images.settings(),
+        'imageUsage': {
+            'session': metering.image_summary(conn, 'WHERE session_id=?', (sessions[-1]['id'],)) if sessions else metering.image_summary(conn, 'WHERE 0'),
+            'save': metering.image_summary(conn, 'WHERE save_id=?', (save_id,)),
+        },
         'usage': {
             'session': metering.summary(conn, 'WHERE session_id=?', (sessions[-1]['id'],)) if sessions else metering.summary(conn, 'WHERE 0'),
             'save': metering.summary(conn, 'WHERE save_id=?', (save_id,)),
@@ -561,6 +573,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             parts = path.strip('/').split('/')
+            if len(parts) in (4, 5) and parts[:2] == ['api', 'saves'] and parts[3] == 'images':
+                return self.get_images(parts)
             if len(parts) == 6 and parts[:2] == ['api', 'saves'] and parts[3] == 'players' and parts[5] == 'portrait':
                 with LOCK, db() as conn:
                     portrait = conn.execute('SELECT mime,image FROM player_portraits WHERE save_id=? AND player_id=?',
@@ -580,6 +594,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == '/api/usage':
                 with LOCK, db() as conn:
                     return self.respond({'usage': metering.summary(conn),
+                                         'imageUsage': metering.image_summary(conn),
                                          'pricingAsOf': metering.PRICING_AS_OF,
                                          'pricingUrl': metering.PRICING_URL})
             if path == '/api/saves':
@@ -623,6 +638,10 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.body()
             path = urlparse(self.path).path
             parts = path.strip('/').split('/')
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'images':
+                return self.handle_image(parts[2], payload)
+            if len(parts) == 6 and parts[:2] == ['api', 'saves'] and parts[3] == 'images' and parts[5] in ('share', 'discard'):
+                return self.resolve_image(parts[2], parts[4], parts[5], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'advance':
                 return self.handle_advance(parts[2], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'ask':
@@ -817,6 +836,116 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({'error': str(error), 'code': 'stale_beat', 'beat': error.beat}, 409)
         except (ValueError, KeyError, TypeError, json.JSONDecodeError, zipfile.BadZipFile, UnicodeDecodeError) as error:
             self.respond({'error': str(error)}, 400)
+
+    def get_images(self, parts):
+        save_id = parts[2]
+        with LOCK, db() as conn:
+            if len(parts) == 4:
+                player_id = parse_qs(urlparse(self.path).query).get('playerId', [None])[0]
+                require_player(snapshot(conn, save_id), player_id)
+                return self.respond({'images': scene_images.list_images(conn, save_id),
+                                     'settings': scene_images.settings()})
+            row = conn.execute('SELECT status,image FROM scene_images WHERE save_id=? AND id=?',
+                               (save_id, parts[4])).fetchone()
+            if not row or row['status'] not in ('draft', 'shared') or not row['image']:
+                return self.send_error(404)
+            if row['status'] == 'draft':
+                player_id = parse_qs(urlparse(self.path).query).get('playerId', [None])[0]
+                require_player(snapshot(conn, save_id), player_id)
+            content = row['image']
+        self.send_response(200)
+        self.send_header('Content-Type', 'image/jpeg')
+        self.send_header('Content-Length', str(len(content)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        self.wfile.write(content)
+
+    def handle_image(self, save_id, payload):
+        with LOCK, db() as conn:
+            state = snapshot(conn, save_id)
+            player = require_player(state, payload.get('playerId'))
+            if payload.get('pilot') is not True:
+                raise ValueError('Enable Pilot Mode to illustrate a scene.')
+            try:
+                image_id = str(uuid.UUID(payload.get('requestId', '')))
+            except (ValueError, TypeError, AttributeError) as error:
+                raise ValueError('A valid image request ID is required.') from error
+            existing = conn.execute('SELECT save_id,player_id FROM scene_images WHERE id=?', (image_id,)).fetchone()
+            if existing:
+                if existing['save_id'] != save_id or existing['player_id'] != player['id']:
+                    raise ValueError('This image request belongs to another player or save.')
+                return self.respond({'images': scene_images.list_images(conn, save_id)})
+            session = active_session(conn, save_id)
+            if not session:
+                raise ValueError('Start the next session before illustrating a scene.')
+            settings = scene_images.settings()
+            if not settings['enabled']:
+                raise ValueError('Configure TABLEFORGE_OPENAI_API_KEY on the server to illustrate scenes.')
+            if conn.execute("SELECT 1 FROM scene_images WHERE save_id=? AND status='generating'", (save_id,)).fetchone():
+                raise ValueError('A scene image is already generating for this table.')
+            source = next((m for m in state['messages'] if m['id'] == payload.get('sourceMessageId') and m['kind'] == 'ai'), None)
+            if not source:
+                raise ValueError('Choose an AI-DM narration from this save.')
+            direction = payload.get('direction', '')
+            if not isinstance(direction, str) or len(direction) > 2000:
+                raise ValueError('Visual direction must be at most 2,000 characters.')
+            if len(source['body']) > 60000:
+                raise ValueError('This narration is too long to illustrate in one request.')
+            prompt = scene_images.prompt_for(source['body'], direction.strip())
+            conn.execute('''INSERT INTO scene_images
+                (id,save_id,session_id,player_id,source_message_id,direction,prompt,model,quality,size,status,created_at)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (image_id, save_id, session['id'], player['id'], source['id'], direction.strip(), prompt,
+                 settings['model'], settings['quality'], settings['size'], 'generating', utc()))
+        # Keep the request outside the database lock and the AI-DM generation lock.
+        try:
+            generated = scene_images.generate(prompt, settings['model'])
+            with LOCK, db() as conn:
+                conn.execute("""UPDATE scene_images SET status='draft',image=?,model=?,usage=?,estimated_cost_usd=?,completed_at=?
+                                WHERE id=?""", (generated.data, generated.model, json.dumps(generated.usage),
+                                metering.image_cost(generated.model, generated.usage), utc(), image_id))
+                conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+        except Exception as error:
+            message = str(error) if isinstance(error, ValueError) else 'The image could not be saved or generated. Check provider usage before retrying.'
+            with LOCK, db() as conn:
+                conn.execute("UPDATE scene_images SET status='failed',error=? WHERE id=?", (message, image_id))
+                conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+            raise ValueError(message) from error
+        with LOCK, db() as conn:
+            result = {'images': scene_images.list_images(conn, save_id)}
+        return self.respond(result)
+
+    def resolve_image(self, save_id, image_id, action, payload):
+        with LOCK, db() as conn:
+            state = snapshot(conn, save_id)
+            player = require_player(state, payload.get('playerId'))
+            if payload.get('pilot') is not True:
+                raise ValueError('Enable Pilot Mode to review scene images.')
+            row = conn.execute('SELECT * FROM scene_images WHERE save_id=? AND id=?', (save_id, image_id)).fetchone()
+            if not row:
+                raise ValueError('Scene image not found.')
+            target = 'shared' if action == 'share' else 'discarded'
+            if row['status'] == target:
+                return self.respond({'images': scene_images.list_images(conn, save_id)})
+            if row['status'] != 'draft' and not (action == 'discard' and row['status'] == 'failed'):
+                raise ValueError('This scene image is no longer awaiting review.')
+            stamp = utc()
+            if action == 'share':
+                session = active_session(conn, save_id)
+                if not session:
+                    raise ValueError('Start the next session before sharing an image.')
+                conn.execute('''INSERT INTO messages (save_id,session_id,player_id,kind,name,body,created_at,image_id)
+                                VALUES (?,?,?,?,?,?,?,?)''',
+                             (save_id, session['id'], player['id'], 'image', player['character'],
+                              'Scene illustration · Inspired by an AI-DM narration. Illustrative, not authoritative.', stamp, image_id))
+                conn.execute("UPDATE scene_images SET status='shared',shared_at=?,shared_by=?,resolved_by=? WHERE id=?",
+                             (stamp, player['id'], player['id'], image_id))
+            else:
+                conn.execute("UPDATE scene_images SET status='discarded',image=NULL,resolved_by=? WHERE id=?", (player['id'], image_id))
+            conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (stamp, save_id))
+            result = {'images': scene_images.list_images(conn, save_id)}
+        return self.respond(result)
 
     def run_generation(self, save_id, begin, publish, payload):
         with LOCK, db() as conn:
