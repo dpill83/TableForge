@@ -187,6 +187,7 @@ def build_context(state, data_dir, purpose='advance'):
         'beat': state['save']['beat'],
         'summary': {'body': summary['body'], 'throughMessageId': summary['through_message_id']} if summary else None,
         'messages': [{'kind': m['kind'], 'name': m['name'], 'body': m['body']} for m in messages],
+        'cartridgeResources': adventure.optional_resources,
     }
     report = {
         'module': {**module_report(module), **focus, 'fullChars': len(adventure.module_text),
@@ -251,6 +252,7 @@ def chat_messages(context):
         return summary_chat_messages(context)
     system = context['narrationPrompt']['instructions'] + context.get('locationInstructions', '')
     system += f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
+    system += optional_resource_text(context)
     system += summary_text(context)
     if 'runData' in context:
         system += '\n\nRun-data (authored reference, not party knowledge):\n' + json.dumps(context['runData'], ensure_ascii=False)
@@ -282,6 +284,7 @@ def chat_messages(context):
 
 def ask_chat_messages(context):
     system = ASK_PROMPT + f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
+    system += optional_resource_text(context)
     system += summary_text(context)
     table = context.get('messages') or []
     if table:
@@ -296,6 +299,25 @@ def ask_chat_messages(context):
     if not any(item['role'] == 'user' for item in messages):
         messages.append({'role': 'user', 'content': 'The Pilot is waiting for an operational answer.'})
     return messages
+
+
+def optional_resource_text(context):
+    """Make bound Stage 2 companion artifacts available as authored reference."""
+    resources = context.get('cartridgeResources') or {}
+    if not resources:
+        return ''
+    parts, remaining = [], 60000
+    for name, value in resources.items():
+        body = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+        if remaining <= 0:
+            break
+        truncated = len(body) > min(20000, remaining)
+        body = body[:min(20000, remaining)]
+        remaining -= len(body)
+        if truncated:
+            body += '\n[TableForge truncated this companion file to fit the AI context budget.]'
+        parts.append(f'\n\n{name} (authored reference, not proof of party discovery):\n{body}')
+    return ''.join(parts)
 
 
 def summary_chat_messages(context):

@@ -121,6 +121,7 @@
       if(upload!==state.bindingRequest) return;
       state.cartridge = cartridge;
       $('setupSaveName').value=state.cartridge.title;
+      setSetupPlayers(cartridge.setupPlayers);
       renderCartridge();
     } catch(error) { if(upload===state.bindingRequest) notify(error); }
   };
@@ -146,11 +147,12 @@
     const grid=card.querySelector('.grid');
     grid.innerHTML=Object.entries(c.resources).map(([label,file]) => {
       const issue=c.invalid?.[label];
+      const warning=c.warnings?.[label];
       const required=c.missing.includes(label);
-      const status=issue?'Invalid':required?'Required':file?'Found':'Optional';
-      const tone=issue||required?'bad':file?'ok':'warn';
+      const status=issue?'Invalid':required?'Required':warning?'Review':file?'Found':'Optional';
+      const tone=issue||required?'bad':warning?'warn':file?'ok':'warn';
       const missingOption=file && !c.files.includes(file) ? `<option value="${esc(file)}">Missing: ${esc(file)}</option>` : '';
-      return `<label class="binding ${tone}"><div class="row"><strong>${esc(label)}</strong><span>${status}</span></div><select data-resource="${esc(label)}"><option value="">${required?'Select required file':'Not selected'}</option>${missingOption}${c.files.map(path=>`<option value="${esc(path)}">${esc(path)}</option>`).join('')}</select>${issue?`<span class="binding-issue">${esc(issue)}</span>`:''}</label>`;
+      return `<label class="binding ${tone}"><div class="row"><strong>${esc(label)}</strong><span>${status}</span></div><select data-resource="${esc(label)}"><option value="">${required?'Select required file':'Not selected'}</option>${missingOption}${c.files.map(path=>`<option value="${esc(path)}">${esc(path)}</option>`).join('')}</select>${issue?`<span class="binding-issue">${esc(issue)}</span>`:warning?`<span class="muted">${esc(warning)}</span>`:''}</label>`;
     }).join('');
     grid.querySelectorAll('select[data-resource]').forEach(select=>{
       select.value=c.resources[select.dataset.resource] || '';
@@ -167,6 +169,7 @@
           const result=await request('cartridges/'+current.id+'/validate',{resources:current.resources});
           if(state.cartridge!==current || sequence!==state.bindingRequest) return;
           Object.assign(current,result);
+          setSetupPlayers(result.setupPlayers);
           if($('setupSaveName').value===previousTitle) $('setupSaveName').value=current.title;
         } catch(error) {
           if(state.cartridge!==current || sequence!==state.bindingRequest) return;
@@ -182,9 +185,9 @@
     });
     const next=card.querySelector('[data-go="setup"]');
     next.disabled=!!(c.validating || c.validationError || manifestMissing || c.missing.length || Object.keys(c.invalid || {}).length);
-    card.querySelector('.pill').textContent=c.validating?'Checking bindings':c.validationError?'Validation failed':manifestMissing||c.missing.length?'Required content missing':Object.keys(c.invalid || {}).length?'Invalid binding':'Ready';
+    card.querySelector('.pill').textContent=c.validating?'Checking bindings':c.validationError?'Validation failed':manifestMissing||c.missing.length?'Required content missing':Object.keys(c.invalid || {}).length?'Invalid binding':Object.keys(c.warnings || {}).length?'Ready · review warning':'Ready';
     $('setupAdventureTitle').textContent=c.title;
-    $('setupResourceSummary').innerHTML=Object.entries(c.resources).map(([label,file])=>`<div class="binding ${c.invalid?.[label]||c.missing.includes(label)?'bad':file?'ok':'warn'}"><strong>${esc(label)}</strong><div class="muted">${esc(file || 'Not selected')}</div></div>`).join('');
+    $('setupResourceSummary').innerHTML=Object.entries(c.resources).map(([label,file])=>`<div class="binding ${c.invalid?.[label]||c.missing.includes(label)?'bad':c.warnings?.[label]?'warn':file?'ok':'warn'}"><strong>${esc(label)}</strong><div class="muted">${esc(file || 'Not selected')}</div>${c.warnings?.[label]?`<div class="muted">${esc(c.warnings[label])}</div>`:''}</div>`).join('');
   };
   // The setup retains the approved player list, but never writes it until Begin Adventure.
   const rows=$('playerRows');
@@ -195,7 +198,12 @@
     row.querySelectorAll('input')[1].value=character;
     row.querySelector('button').onclick=()=>row.remove(); rows.append(row);
   };
-  [['Dan','George'],['Dani','Ethereal'],['Ted','Viktor']].forEach(pair=>addRow(...pair));
+  const setSetupPlayers=players=>{
+    rows.replaceChildren();
+    const roster=Array.isArray(players)&&players.length?players:[{player:'',character:''}];
+    roster.forEach(player=>addRow(player.player || '',player.character || ''));
+  };
+  setSetupPlayers([]);
   $('addPlayer').onclick=()=>addRow();
   $('beginAdventure').onclick=async()=>{
     if(!state.cartridge || state.cartridge.validating || state.cartridge.validationError ||
@@ -848,7 +856,22 @@
     };
   };
   $('reviewContext').onclick=openContextReview;
-  $('pilotMap').onclick=()=>modal('<h3>GM Map</h3><p>Map viewing will be connected to validated cartridge assets.</p><div class="actions"><button class="btn" data-close>Close</button></div>');
+  const openMaps=async()=>{
+    if(!state.save||!state.identity)return;
+    const pilot=state.pilot;
+    let result;
+    try{result=await request(`saves/${state.save.save.id}/assets?playerId=${encodeURIComponent(state.identity)}${pilot?'&pilot=true':''}`);}
+    catch(error){return notify(error);}
+    const items=result.assets.map(asset=>`<section class="note-card" data-asset="${esc(asset.id)}"><div class="row"><strong>${esc(asset.path.split('/').at(-1))}</strong><span>${asset.revealed?'Revealed':pilot?'Pilot only':''}</span></div><img src="${esc(asset.url)}" alt="${esc(asset.path.split('/').at(-1))}" style="display:block;max-width:100%;max-height:65vh;margin:12px auto">${pilot&&!asset.revealed?'<div class="actions"><button class="btn primary reveal-asset">Reveal to players</button></div>':''}</section>`).join('');
+    modal(`<h3>${pilot?'Cartridge Maps':'Maps'}</h3><p class="muted">${pilot?'Cartridge images stay hidden until a Pilot reveals them.':'Only maps revealed to the party appear here.'}</p><div class="note-list">${items||`<p>${pilot?'This cartridge has no packaged image assets.':'No maps have been revealed to the party.'}</p>`}</div><div class="actions"><button class="btn" data-close>Close</button></div>`,'wide');
+    $('modalRoot').querySelectorAll('.reveal-asset').forEach(button=>button.onclick=async()=>{
+      const assetId=button.closest('[data-asset]').dataset.asset;
+      if(!confirm('Reveal this cartridge image to every player in this save?'))return;
+      try{await request(`saves/${state.save.save.id}/assets/${assetId}/reveal`,{playerId:state.identity,pilot:true});await openMaps();}
+      catch(error){notify(error);}
+    });
+  };
+  $('pilotMap').onclick=openMaps;
   // Party knowledge: only what a Pilot writes down as known to the party. Nothing is read from the cartridge.
   const noteCategories={npcs:['npc','NPCs','NPC'],locations:['location','Locations','location'],notes:['world','World Notes','note']};
   const openNotes=(ref,editing=null)=>{
@@ -881,7 +904,7 @@
       };
     }
   };
-  document.querySelectorAll('.ref-open').forEach(b=>b.onclick=()=>noteCategories[b.dataset.ref]?openNotes(b.dataset.ref):modal(`<h3>${esc(b.textContent)}</h3><p>Player-safe reference entries will appear here after discovery tracking is built.</p><div class="actions"><button class="btn" data-close>Close</button></div>`));
+  document.querySelectorAll('.ref-open').forEach(b=>b.onclick=()=>noteCategories[b.dataset.ref]?openNotes(b.dataset.ref):b.dataset.ref==='map'?openMaps():modal(`<h3>${esc(b.textContent)}</h3><p>Player-safe reference entries will appear here after discovery tracking is built.</p><div class="actions"><button class="btn" data-close>Close</button></div>`));
   const toggle=(id,css,key,other,symbols)=>{state[key]=!state[key];$(other).classList.toggle('collapsed',state[key]);$(id).textContent=state[key]?symbols[1]:symbols[0];if(css)$('workarea').classList.toggle(css,state[key]);};
   $('toggleLeft').onclick=()=>toggle('toggleLeft','left-collapsed','left','leftSidebar',['‹','›']);
   $('toggleRight').onclick=()=>toggle('toggleRight','right-collapsed','right','rightSidebar',['›','‹']);

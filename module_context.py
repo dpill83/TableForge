@@ -4,6 +4,7 @@ run-data.json supplies the structure (rooms, connectsTo, monsters); module.md su
 authored prose, split on its `##`/`###` headings. Sections are matched by convention:
 
 - `### Area N: Name` under `## Areas` belongs to room N.
+- `## Area N: Name` and all of its `###` subsections also belong to room N.
 - `### Name (CR x)` under `## Stat blocks` is the stat block for monster `Name`.
 - `Player Briefing` and `Approach...` sections are sent only before the party reaches the site.
 - Every other section is core and is always sent, so nothing unrecognized is silently dropped.
@@ -17,6 +18,8 @@ from pathlib import Path
 APPROACH = 'approach'
 AREA_HEADING = re.compile(r'^Area\s+(\d+)\b', re.IGNORECASE)
 MARKER = re.compile(r'\[\s*Location\s*:\s*(Approach|Area\s*(\d+))[^\]]*\]', re.IGNORECASE)
+OPTIONAL_JSON = ('cast.json', 'continuity.json', 'scenes.json', 'music-cues.json')
+OPTIONAL_TEXT = ('cast.md', 'map-art-brief.md')
 
 
 def split_sections(text):
@@ -60,8 +63,11 @@ def classify(section):
     parent = (section['parent'] or '').lower()
     title = section['title']
     area = AREA_HEADING.match(title)
-    if parent == 'areas' and area:
+    if area and (section['level'] == 2 or parent == 'areas'):
         return 'area', int(area.group(1))
+    parent_area = AREA_HEADING.match(section['parent'] or '')
+    if section['level'] == 3 and parent_area:
+        return 'area', int(parent_area.group(1))
     if parent == 'stat blocks' and section['level'] == 3:
         return 'stat', stat_name(title)
     if title.lower().startswith(('player briefing', 'approach')):
@@ -69,18 +75,31 @@ def classify(section):
     return 'core', None
 
 
+def merge_area_sections(sections):
+    """Keep an authored level-2 area and its level-3 subsections as one focus unit."""
+    merged = []
+    for section in sections:
+        kind, key = classify(section)
+        if kind == 'area' and merged and merged[-1].get('kind') == 'area' and merged[-1].get('key') == key:
+            merged[-1]['text'] += section['text']
+            continue
+        item = dict(section)
+        item['kind'], item['key'] = kind, key
+        merged.append(item)
+    return merged
+
+
 class Adventure:
-    def __init__(self, module_text, run_data):
+    def __init__(self, module_text, run_data, optional_resources=None):
         self.run_data = run_data
         self.module_text = module_text
-        self.sections = split_sections(module_text)
+        self.optional_resources = optional_resources or {}
+        self.sections = merge_area_sections(split_sections(module_text))
         self.rooms = {}
         for room in run_data.get('rooms') or []:
             number = room.get('roomNumber')
             if isinstance(number, int):
                 self.rooms[number] = room
-        for section in self.sections:
-            section['kind'], section['key'] = classify(section)
         self.area_sections = {s['key']: s for s in self.sections if s['kind'] == 'area' and s['key'] in self.rooms}
         self.focused = bool(self.rooms) and set(self.rooms) <= set(self.area_sections)
         self.stat_sections = {s['key']: s for s in self.sections if s['kind'] == 'stat'}
@@ -249,7 +268,22 @@ def load(data_dir, cartridge_id, resources):
             run_data = json.loads(archive.read(run_name).decode('utf-8')) if run_name else {}
         except (KeyError, ValueError):
             run_data = {}
-    return Adventure(module_text, run_data if isinstance(run_data, dict) else {})
+        optional = {}
+        for role in OPTIONAL_JSON:
+            name = resources.get(role)
+            if name:
+                try:
+                    optional[role] = json.loads(archive.read(name).decode('utf-8'))
+                except (KeyError, UnicodeError, ValueError):
+                    pass
+        for role in OPTIONAL_TEXT:
+            name = resources.get(role)
+            if name:
+                try:
+                    optional[role] = archive.read(name).decode('utf-8')
+                except (KeyError, UnicodeError):
+                    pass
+    return Adventure(module_text, run_data if isinstance(run_data, dict) else {}, optional)
 
 
 def take_marker(text):

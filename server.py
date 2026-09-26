@@ -43,6 +43,7 @@ PORTRAIT_SIGNATURES = {
     'image/jpeg': lambda data: data.startswith(b'\xff\xd8\xff') and data.endswith(b'\xff\xd9'),
     'image/webp': lambda data: data.startswith(b'RIFF') and data[8:12] == b'WEBP',
 }
+ASSET_MIMES = {'image/png', 'image/jpeg', 'image/webp'}
 REQUIRED = ("module.md", "run-data.json", runtime_prompts.RESOURCE)
 OPTIONAL = ("cast.json", "cast.md", "continuity.json", "scenes.json", "music-cues.json", "map-art-brief.md")
 RESOURCE_KEYS = {
@@ -165,6 +166,12 @@ def initialize():
                 updated_by TEXT, updated_at TEXT NOT NULL, removed_at TEXT, removed_by TEXT,
                 FOREIGN KEY(save_id) REFERENCES saves(id)
             );
+            CREATE TABLE IF NOT EXISTS revealed_assets (
+                save_id TEXT NOT NULL, asset_id TEXT NOT NULL, path TEXT NOT NULL,
+                media_type TEXT NOT NULL, revealed_by TEXT, revealed_at TEXT NOT NULL,
+                PRIMARY KEY(save_id, asset_id),
+                FOREIGN KEY(save_id) REFERENCES saves(id)
+            );
             CREATE TABLE IF NOT EXISTS narration_prompts (
                 sha256 TEXT PRIMARY KEY, snapshot TEXT NOT NULL
             );
@@ -233,13 +240,40 @@ def package_manifest(files):
     return manifest, path
 
 
+def package_assets(files, manifest=None, manifest_path=None):
+    """Return inert image assets declared by the cartridge manifest."""
+    if manifest is None:
+        manifest, manifest_path = package_manifest(files)
+    declared = manifest.get('assets', [])
+    if not isinstance(declared, list):
+        raise ValueError('manifest.json assets must contain an array')
+    prefix = manifest_path.rsplit('/', 1)[0] + '/' if manifest_path and '/' in manifest_path else ''
+    assets, seen = [], set()
+    for item in declared:
+        if not isinstance(item, dict) or not isinstance(item.get('path'), str) or item.get('mediaType') not in ASSET_MIMES:
+            raise ValueError('manifest.json has an invalid image asset')
+        candidate = item['path'].replace('\\', '/')
+        if candidate not in files and prefix + candidate in files:
+            candidate = prefix + candidate
+        if candidate not in files:
+            raise ValueError('manifest.json image asset is not in the cartridge')
+        asset_id = hashlib.sha256(candidate.encode()).hexdigest()[:16]
+        if candidate in seen:
+            raise ValueError('manifest.json contains a duplicate image asset')
+        seen.add(candidate)
+        assets.append({'id': asset_id, 'path': candidate, 'mediaType': item['mediaType']})
+    return assets
+
+
 def validate_bindings(files, resources, require_manifest=True):
     if not isinstance(resources, dict) or any(key not in RESOURCE_KEYS for key in resources):
         raise ValueError('Invalid resource bindings')
     manifest, manifest_path = package_manifest(files)
+    assets = package_assets(files, manifest, manifest_path)
     bindings = {}
     missing = ['manifest.json'] if require_manifest and not manifest_path else []
     invalid = {}
+    warnings = {}
     if manifest_path and not str(manifest.get('title') or '').strip():
         invalid['manifest.json'] = 'Manifest needs a title'
     for role in REQUIRED + OPTIONAL:
@@ -273,13 +307,47 @@ def validate_bindings(files, resources, require_manifest=True):
             run_data = json.loads(files[run_path].decode('utf-8'))
             if not isinstance(run_data, dict):
                 raise ValueError('Run data must contain a JSON object')
+            rooms = run_data.get('rooms')
+            if rooms is not None and (not isinstance(rooms, list) or any(
+                    not isinstance(room, dict) or type(room.get('roomNumber')) is not int for room in rooms)):
+                raise ValueError('Run data rooms must be an array of objects with integer roomNumber values')
+            party = run_data.get('party')
+            if party is not None and not isinstance(party, list):
+                raise ValueError('Run data party must be an array')
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError):
             invalid['run-data.json'] = 'Run data must contain a UTF-8 JSON object'
+    for role in module_context.OPTIONAL_JSON:
+        path = bindings[role]
+        if path in files:
+            try:
+                json.loads(files[path].decode('utf-8'))
+            except (UnicodeDecodeError, json.JSONDecodeError):
+                invalid[role] = 'File must contain valid UTF-8 JSON'
+    for role in module_context.OPTIONAL_TEXT:
+        path = bindings[role]
+        if path in files:
+            try:
+                files[path].decode('utf-8')
+            except UnicodeDecodeError:
+                invalid[role] = 'File must contain UTF-8 text'
+    if module_path in files and run_data and 'module.md' not in invalid and 'run-data.json' not in invalid:
+        adventure = module_context.Adventure(files[module_path].decode('utf-8'), run_data)
+        if adventure.rooms and not adventure.focused:
+            absent = sorted(set(adventure.rooms) - set(adventure.area_sections))
+            warnings['module.md'] = ('Full module will be sent because these run-data rooms have no matching '
+                                     'Area headings: ' + ', '.join(map(str, absent)))
+    setup_players = []
+    if run_data:
+        for character in run_data.get('party') or []:
+            name = str(character.get('name') or '').strip() if isinstance(character, dict) else ''
+            if name:
+                setup_players.append({'player': '', 'character': name})
     title = str(manifest.get('title') or '').strip()
     if not title and run_data:
         title = str(run_data.get('title') or run_data.get('adventureTitle') or run_data.get('adventureName') or '').strip()
     return {'title': title or 'Untitled Adventure', 'resources': bindings,
-            'missing': missing, 'invalid': invalid, 'manifest': manifest_path}
+            'missing': missing, 'invalid': invalid, 'warnings': warnings, 'manifest': manifest_path,
+            'setupPlayers': setup_players, 'assets': assets}
 
 
 def inspect_cartridge(files):
@@ -700,6 +768,8 @@ class Handler(BaseHTTPRequestHandler):
             parts = path.strip('/').split('/')
             if len(parts) in (4, 5) and parts[:2] == ['api', 'saves'] and parts[3] == 'images':
                 return self.get_images(parts)
+            if len(parts) in (4, 5) and parts[:2] == ['api', 'saves'] and parts[3] == 'assets':
+                return self.get_assets(parts)
             if len(parts) == 6 and parts[:2] == ['api', 'saves'] and parts[3] == 'players' and parts[5] == 'portrait':
                 with LOCK, db() as conn:
                     portrait = conn.execute('SELECT mime,image FROM player_portraits WHERE save_id=? AND player_id=?',
@@ -860,6 +930,28 @@ class Handler(BaseHTTPRequestHandler):
                         conn.execute('INSERT INTO players (id,save_id,name,character) VALUES (?,?,?,?)', (str(uuid.uuid4()), save_id, player['name'].strip(), player['character'].strip()))
                     start_session(conn, save_id)
                     return self.respond(snapshot(conn, save_id), 201)
+                if len(parts) == 6 and parts[:2] == ['api', 'saves'] and parts[3] == 'assets' and parts[5] == 'reveal':
+                    save_id, asset_id = parts[2], parts[4]
+                    state = snapshot(conn, save_id)
+                    player = require_player(state, payload.get('playerId'))
+                    if payload.get('pilot') is not True:
+                        raise ValueError('Enable Pilot Mode to reveal a cartridge asset')
+                    assets = {asset['id']: asset for asset in package_assets(stored_cartridge_files(state['cartridge']['id']))}
+                    asset = assets.get(asset_id)
+                    if not asset:
+                        raise ValueError('Choose an image from this cartridge')
+                    stamp = utc()
+                    changed = conn.execute('INSERT OR IGNORE INTO revealed_assets '
+                                           '(save_id,asset_id,path,media_type,revealed_by,revealed_at) VALUES (?,?,?,?,?,?)',
+                                           (save_id, asset_id, asset['path'], asset['mediaType'], player['id'], stamp)).rowcount
+                    if changed:
+                        session = active_session(conn, save_id)
+                        conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) '
+                                     'VALUES (?,?,?,?,?,?)',
+                                     (save_id, session['id'], player['id'], 'asset_revealed',
+                                      json.dumps({'assetId': asset_id, 'path': asset['path']}), stamp))
+                        conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (stamp, save_id))
+                    return self.respond({'revealed': True, 'assetId': asset_id})
                 if len(parts) != 4 or parts[:2] != ['api', 'saves']:
                     return self.send_error(404)
                 save_id, action = parts[2:]
@@ -1028,6 +1120,36 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.end_headers()
         self.wfile.write(content)
+
+    def get_assets(self, parts):
+        save_id = parts[2]
+        query = parse_qs(urlparse(self.path).query)
+        player_id = query.get('playerId', [None])[0]
+        pilot = query.get('pilot', ['false'])[0] == 'true'
+        with LOCK, db() as conn:
+            state = snapshot(conn, save_id)
+            require_player(state, player_id)
+            files = stored_cartridge_files(state['cartridge']['id'])
+            assets = package_assets(files)
+            revealed = {row['asset_id'] for row in conn.execute(
+                'SELECT asset_id FROM revealed_assets WHERE save_id=?', (save_id,))}
+            if len(parts) == 4:
+                visible = assets if pilot else [asset for asset in assets if asset['id'] in revealed]
+                return self.respond({'assets': [{**asset, 'revealed': asset['id'] in revealed,
+                    'url': f'/api/saves/{save_id}/assets/{asset["id"]}?playerId={quote(player_id)}'
+                           + ('&pilot=true' if pilot else '')} for asset in visible]})
+            asset = next((item for item in assets if item['id'] == parts[4]), None)
+            if not asset or (not pilot and asset['id'] not in revealed):
+                return self.send_error(404)
+            image = files[asset['path']]
+            media_type = asset['mediaType']
+        self.send_response(200)
+        self.send_header('Content-Type', media_type)
+        self.send_header('Content-Length', str(len(image)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        self.wfile.write(image)
 
     def handle_image(self, save_id, payload):
         with LOCK, db() as conn:

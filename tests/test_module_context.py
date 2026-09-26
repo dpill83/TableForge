@@ -89,6 +89,27 @@ class RetrievalTest(unittest.TestCase):
         self.assertEqual(focused, MODULE)
         self.assertEqual(report['mode'], 'full')
 
+    def test_stage2_level_two_areas_include_their_subsections(self):
+        module = """# Adventure
+## Running Notes
+CORE
+## Area 1: Gate
+### Boxed Text
+GATE TEXT
+### DM Notes
+GATE SECRET
+## Area 4: Hall
+### Boxed Text
+HALL TEXT
+"""
+        adventure = module_context.Adventure(module, {'rooms': ROOMS[:2]})
+        self.assertTrue(adventure.focused)
+        focused, report = adventure.assemble(1)
+        self.assertIn('GATE TEXT', focused)
+        self.assertIn('GATE SECRET', focused)
+        self.assertIn('HALL TEXT', focused)
+        self.assertEqual(report['locationLabel'], 'Area 1: Gate')
+
 
 if __name__ == '__main__':
     unittest.main()

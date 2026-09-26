@@ -593,6 +593,73 @@ Flyman block.
         self.assertEqual(restored['cartridge']['title'], 'Manifest Adventure')
         self.assertIn('# Manifest story', ai.build_context(restored, self.path)['module'])
 
+    def test_cartridge_suggests_stage2_party_for_adventure_setup(self):
+        manifest = {'format': 'tableforge-adventure', 'formatVersion': 1,
+                    'title': 'Roster Adventure', 'resources': {}}
+        cartridge = self.cartridge_zip({
+            'manifest.json': json.dumps(manifest),
+            'module.md': '# Roster adventure',
+            'run-data.json': json.dumps({'adventureName': 'Roster Adventure', 'party': [
+                {'name': 'Viktor', 'class': 'Paladin'}, {'name': 'Ethereal', 'class': 'Druid'}]}),
+        })
+        self.assertEqual(cartridge['setupPlayers'], [
+            {'player': '', 'character': 'Viktor'}, {'player': '', 'character': 'Ethereal'}])
+
+    def test_optional_stage2_resources_reach_ai_context(self):
+        manifest = {'format': 'tableforge-adventure', 'formatVersion': 1,
+                    'title': 'Companion Files', 'resources': {'cast': 'cast.json', 'scenes': 'scenes.json'}}
+        cartridge = self.cartridge_zip({
+            'manifest.json': json.dumps(manifest),
+            'module.md': '# Companion Files',
+            'run-data.json': json.dumps({'adventureName': 'Companion Files'}),
+            'cast.json': json.dumps({'cast': [{'name': 'Sybil', 'role': 'patron'}]}),
+            'scenes.json': json.dumps({'scenes': [{'roomNumber': 1, 'reveal1': 'The bell moves'}]}),
+        })
+        save = self.api('/api/saves', {'cartridgeId': cartridge['id'],
+            'players': [{'name': 'Dan', 'character': 'George'}]})
+        preview = self.api(f"/api/saves/{save['save']['id']}/context")
+        prompt = preview['messages'][0]['content']
+        self.assertIn('cast.json (authored reference', prompt)
+        self.assertIn('Sybil', prompt)
+        self.assertIn('scenes.json (authored reference', prompt)
+        self.assertIn('The bell moves', prompt)
+
+    def test_room_heading_mismatch_warns_without_blocking_setup(self):
+        cartridge = self.cartridge_zip({
+            'manifest.json': json.dumps({'format': 'tableforge-adventure', 'formatVersion': 1,
+                                         'title': 'Mismatch', 'resources': {}}),
+            'module.md': '# Mismatch\n\n## Somewhere Else\nText',
+            'run-data.json': json.dumps({'adventureName': 'Mismatch',
+                                         'rooms': [{'roomNumber': 3, 'connectsTo': []}]}),
+        })
+        self.assertEqual(cartridge['missing'], [])
+        self.assertEqual(cartridge['invalid'], {})
+        self.assertIn('room', cartridge['warnings']['module.md'].lower())
+
+    def test_cartridge_asset_stays_hidden_until_pilot_reveals_it(self):
+        manifest = {'format': 'tableforge-adventure', 'formatVersion': 1, 'title': 'Mapped Adventure',
+                    'resources': {}, 'assets': [{'path': 'assets/map.png', 'mediaType': 'image/png'}]}
+        cartridge = self.cartridge_zip({
+            'manifest.json': json.dumps(manifest), 'module.md': '# Mapped Adventure',
+            'run-data.json': json.dumps({'adventureName': 'Mapped Adventure'}),
+            'assets/map.png': b'\x89PNG\r\n\x1a\nmap bytes',
+        })
+        self.assertEqual(cartridge['assets'][0]['path'], 'assets/map.png')
+        save = self.api('/api/saves', {'cartridgeId': cartridge['id'],
+            'players': [{'name': 'Dan', 'character': 'George'}]})
+        save_id, player = save['save']['id'], save['players'][0]['id']
+        self.assertEqual(self.api(f'/api/saves/{save_id}/assets?playerId={player}')['assets'], [])
+        pilot_assets = self.api(f'/api/saves/{save_id}/assets?playerId={player}&pilot=true')['assets']
+        asset = pilot_assets[0]
+        self.assertFalse(asset['revealed'])
+        self.api(f"/api/saves/{save_id}/assets/{asset['id']}/reveal",
+                 {'playerId': player, 'pilot': True})
+        visible = self.api(f'/api/saves/{save_id}/assets?playerId={player}')['assets']
+        self.assertTrue(visible[0]['revealed'])
+        with urllib.request.urlopen(self.base + visible[0]['url']) as response:
+            self.assertEqual(response.headers['Content-Type'], 'image/png')
+            self.assertEqual(response.read(), b'\x89PNG\r\n\x1a\nmap bytes')
+
     def test_manual_correction_is_per_save_and_server_validated(self):
         cartridge = self.cartridge_zip({
             'manifest.json': json.dumps({'format':'tableforge-adventure','formatVersion':1,
