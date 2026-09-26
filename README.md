@@ -16,12 +16,14 @@ New Adventure requires `manifest.json` with a title and reads its resource paths
 
 ### AI-DM runtime instructions
 
-New adventures use the bundled **AdventureForge Stage 3 v2.1.1** prompt with a
+New adventures use the **Stage 3 prompt supplied by their cartridge**, with a
 small TableForge integration layer for Pilot Mode and the shared conversation.
+AdventureForge's exporter includes its current prompt and binds it through
+`resources.stage3Prompt` in `manifest.json`. New saves require this resource.
 The first authorized AI-DM advance starts the opening sequence; later advances
 continue it. Each save retains its exact instructions across restarts and updates.
 Older saves keep their previous instructions until a player explicitly upgrades
-them through **Pilot Mode → Review Context → Use these instructions for this save…**.
+them through **Pilot Mode → Review Context → Use cartridge instructions for this save…**.
 See [AI-DM prompt integration](docs/AI-DM-PROMPTS.md) for source provenance,
 context behavior, save migration, and the upgrade procedure.
 

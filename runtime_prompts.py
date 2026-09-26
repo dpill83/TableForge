@@ -1,15 +1,15 @@
-"""Versioned narration instructions, snapshotted independently of cartridges."""
+"""Cartridge-supplied Stage 3 instructions plus the versioned console adapter."""
 import hashlib
 import json
+import re
 import sqlite3
 from pathlib import Path
 
 PROMPT_DIR = Path(__file__).resolve().parent / 'prompts'
-STAGE3_VERSION = '2.1.1'
 INTEGRATION_VERSION = '1'
 # Digests use UTF-8 text with LF newlines, independent of checkout line endings.
-SOURCE_SHA256 = '998e976d8ed55d9a1b610f7ab3741618f5aad0678c628b3fbd9446e16d937563'
 INTEGRATION_SHA256 = '8d1a4ebf1a3b2621b55279e043991eb994047ac47dc3761a6a2a0e0dbeeedd70'
+RESOURCE = 'stage3-run-prompt.md'
 LEGACY_INSTRUCTIONS = (
     'You are the AI-DM for TableForge, running an AdventureForge cartridge. '
     'Narrate the scene and play NPCs. Treat the transcript as what has already happened. '
@@ -40,11 +40,25 @@ def read_asset(name, expected):
     return text
 
 
-def default_snapshot():
-    source = read_asset(f'stage3-run-prompt-v{STAGE3_VERSION}.md', SOURCE_SHA256)
+def read_source(data):
+    try:
+        source = data.decode('utf-8-sig').replace('\r\n', '\n').replace('\r', '\n')
+    except UnicodeError as error:
+        raise ValueError('Stage 3 prompt must be UTF-8 Markdown') from error
+    versions = re.findall(r'\bpromptVersion\b[\s:*`]+(\d+\.\d+\.\d+)\b', source)
+    if not source.strip() or not versions or len(set(versions)) != 1:
+        raise ValueError('Stage 3 prompt needs a promptVersion banner (for example, 2.1.1) and the full prompt text')
+    return source, versions[0]
+
+
+def cartridge_snapshot(files, resources):
+    path = resources.get(RESOURCE)
+    if not path or path not in files:
+        raise ValueError('Cartridge is missing its Stage 3 run prompt. Re-export it from AdventureForge with stage3Prompt included.')
+    source, version = read_source(files[path])
     integration = read_asset(f'tableforge-integration-v{INTEGRATION_VERSION}.md', INTEGRATION_SHA256)
     instructions = integration + '\n\n---\n\n# AdventureForge Stage 3 source (integration above takes precedence)\n\n' + source
-    return make_snapshot('stage3', STAGE3_VERSION, INTEGRATION_VERSION, instructions, SOURCE_SHA256)
+    return make_snapshot('stage3', version, INTEGRATION_VERSION, instructions, digest(source))
 
 
 def metadata(prompt):

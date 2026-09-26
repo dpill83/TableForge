@@ -22,6 +22,9 @@ import metering
 import server
 import runtime_prompts
 
+STAGE3_NAME = 'stage3-run-prompt-v2.1.1.md'
+STAGE3_TEXT = (Path(__file__).parent / 'fixtures' / STAGE3_NAME).read_text(encoding='utf-8')
+
 
 class FakeProvider:
     def __init__(self, text='Narrated from the well.'):
@@ -106,6 +109,7 @@ class FlowTest(unittest.TestCase):
                 archive.writestr('manifest.json', json.dumps({'format': 'tableforge-adventure',
                     'formatVersion': 1, 'title': 'Hollow Well', 'resources': {}}))
                 archive.writestr('module.md', module)
+                archive.writestr(STAGE3_NAME, STAGE3_TEXT)
                 archive.writestr('run-data.json', '{"title":"Hollow Well"}')
             cartridge = self.api('/api/cartridges', {'kind':'zip','data':base64.b64encode(file.getvalue()).decode()})
         save = self.api('/api/saves', {'cartridgeId':cartridge['id'],'name':'Our game','players':[
@@ -117,7 +121,9 @@ class FlowTest(unittest.TestCase):
         self.api(f'/api/saves/{save_id}/ready', {'playerId':second,'ready':True})
         return save_id
 
-    def cartridge_zip(self, entries):
+    def cartridge_zip(self, entries, include_prompt=True):
+        if include_prompt:
+            entries.setdefault(STAGE3_NAME, STAGE3_TEXT)
         with io.BytesIO() as file:
             with zipfile.ZipFile(file, 'w') as archive:
                 for name, content in entries.items():
@@ -130,6 +136,7 @@ class FlowTest(unittest.TestCase):
                 archive.writestr('manifest.json', json.dumps({'format': 'tableforge-adventure',
                     'formatVersion': 1, 'title': 'Hollow Well', 'resources': {}}))
                 archive.writestr('module.md', '# Test adventure')
+                archive.writestr(STAGE3_NAME, STAGE3_TEXT)
                 archive.writestr('run-data.json', '{"title":"Hollow Well"}')
             cartridge = self.api('/api/cartridges', {'kind':'zip','data':base64.b64encode(file.getvalue()).decode()})
         self.assertEqual(cartridge['missing'], [])
@@ -156,7 +163,7 @@ class FlowTest(unittest.TestCase):
         cartridge=self.api('/api/cartridges', {'kind':'files','files':[
             {'name':'manifest.json','data':base64.b64encode(json.dumps({'format':'tableforge-adventure','formatVersion':1,'title':'A','resources':{}}).encode()).decode()},
             {'name':'module.md','data':base64.b64encode(b'# A').decode()}]})
-        self.assertEqual(cartridge['missing'], ['run-data.json'])
+        self.assertEqual(cartridge['missing'], ['run-data.json', runtime_prompts.RESOURCE])
         # Server must independently refuse an incomplete cartridge.
         with self.assertRaises(urllib.error.HTTPError):
             self.api('/api/saves', {'cartridgeId':cartridge['id'],'players':[{'name':'A','character':'B'}]})
@@ -169,6 +176,7 @@ class FlowTest(unittest.TestCase):
                 'formatVersion':1,'title':'Dress Rehearsal at Hollow Well','resources':{}}).encode()).decode()},
             {'name': 'module.md', 'data': base64.b64encode(module.encode()).decode()},
             {'name': 'run-data.json', 'data': base64.b64encode(run.encode()).decode()},
+            {'name': STAGE3_NAME, 'data': base64.b64encode(STAGE3_TEXT.encode()).decode()},
         ]})
         self.assertEqual(cartridge['missing'], [])
         self.assertEqual(cartridge['title'], 'Dress Rehearsal at Hollow Well')
@@ -185,7 +193,7 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(cartridge['missing'], ['manifest.json'])
         self.assertIsNone(cartridge['manifest'])
         self.assertEqual(cartridge['title'], 'Dress Rehearsal at Hollow Well')
-        self.assertEqual(sorted(cartridge['files']), ['module.md', 'run-data.json'])
+        self.assertEqual(sorted(cartridge['files']), ['module.md', 'run-data.json', STAGE3_NAME])
         error = self.api_error('/api/saves', {'cartridgeId': cartridge['id'],
             'players': [{'name':'Dan', 'character':'George'}]})
         self.assertIn('manifest.json', error['error'])
@@ -238,7 +246,7 @@ class FlowTest(unittest.TestCase):
         with patch.object(ai.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(response).encode())):
             result = ai.OpenAIProvider('test-key', 'gpt-6-sol').generate({
                 'purpose': 'advance', 'title': 'Test', 'module': '# Test', 'messages': [], 'beat': 1,
-                'narrationPrompt': runtime_prompts.default_snapshot()})
+                'narrationPrompt': runtime_prompts.legacy_snapshot()})
         self.assertEqual(result, 'The door opens.')
         self.assertEqual(result.usage['total_tokens'], 70)
         self.assertEqual(result.model, 'gpt-6-sol')
@@ -623,6 +631,7 @@ Flyman block.
             {'name':'Adventure/module.md', 'data':base64.b64encode(b'# Good module').decode()},
             {'name':'Adventure/run-data.json', 'data':base64.b64encode(b'{broken').decode()},
             {'name':'Adventure/good.json', 'data':base64.b64encode(b'{"title":"Good"}').decode()},
+            {'name': STAGE3_NAME, 'data': base64.b64encode(STAGE3_TEXT.encode()).decode()},
         ]})
         self.assertIn('run-data.json', cartridge['invalid'])
         error = self.api_error('/api/saves', {'cartridgeId':cartridge['id'], 'resources':cartridge['resources'],

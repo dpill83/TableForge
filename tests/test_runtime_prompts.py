@@ -13,10 +13,15 @@ import test_flow
 from test_module_context import MODULE, ROOMS
 
 
+def cartridge_prompt():
+    return runtime_prompts.cartridge_snapshot({test_flow.STAGE3_NAME: test_flow.STAGE3_TEXT.encode()},
+                                              {runtime_prompts.RESOURCE: test_flow.STAGE3_NAME})
+
+
 class PromptAssetsTest(unittest.TestCase):
-    def test_bundled_source_is_complete_and_adapter_has_precedence(self):
-        prompt = runtime_prompts.default_snapshot()
-        source = (runtime_prompts.PROMPT_DIR / 'stage3-run-prompt-v2.1.1.md').read_text(encoding='utf-8')
+    def test_cartridge_source_is_complete_and_adapter_has_precedence(self):
+        prompt = cartridge_prompt()
+        source = test_flow.STAGE3_TEXT
         self.assertTrue(prompt['instructions'].endswith(source))
         self.assertEqual(prompt['sourceSha256'], runtime_prompts.digest(source))
         self.assertLess(prompt['instructions'].index('These integration instructions take precedence'),
@@ -25,12 +30,12 @@ class PromptAssetsTest(unittest.TestCase):
 
     def test_missing_empty_changed_and_invalid_utf8_assets_fail_clearly(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(runtime_prompts, 'PROMPT_DIR', Path(directory)):
-            path = Path(directory) / 'stage3-run-prompt-v2.1.1.md'
+            path = Path(directory) / 'tableforge-integration-v1.md'
             for data in (None, b'', b'changed', b'\xff'):
                 if data is not None:
                     path.write_bytes(data)
                 with self.subTest(data=data), self.assertRaisesRegex(ValueError, 'Required AI-DM prompt'):
-                    runtime_prompts.default_snapshot()
+                    cartridge_prompt()
 
     def test_structured_data_keeps_opening_and_retrieved_numbers_with_room_focus(self):
         data = {'promptVersion': '1.1.5', 'party': [{'name': 'George', 'ac': 18}],
@@ -73,7 +78,7 @@ class PromptFlowTest(unittest.TestCase):
         state = self.new_save()
         save_id, player = state['save']['id'], state['players'][0]['id']
         preview = self.api(f'/api/saves/{save_id}/context')
-        prompt = runtime_prompts.default_snapshot()
+        prompt = cartridge_prompt()
         self.assertTrue(preview['messages'][0]['content'].startswith(prompt['instructions']))
         self.assertIn('Find the ledger.', preview['messages'][0]['content'])
         self.assertIn('"ac": 18', preview['messages'][0]['content'])
@@ -108,6 +113,69 @@ class PromptFlowTest(unittest.TestCase):
         self.assertIn('George: I look ahead.', [m['content'] for m in messages])
         self.assertIn('first AI-DM narration', messages[-1]['content'])
 
+    def test_newer_cartridge_prompt_is_used_without_a_tableforge_release(self):
+        source = test_flow.STAGE3_TEXT.replace('2.1.1', '9.4.0') + '\nNew adventure-specific runtime guidance.\n'
+        cartridge = self.cartridge_zip({
+            'manifest.json': json.dumps({'format': 'tableforge-adventure', 'formatVersion': 1, 'title': 'Future',
+                                        'resources': {'stage3Prompt': 'instructions/run.md'}}),
+            'module.md': '# Future adventure', 'run-data.json': '{}', 'instructions/run.md': source,
+        }, include_prompt=False)
+        self.assertEqual(cartridge['missing'], [])
+        state = self.api('/api/saves', {'cartridgeId': cartridge['id'], 'players': [{'name': 'Dan', 'character': 'George'}]})
+        preview = self.api(f'/api/saves/{state["save"]["id"]}/context')
+        self.assertEqual(preview['report']['narrationPrompt']['version'], '9.4.0')
+        self.assertIn('New adventure-specific runtime guidance.', preview['messages'][0]['content'])
+        self.assertEqual(state['cartridge']['resources'][runtime_prompts.RESOURCE], 'instructions/run.md')
+
+    def test_missing_invalid_and_ambiguous_cartridge_prompts_block_new_saves(self):
+        base = {'manifest.json': json.dumps({'format': 'tableforge-adventure', 'formatVersion': 1,
+                                            'title': 'Test', 'resources': {}}),
+                'module.md': '# Test', 'run-data.json': '{}'}
+        for extra in ({}, {runtime_prompts.RESOURCE: b'\xff'}, {runtime_prompts.RESOURCE: ''},
+                      {runtime_prompts.RESOURCE: '# Prompt moved\nUse the latest file.'},
+                      {'stage3-run-prompt-v2.1.1.md': test_flow.STAGE3_TEXT,
+                       'stage3-run-prompt-v9.4.0.md': test_flow.STAGE3_TEXT.replace('2.1.1', '9.4.0')}):
+            with self.subTest(extra=list(extra)):
+                cartridge = self.cartridge_zip({**base, **extra}, include_prompt=False)
+                self.assertTrue(runtime_prompts.RESOURCE in cartridge['missing'] or
+                                runtime_prompts.RESOURCE in cartridge['invalid'])
+                self.assertIn('error', self.api_error('/api/saves', {'cartridgeId': cartridge['id'],
+                    'players': [{'name': 'Dan', 'character': 'George'}]}))
+        self.assertEqual(self.api('/api/saves')['saves'], [])
+
+    def test_manifest_and_manual_binding_disambiguate_prompt_versions(self):
+        cartridge = self.cartridge_zip({
+            'folder/manifest.json': json.dumps({'format': 'tableforge-adventure', 'formatVersion': 1,
+                'title': 'Test', 'resources': {'stage3Prompt': 'stage3-run-prompt-v2.1.1.md'}}),
+            'module.md': '# Test', 'run-data.json': '{}',
+            'folder/stage3-run-prompt-v2.1.1.md': test_flow.STAGE3_TEXT,
+            'folder/stage3-run-prompt-v9.4.0.md': test_flow.STAGE3_TEXT.replace('2.1.1', '9.4.0'),
+        }, include_prompt=False)
+        self.assertEqual(cartridge['resources'][runtime_prompts.RESOURCE], 'folder/stage3-run-prompt-v2.1.1.md')
+        bindings = {**cartridge['resources'], runtime_prompts.RESOURCE: 'folder/stage3-run-prompt-v9.4.0.md'}
+        checked = self.api(f'/api/cartridges/{cartridge["id"]}/validate', {'resources': bindings})
+        self.assertEqual(checked['invalid'], {})
+        state = self.api('/api/saves', {'cartridgeId': cartridge['id'], 'resources': bindings,
+            'players': [{'name': 'Dan', 'character': 'George'}]})
+        self.assertEqual(self.api(f'/api/saves/{state["save"]["id"]}/context')['report']['narrationPrompt']['version'], '9.4.0')
+
+    def test_old_cartridge_without_prompt_can_resume_its_saved_instructions(self):
+        save_id = self.ready_save()
+        self.make_legacy(save_id)
+        old = self.cartridge_zip({'manifest.json': json.dumps({'format': 'tableforge-adventure', 'formatVersion': 1,
+                                  'title': 'Old', 'resources': {}}), 'module.md': '# Old', 'run-data.json': '{}'},
+                                 include_prompt=False)
+        with server.db() as conn:
+            conn.execute('UPDATE saves SET cartridge_id=?,resource_bindings=? WHERE id=?',
+                         (old['id'], json.dumps({k: v for k, v in old['resources'].items() if k != runtime_prompts.RESOURCE}), save_id))
+        server.initialize()
+        preview = self.api(f'/api/saves/{save_id}/context')
+        self.assertEqual(preview['report']['narrationPrompt']['version'], 'legacy-1')
+        self.assertIn('Re-export', preview['promptUpdateError'])
+        self.assertIsNone(preview['promptUpdate'])
+        self.assertEqual(self.api(f'/api/saves/{save_id}/advance', {'beat': 1})['save']['beat'], 2)
+        self.assertNotIn(runtime_prompts.RESOURCE, self.api(f'/api/saves/{save_id}')['cartridge']['resources'])
+
     def test_missing_bundle_prevents_new_save_without_partial_writes(self):
         state = self.new_save()
         with patch.object(runtime_prompts, 'PROMPT_DIR', self.path / 'absent'):
@@ -116,12 +184,12 @@ class PromptFlowTest(unittest.TestCase):
         self.assertIn('Required AI-DM prompt', error['error'])
         self.assertEqual(len(self.api('/api/saves')['saves']), 1)
 
-    def test_saved_prompt_survives_new_default_and_backup_restore(self):
+    def test_saved_prompt_survives_changed_cartridge_candidate_and_backup_restore(self):
         save_id = self.ready_save()
         original = self.api(f'/api/saves/{save_id}/context')['messages']
         changed = runtime_prompts.make_snapshot('stage3', 'future', '2', 'Future instructions')
         backup = self.api('/api/backups', {})
-        with patch.object(runtime_prompts, 'default_snapshot', return_value=changed):
+        with patch.object(runtime_prompts, 'cartridge_snapshot', return_value=changed):
             server.initialize()
             preview = self.api(f'/api/saves/{save_id}/context')
             self.assertEqual(preview['messages'], original)

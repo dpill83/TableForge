@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import sqlite3
 import threading
 import time
@@ -42,10 +43,11 @@ PORTRAIT_SIGNATURES = {
     'image/jpeg': lambda data: data.startswith(b'\xff\xd8\xff') and data.endswith(b'\xff\xd9'),
     'image/webp': lambda data: data.startswith(b'RIFF') and data[8:12] == b'WEBP',
 }
-REQUIRED = ("module.md", "run-data.json")
+REQUIRED = ("module.md", "run-data.json", runtime_prompts.RESOURCE)
 OPTIONAL = ("cast.json", "cast.md", "continuity.json", "scenes.json", "music-cues.json", "map-art-brief.md")
 RESOURCE_KEYS = {
     'module.md': 'module', 'run-data.json': 'runData',
+    runtime_prompts.RESOURCE: 'stage3Prompt',
     'cast.json': 'cast', 'cast.md': 'castMarkdown',
     'continuity.json': 'continuity', 'scenes.json': 'scenes',
     'music-cues.json': 'musicCues', 'map-art-brief.md': 'mapArtBrief',
@@ -248,11 +250,17 @@ def validate_bindings(files, resources, require_manifest=True):
             raise ValueError(f'Invalid binding for {role}')
         bindings[role] = path
         if path is None:
-            if role in REQUIRED:
+            if role in REQUIRED and (require_manifest or role != runtime_prompts.RESOURCE):
                 missing.append(role)
         elif path not in files:
             invalid[role] = 'File is not in the cartridge'
     run_data = None
+    prompt_path = bindings[runtime_prompts.RESOURCE]
+    if prompt_path in files:
+        try:
+            runtime_prompts.read_source(files[prompt_path])
+        except ValueError as error:
+            invalid[runtime_prompts.RESOURCE] = str(error)
     module_path = bindings['module.md']
     run_path = bindings['run-data.json']
     if module_path in files:
@@ -293,6 +301,10 @@ def inspect_cartridge(files):
                 candidate = prefix + candidate
         else:
             matches = names.get(role, [])
+            if role == runtime_prompts.RESOURCE:
+                matches = [path for name, paths in names.items()
+                           if name == role or re.fullmatch(r'stage3-run-prompt-v\d+\.\d+\.\d+\.md', name)
+                           for path in paths]
             candidate = matches[0] if len(matches) == 1 else None
         bindings[role] = candidate
     return {**validate_bindings(files, bindings), 'files': sorted(files)}
@@ -507,7 +519,7 @@ def context_preview(conn, save_id):
     report = context.pop('report')
     update, update_error = None, None
     try:
-        candidate = runtime_prompts.default_snapshot()
+        candidate, _ = cartridge_prompt_for(state)
         if candidate['sha256'] != report['narrationPrompt']['sha256']:
             update = candidate
     except ValueError as error:
@@ -522,18 +534,27 @@ def upgrade_narration_prompt(conn, state, session, payload):
         raise ValueError('Review and confirm the AI-DM prompt upgrade in Pilot Mode')
     player = require_player(state, payload.get('playerId'))
     current = runtime_prompts.for_save(conn, state['save']['id'])
-    candidate = runtime_prompts.default_snapshot()
+    candidate, bindings = cartridge_prompt_for(state)
     if payload.get('fromSha256') != current['sha256'] or payload.get('toSha256') != candidate['sha256']:
         raise ValueError('The AI-DM prompt changed. Review the prompt upgrade again')
     if current['sha256'] == candidate['sha256']:
         return
     prompt_id = runtime_prompts.store(conn, candidate)
     stamp = utc()
-    conn.execute('UPDATE saves SET narration_prompt_id=?,updated_at=? WHERE id=?',
-                 (prompt_id, stamp, state['save']['id']))
+    conn.execute('UPDATE saves SET narration_prompt_id=?,resource_bindings=?,updated_at=? WHERE id=?',
+                 (prompt_id, json.dumps(bindings), stamp, state['save']['id']))
     conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
                  (state['save']['id'], session['id'], player['id'], 'prompt_upgrade',
                   json.dumps({'from': runtime_prompts.metadata(current), 'to': runtime_prompts.metadata(candidate)}), stamp))
+
+
+def cartridge_prompt_for(state):
+    files = stored_cartridge_files(state['cartridge']['id'])
+    bindings = dict(state['cartridge']['resources'])
+    # Saves from before cartridge prompts have no binding for this resource.
+    if runtime_prompts.RESOURCE not in bindings:
+        bindings[runtime_prompts.RESOURCE] = inspect_cartridge(files)['resources'][runtime_prompts.RESOURCE]
+    return runtime_prompts.cartridge_snapshot(files, bindings), bindings
 
 
 def begin_summary(conn, save_id, payload):
@@ -830,7 +851,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not roster or any(not str(p.get('name', '')).strip() or not str(p.get('character', '')).strip() for p in roster):
                         raise ValueError('Every player needs a name and character')
                     save_id = str(uuid.uuid4())
-                    prompt_id = runtime_prompts.store(conn, runtime_prompts.default_snapshot())
+                    prompt_id = runtime_prompts.store(conn, runtime_prompts.cartridge_snapshot(files, info['resources']))
                     stamp = utc()
                     conn.execute('INSERT INTO saves (id,name,cartridge_id,created_at,updated_at,resource_bindings,adventure_title,narration_prompt_id) VALUES (?,?,?,?,?,?,?,?)',
                                  (save_id, str(payload.get('name') or info['title']).strip(), payload['cartridgeId'], stamp, stamp,

@@ -67,6 +67,8 @@ module.md
 run-data.json
 continuity.json
 
+stage3-run-prompt-v2.1.1.md
+
 cast.md
 cast.json
 scenes.json
@@ -98,6 +100,7 @@ A cartridge should not be considered playable without:
 manifest.json
 module.md
 run-data.json
+stage3-run-prompt-vX.Y.Z.md
 ```
 
 `manifest.json` identifies the package and its resource bindings.
@@ -105,6 +108,14 @@ run-data.json
 `module.md` is the human-readable authored module.
 
 `run-data.json` is the structured runtime adventure data used by the AI-DM.
+
+The cartridge must also contain the full versioned **Stage 3 run prompt** for new
+adventures. AdventureForge includes its current prompt when exporting and binds
+it with `resources.stage3Prompt`. The version shown in the structure above is an
+example, not a TableForge version requirement. Its UTF-8 Markdown must include a
+`promptVersion` banner. Do not package the unversioned link/pointer instead of the
+actual prompt. Existing saves retain their snapshotted instructions and can resume
+older cartridges without this resource.
 
 ### Optional
 
@@ -160,6 +171,10 @@ It may also attempt conservative asset detection, for example:
 
 Filename detection only prefills the visible bindings. The user can correct those bindings before starting, and a missing manifest still blocks a new save.
 
+Stage 3 detection accepts a single `stage3-run-prompt.md` or
+`stage3-run-prompt-vX.Y.Z.md`. Multiple candidates require a manifest binding or
+manual selection; the console does not choose a version silently.
+
 ---
 
 ## 7. Manifest
@@ -189,6 +204,7 @@ Initial conceptual shape:
   "resources": {
     "module": "module.md",
     "runData": "run-data.json",
+    "stage3Prompt": "stage3-run-prompt-v2.1.1.md",
     "continuity": "continuity.json",
     "castMarkdown": "cast.md",
     "cast": "cast.json",
