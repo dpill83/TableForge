@@ -90,6 +90,10 @@ class FlowTest(unittest.TestCase):
         with urllib.request.urlopen(request) as response:
             return json.load(response)
 
+    def override(self, save_id, **extra):
+        """A Pilot's Ready Override, made by the first player."""
+        return {'override': True, 'playerId': self.api(f'/api/saves/{save_id}')['players'][0]['id'], **extra}
+
     def api_error(self, path, payload=None):
         with self.assertRaises(urllib.error.HTTPError) as caught:
             self.api(path, payload)
@@ -305,7 +309,7 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(restored['save']['beat'], 1)
         self.assertEqual([m['kind'] for m in restored['messages']], ['player'])
         self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
-        error = self.api_error(f'/api/saves/{save_id}/advance', {'beat': 1, 'override': True})
+        error = self.api_error(f'/api/saves/{save_id}/advance', self.override(save_id, beat=1))
         self.assertIn('already advanced', error['error'])
         restored = self.api(f'/api/saves/{save_id}')
         self.assertEqual(restored['save']['beat'], 2)
@@ -314,7 +318,7 @@ class FlowTest(unittest.TestCase):
     def test_draft_from_previous_beat_is_held_for_review(self):
         save_id = self.ready_save()
         first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
-        self.api(f'/api/saves/{save_id}/advance', {'beat': 1, 'override': True})
+        self.api(f'/api/saves/{save_id}/advance', self.override(save_id, beat=1))
         request = urllib.request.Request(self.base + f'/api/saves/{save_id}/messages', headers={'Content-Type': 'application/json'},
                                          data=json.dumps({'playerId': first, 'text': 'I drafted this earlier.', 'beat': 1}).encode())
         with self.assertRaises(urllib.error.HTTPError) as caught:
@@ -331,7 +335,7 @@ class FlowTest(unittest.TestCase):
     def play_long_history(self, save_id, player, beats=4, size=15000):
         for beat in range(beats):
             self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': str(beat) * size})
-            self.api(f'/api/saves/{save_id}/advance', {'override': True})
+            self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
 
     def test_context_preview_is_the_exact_provider_payload(self):
         save_id = self.ready_save('# Intro\n' + 'x' * ai.MODULE_CAP + '\n# Finale\nSecret ending.\n## Epilogue\n')
@@ -361,7 +365,7 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(report['omitted'], 9)
         fake = FakeProvider()
         with patch.object(ai, 'current_provider', return_value=fake):
-            self.api(f'/api/saves/{save_id}/advance', {'override': True})
+            self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
         self.assertEqual([m['body'] for m in fake.context['messages']], ['a' * 20000, 'b' * 20000, 'I keep watch.'])
 
     def test_summary_is_drafted_reviewed_saved_and_used(self):
@@ -700,7 +704,7 @@ Flyman block.
         self.assertFalse(self.api('/api/saves')['saves'][0]['cartridgeAvailable'])
         player_id = save['players'][0]['id']
         self.assertIn('Locate the cartridge', self.api_error(f'/api/saves/{save_id}/advance',
-            {'beat': 1, 'override': True})['error'])
+            self.override(save_id, beat=1))['error'])
         self.assertIn('Locate the cartridge', self.api_error(f'/api/saves/{save_id}/start-session',
             {'playerId': player_id})['error'])
         def payload(entries):
@@ -829,7 +833,7 @@ Flyman block.
             worker = threading.Thread(target=lambda: errors.append(self.api(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'Would Shenka flee?'})))
             worker.start()
             self.assertTrue(gate.started.wait(2))
-            blocked = self.api_error(f'/api/saves/{save_id}/advance', {'beat': 2, 'override': True})
+            blocked = self.api_error(f'/api/saves/{save_id}/advance', self.override(save_id, beat=2))
             self.assertIn('already responding', blocked['error'])
             gate.release.set()
             worker.join(5)
@@ -837,6 +841,102 @@ Flyman block.
         restored = self.api(f'/api/saves/{save_id}')
         self.assertEqual(restored['save']['beat'], 2)
         self.assertEqual(restored['pilot'][-1]['body'], 'Operational slowly.')
+
+    def test_retried_send_with_request_id_posts_once(self):
+        save_id = self.ready_save()
+        first, second = [p['id'] for p in self.api(f'/api/saves/{save_id}')['players']]
+        request_id = '7b0f5e1c-2d4a-4c8e-9f11-0a1b2c3d4e5f'
+        send = {'playerId': first, 'text': 'I check the rope.', 'beat': 1, 'requestId': request_id}
+        self.api(f'/api/saves/{save_id}/messages', send)
+        again = self.api(f'/api/saves/{save_id}/messages', send)
+        self.assertEqual([m['body'] for m in again['messages']].count('I check the rope.'), 1)
+        # The response was lost and the table moved on: the retry is still recognized, not held as stale.
+        self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
+        late = self.api(f'/api/saves/{save_id}/messages', send)
+        self.assertEqual([m['body'] for m in late['messages']].count('I check the rope.'), 1)
+        self.assertEqual(late['save']['beat'], 2)
+        self.assertIn('different message', self.api_error(f'/api/saves/{save_id}/messages', {**send, 'text': 'Edited.'})['error'])
+        self.assertIn('different message', self.api_error(f'/api/saves/{save_id}/messages', {**send, 'playerId': second})['error'])
+        self.assertIn('request ID', self.api_error(f'/api/saves/{save_id}/messages', {**send, 'requestId': 'nope'})['error'])
+        # Other saves may reuse the same client ID without colliding.
+        other = self.ready_save()
+        other_player = self.api(f'/api/saves/{other}')['players'][0]['id']
+        self.api(f'/api/saves/{other}/messages', {**send, 'playerId': other_player})
+
+    def test_ready_override_records_initiator_and_ready_states(self):
+        save_id = self.ready_save()
+        first, second = [p['id'] for p in self.api(f'/api/saves/{save_id}')['players']]
+        self.api(f'/api/saves/{save_id}/ready', {'playerId': first, 'ready': False})
+        self.assertIn('Select a player', self.api_error(f'/api/saves/{save_id}/advance', {'beat': 1, 'override': True})['error'])
+        with patch.object(ai, 'current_provider', return_value=BoomProvider()):
+            self.api_error(f'/api/saves/{save_id}/advance', {'beat': 1, 'override': True, 'playerId': second})
+        self.assertFalse([e for e in self.api(f'/api/saves/{save_id}')['events'] if e['kind'] == 'ready_override'])
+        fake = FakeProvider()
+        with patch.object(ai, 'current_provider', return_value=fake):
+            result = self.api(f'/api/saves/{save_id}/advance', {'beat': 1, 'override': True, 'playerId': second})
+        self.assertNotIn('override', fake.context)
+        [event] = [e for e in result['events'] if e['kind'] == 'ready_override']
+        self.assertEqual(event['player_id'], second)
+        self.assertEqual(json.loads(event['body']), {'beat': 1, 'messageId': result['messages'][-1]['id'],
+                                                     'ready': {first: False, second: True}, 'waitingOn': [first]})
+        # A normal all-Ready advance leaves no override record.
+        for player in (first, second):
+            self.api(f'/api/saves/{save_id}/ready', {'playerId': player, 'ready': True})
+        normal = self.api(f'/api/saves/{save_id}/advance', {'beat': 2})
+        self.assertEqual(len([e for e in normal['events'] if e['kind'] == 'ready_override']), 1)
+
+    def test_party_notes_are_pilot_authored_and_kept_out_of_ai_context(self):
+        save_id = self.ready_save()
+        first, second = [p['id'] for p in self.api(f'/api/saves/{save_id}')['players']]
+        note = {'playerId': first, 'pilot': True, 'category': 'npc', 'title': 'Sybil Peti',
+                'body': "Cheese-factor from Gillian's Hill."}
+        self.assertIn('Pilot Mode', self.api_error(f'/api/saves/{save_id}/notes', {**note, 'pilot': False})['error'])
+        self.assertIn('Choose NPCs', self.api_error(f'/api/saves/{save_id}/notes', {**note, 'category': 'secret'})['error'])
+        self.assertIn('title', self.api_error(f'/api/saves/{save_id}/notes', {**note, 'title': ' '})['error'])
+        created = self.api(f'/api/saves/{save_id}/notes', note)
+        [saved] = created['notes']
+        self.assertEqual((saved['title'], saved['created_by']), ('Sybil Peti', first))
+        self.assertEqual(created['players'], self.api(f'/api/saves/{save_id}')['players'])
+        edited = self.api(f'/api/saves/{save_id}/notes', {**note, 'id': saved['id'], 'playerId': second,
+                                                           'body': 'Hired the party to stop impostors.'})
+        self.assertEqual((edited['notes'][0]['body'], edited['notes'][0]['updated_by']), ('Hired the party to stop impostors.', second))
+        fake = FakeProvider()
+        with patch.object(ai, 'current_provider', return_value=fake):
+            self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
+        self.assertNotIn('impostors', json.dumps(fake.context))
+        removed = self.api(f'/api/saves/{save_id}/notes', {'playerId': first, 'pilot': True, 'id': saved['id'], 'remove': True})
+        self.assertEqual(removed['notes'], [])
+        self.assertIn('no longer exists', self.api_error(f'/api/saves/{save_id}/notes', {**note, 'id': saved['id']})['error'])
+        with closing(sqlite3.connect(self.path / 'tableforge.sqlite3')) as conn:
+            self.assertEqual(conn.execute('SELECT removed_by FROM party_notes').fetchone()[0], first)
+
+    def test_backup_restore_round_trip_keeps_cartridges_separate(self):
+        save_id = self.ready_save()
+        player = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        backup = self.api('/api/backups', {})
+        self.assertEqual(backup['integrity'], 'ok')
+        self.assertEqual((backup['counts']['saves'], backup['counts']['messages']), (1, 1))
+        self.assertEqual(backup['missingCartridges'], [])
+        self.assertFalse(list((self.path / 'backups').glob('*.zip')))
+        self.assertEqual([b['name'] for b in self.api('/api/backups')['backups']], [backup['name']])
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'After the backup.'})
+        server.GENERATING[save_id] = 'advance'
+        self.assertIn('Wait for the AI-DM', self.api_error(f'/api/backups/{backup["name"]}/restore', {})['error'])
+        server.GENERATING.clear()
+        restored = self.api(f'/api/backups/{backup["name"]}/restore', {})
+        self.assertEqual(restored['live']['counts'], backup['counts'])
+        self.assertEqual([m['body'] for m in self.api(f'/api/saves/{save_id}')['messages']], ['I look ahead.'])
+        # The data replaced by the restore is itself kept and can be restored.
+        safety = self.api(f'/api/backups/{restored["safetyBackup"]}/verify', {})
+        self.assertEqual(safety['counts']['messages'], 2)
+        # Cartridges are referenced, never bundled: a missing package is reported, not recreated.
+        cartridge = self.api(f'/api/saves/{save_id}')['cartridge']['id']
+        (self.path / 'cartridges' / (cartridge + '.zip')).unlink()
+        self.assertEqual(self.api(f'/api/backups/{backup["name"]}/verify', {})['missingCartridges'], [cartridge])
+        (self.path / 'backups' / 'broken.sqlite3').write_bytes(b'not a database' * 100)
+        self.assertIn('not a TableForge database', self.api_error('/api/backups/broken.sqlite3/restore', {})['error'])
+        self.assertIn('Choose a backup', self.api_error('/api/backups/..%2Ftableforge.sqlite3/verify', {})['error'])
+        self.assertEqual(len(self.api(f'/api/saves/{save_id}')['messages']), 1)
 
 
 class MigrationTest(unittest.TestCase):

@@ -360,7 +360,15 @@ textarea{padding:10px;resize:none}
     radial-gradient(circle at 50% 10%,rgba(201,154,87,.035),transparent 35%),
     #0d1014;
 }
+.main-chat{position:relative}
 .feed{overflow:auto;padding:22px clamp(16px,4vw,52px) 34px}
+.jump-latest{
+  position:absolute;left:50%;bottom:38px;transform:translateX(-50%);z-index:2;
+  padding:7px 14px;border:1px solid var(--accent2);border-radius:999px;
+  background:#1c2128;color:var(--text);font:inherit;font-size:13px;cursor:pointer;
+  box-shadow:0 4px 14px rgba(0,0,0,.45)
+}
+.jump-latest:hover{background:#252b34}
 .feed-inner{max-width:900px;margin:0 auto}
 .typing-indicator{
   max-width:900px;width:100%;margin:0 auto;box-sizing:border-box;
@@ -729,3 +737,24 @@ textarea{padding:10px;resize:none}
   .ready-btn-large{grid-column:1/-1}
   .topbar .mode-pill{display:none}
 }
+
+/* Ready Override record on the AI-DM reply it produced */
+.override-note{display:inline-block;margin:0 0 6px;padding:2px 8px;border:1px solid rgba(219,173,83,.45);border-radius:999px;color:var(--warn);font-size:12px}
+
+/* Party knowledge */
+.note-list{display:grid;gap:10px;margin-top:12px}
+.note-card{padding:11px;border:1px solid var(--border);border-radius:10px;background:#101318}
+.note-card .markdown-body{margin-top:6px;font-size:14px}
+.note-meta{margin-top:6px;font-size:12px}
+.note-actions{display:flex;gap:6px}
+.note-form{display:grid;gap:10px;margin-top:10px}
+.note-form input,.note-form textarea{width:100%}
+
+/* Backups */
+.backup-panel{margin-top:16px;display:grid;gap:10px}
+.backup-row{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:10px 0;border-top:1px solid var(--border)}
+.backup-row strong{word-break:break-all;font-size:13px}
+.backup-row .muted{font-size:12px}
+a.btn{text-decoration:none;display:inline-flex;align-items:center}
+.backup-folder{font-size:12px;word-break:break-all}
+.backup-saves{margin:0 0 12px;padding-left:18px;line-height:1.6}

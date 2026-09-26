@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TableForge</title>
+<link rel="icon" href="data:,">
 <link rel="stylesheet" href="/styles/app.css">
 </head>
 <body>
@@ -95,6 +96,11 @@
       </div>
       <div class="muted" style="margin-top:14px;font-size:13px">Set TABLEFORGE_OPENAI_API_KEY on the server to use OpenAI. TABLEFORGE_MODEL defaults to gpt-4o-mini. The key stays on the host.</div>
       <div class="binding" id="globalUsage" style="margin-top:16px">AI usage is loading…</div>
+      <div class="backup-panel">
+        <div class="row"><div><strong>Backups</strong><div class="muted" style="font-size:12px">Saves, transcripts, portraits, illustrations, and party notes. Cartridges are kept separately and are not copied.</div></div><button class="btn small" id="createBackup" type="button">Back up now</button></div>
+        <div id="backupStatus" class="muted" role="status" aria-live="polite"></div>
+        <div id="backupList"></div>
+      </div>
     </div>
   </div>
 </section>
@@ -205,6 +211,7 @@
         <div id="feed" class="feed">
           <div id="feedInner" class="feed-inner"></div>
         </div>
+        <button id="jumpLatest" class="jump-latest hidden" type="button">New messages · Jump to latest ↓</button>
         <div id="typingIndicator" class="typing-indicator" aria-live="polite"></div>
       </main>
 

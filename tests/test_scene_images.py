@@ -121,6 +121,12 @@ class SceneImageFlowTest(unittest.TestCase):
         self.payload['requestId'] = str(uuid.uuid4())
         image, _ = self.generate()
         self.assertEqual(image['status'], 'draft')
+        state = self.api(f'/api/saves/{self.save_id}')
+        for usage in (state['imageUsage']['save'], state['imageUsage']['session'],
+                      self.api('/api/usage')['imageUsage']):
+            self.assertAlmostEqual(usage['knownEstimatedCostUsd'], .0065)
+            self.assertIsNone(usage['estimatedCostUsd'])
+            self.assertEqual(usage['unpricedRequests'], 1)
 
     def test_in_flight_request_does_not_block_play_and_keeps_source(self):
         before = self.prepare()
@@ -139,7 +145,7 @@ class SceneImageFlowTest(unittest.TestCase):
                 duplicate = dict(self.payload, requestId=str(uuid.uuid4()))
                 self.assertIn('already generating', self.api_error(self.image_path, duplicate)['error'])
                 self.api(f'/api/saves/{self.save_id}/messages', {'playerId': self.player, 'text': 'I step inside.'})
-                moved = self.api(f'/api/saves/{self.save_id}/advance', {'override': True})
+                moved = self.api(f'/api/saves/{self.save_id}/advance', {'override': True, 'playerId': self.player})
                 self.assertEqual(moved['save']['beat'], before['save']['beat']+1)
                 self.assertEqual(moved['activity']['aiDm'], None)
             finally:

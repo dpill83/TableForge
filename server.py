@@ -18,6 +18,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 import ai
+import backups
 import metering
 import scene_images
 import module_context
@@ -154,6 +155,13 @@ def initialize():
                 FOREIGN KEY(save_id) REFERENCES saves(id),
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
             );
+            CREATE TABLE IF NOT EXISTS party_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, save_id TEXT NOT NULL,
+                category TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
+                created_by TEXT, created_at TEXT NOT NULL,
+                updated_by TEXT, updated_at TEXT NOT NULL, removed_at TEXT, removed_by TEXT,
+                FOREIGN KEY(save_id) REFERENCES saves(id)
+            );
         """)
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(saves)')}
         if 'resource_bindings' not in columns:
@@ -170,6 +178,11 @@ def initialize():
             conn.execute('ALTER TABLE messages ADD COLUMN session_id TEXT')
         if 'image_id' not in columns:
             conn.execute('ALTER TABLE messages ADD COLUMN image_id TEXT')
+        if 'request_id' not in columns:
+            # Client-minted per contribution so a retried send can never post twice.
+            conn.execute('ALTER TABLE messages ADD COLUMN request_id TEXT')
+        conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS messages_request ON messages(save_id, request_id) '
+                     'WHERE request_id IS NOT NULL')
         scene_images.initialize(conn)
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(cartridges)')}
         if 'content_hash' not in columns:
@@ -395,6 +408,9 @@ def snapshot(conn, save_id):
         'events': [dict(row) for row in conn.execute('SELECT * FROM session_events WHERE save_id=? ORDER BY id', (save_id,))],
         'checkpoint': checkpoint,
         'summary': dict(summary) if summary else None,
+        'notes': [dict(row) for row in conn.execute(
+            'SELECT id,category,title,body,created_by,created_at,updated_by,updated_at FROM party_notes '
+            'WHERE save_id=? AND removed_at IS NULL ORDER BY category, title COLLATE NOCASE, id', (save_id,))],
         'activity': activity(save_id),
         'images': scene_images.list_images(conn, save_id, shared_only=True),
         'imageSettings': scene_images.settings(),
@@ -430,7 +446,10 @@ def begin_advance(conn, save_id, payload):
         raise ValueError('Start the next session before advancing')
     if state['save']['mode'] != 'normal':
         raise ValueError('Resume combat explicitly')
-    if not payload.get('override') and not all(p['ready'] for p in state['players']):
+    if payload.get('override'):
+        # An override is a Pilot decision; the table should always be able to see who made it.
+        initiator = require_player(state, payload.get('playerId'))
+    elif not all(p['ready'] for p in state['players']):
         raise ValueError('Waiting for all players to be Ready')
     beat = state['save']['beat']
     if payload.get('beat') is not None and int(payload['beat']) != beat:
@@ -439,6 +458,13 @@ def begin_advance(conn, save_id, payload):
         raise ValueError('The AI-DM is already responding')
     context = ai.build_context(state, DATA)
     GENERATING[save_id] = 'advance'
+    if payload.get('override'):
+        # Kept outside the provider context and saved only if the advance is published.
+        context = {**context, 'override': {
+            'playerId': initiator['id'], 'beat': beat,
+            'ready': {p['id']: bool(p['ready']) for p in state['players']},
+            'waitingOn': [p['id'] for p in state['players'] if not p['ready']],
+        }}
     return context
 
 
@@ -509,6 +535,44 @@ def save_summary(conn, save_id, payload):
     conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
 
 
+NOTE_CATEGORIES = ('npc', 'location', 'world')
+
+
+def save_note(conn, state, payload):
+    """Pilot-authored party knowledge. Only what the table chooses to write down is ever shown."""
+    player = require_player(state, payload.get('playerId'))
+    if payload.get('pilot') is not True:
+        raise ValueError('Enable Pilot Mode to edit party knowledge')
+    save_id, stamp = state['save']['id'], utc()
+    note_id = payload.get('id')
+    if note_id is not None:
+        if type(note_id) is not int or not conn.execute(
+                'SELECT 1 FROM party_notes WHERE id=? AND save_id=? AND removed_at IS NULL', (note_id, save_id)).fetchone():
+            raise ValueError('This note no longer exists')
+    if payload.get('remove') is True:
+        if note_id is None:
+            raise ValueError('Choose a note to remove')
+        # Kept in the save as history; it just stops appearing in reference views.
+        conn.execute('UPDATE party_notes SET removed_at=?,removed_by=? WHERE id=?', (stamp, player['id'], note_id))
+    else:
+        category = payload.get('category')
+        title = str(payload.get('title') or '').strip()
+        body = str(payload.get('body') or '').strip()
+        if category not in NOTE_CATEGORIES:
+            raise ValueError('Choose NPCs, Locations, or World Notes')
+        if not title or len(title) > 200:
+            raise ValueError('Note title must contain 1 to 200 characters')
+        if len(body) > 10000:
+            raise ValueError('Note text must be 10,000 characters or less')
+        if note_id is None:
+            conn.execute('INSERT INTO party_notes (save_id,category,title,body,created_by,created_at,updated_by,updated_at) '
+                         'VALUES (?,?,?,?,?,?,?,?)', (save_id, category, title, body, player['id'], stamp, player['id'], stamp))
+        else:
+            conn.execute('UPDATE party_notes SET category=?,title=?,body=?,updated_by=?,updated_at=? WHERE id=?',
+                         (category, title, body, player['id'], stamp, note_id))
+    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (stamp, save_id))
+
+
 def adventure_for(state):
     cartridge = state['cartridge']
     return module_context.load(DATA, cartridge['id'], cartridge['resources'])
@@ -525,7 +589,7 @@ def set_location(conn, state, location, player_id, source):
                   json.dumps({'location': location, 'source': source}), utc()))
 
 
-def publish_advance(conn, save_id, text):
+def publish_advance(conn, save_id, text, override=None):
     session = active_session(conn, save_id)
     text, marked, location = module_context.take_marker(text)
     if not text:
@@ -535,10 +599,16 @@ def publish_advance(conn, save_id, text):
         adventure = adventure_for(state)
         if adventure.focused and adventure.valid(location):
             set_location(conn, state, location, None, 'ai-dm')
-    conn.execute(
+    stamp = utc()
+    message_id = conn.execute(
         'INSERT INTO messages (save_id,session_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?)',
-        (save_id, session['id'], 'ai', 'AI-DM', text, utc()),
-    )
+        (save_id, session['id'], 'ai', 'AI-DM', text, stamp),
+    ).lastrowid
+    if override:
+        conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
+                     (save_id, session['id'], override['playerId'], 'ready_override',
+                      json.dumps({'beat': override['beat'], 'messageId': message_id,
+                                  'ready': override['ready'], 'waitingOn': override['waitingOn']}), stamp))
     conn.execute('UPDATE saves SET beat=beat+1, updated_at=? WHERE id=?', (utc(), save_id))
     conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
     return snapshot(conn, save_id)
@@ -591,6 +661,17 @@ class Handler(BaseHTTPRequestHandler):
                     return self.wfile.write(image)
             if path == '/api/runtime':
                 return self.respond(ai.runtime_status())
+            if path == '/api/backups':
+                return self.respond({'backups': backups.listing(DATA), 'folder': str(backups.directory(DATA).resolve())})
+            if len(parts) == 3 and parts[:2] == ['api', 'backups']:
+                content = backups.path_for(DATA, parts[2]).read_bytes()
+                self.send_response(200)
+                self.send_header('Content-Type', 'application/vnd.sqlite3')
+                self.send_header('Content-Disposition', f'attachment; filename="{parts[2]}"')
+                self.send_header('Content-Length', str(len(content)))
+                self.send_header('Cache-Control', 'no-store')
+                self.end_headers()
+                return self.wfile.write(content)
             if path == '/api/usage':
                 with LOCK, db() as conn:
                     return self.respond({'usage': metering.summary(conn),
@@ -648,6 +729,14 @@ class Handler(BaseHTTPRequestHandler):
                 return self.handle_ask(parts[2], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'summary-draft':
                 return self.handle_summary_draft(parts[2], payload)
+            if path == '/api/backups':
+                with LOCK:
+                    return self.respond(backups.create(DATA), 201)
+            if len(parts) == 4 and parts[:2] == ['api', 'backups'] and parts[3] == 'verify':
+                with LOCK:
+                    return self.respond(backups.inspect(DATA, backups.path_for(DATA, parts[2])))
+            if len(parts) == 4 and parts[:2] == ['api', 'backups'] and parts[3] == 'restore':
+                return self.handle_restore(parts[2])
             with LOCK, db() as conn:
                 if len(parts) == 6 and parts[:2] == ['api', 'saves'] and parts[3] == 'players' and parts[5] == 'portrait':
                     save_id, player_id = parts[2], parts[4]
@@ -729,6 +818,22 @@ class Handler(BaseHTTPRequestHandler):
                         typing.pop(player_id, None)
                     return self.respond(activity(save_id))
                 state = snapshot(conn, save_id)
+                request_id = None
+                if action == 'messages' and payload.get('requestId') is not None:
+                    try:
+                        request_id = str(uuid.UUID(str(payload['requestId'])))
+                    except ValueError as error:
+                        raise ValueError('A valid message request ID is required') from error
+                    sent = conn.execute('SELECT player_id,body FROM messages WHERE save_id=? AND request_id=?',
+                                        (save_id, request_id)).fetchone()
+                    if sent:
+                        # A retry of a send that already landed: report the table as it is now.
+                        if sent['player_id'] != payload.get('playerId') or sent['body'] != str(payload.get('text', '')).strip():
+                            raise ValueError('This message request was already used for a different message')
+                        return self.respond(snapshot(conn, save_id))
+                if action == 'notes':
+                    save_note(conn, state, payload)
+                    return self.respond(snapshot(conn, save_id))
                 if save_id in GENERATING:
                     raise ValueError('The AI-DM is already responding')
                 if action == 'locate-cartridge':
@@ -811,8 +916,8 @@ class Handler(BaseHTTPRequestHandler):
                     # Drafts carry the beat they were started in so they never slip into a later one.
                     if payload.get('beat') is not None and int(payload['beat']) != state['save']['beat']:
                         raise StaleBeat(state['save']['beat'])
-                    conn.execute('INSERT INTO messages (save_id,session_id,player_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?,?)',
-                                 (save_id, session['id'], player['id'], 'player', player['character'], body, utc()))
+                    conn.execute('INSERT INTO messages (save_id,session_id,player_id,kind,name,body,created_at,request_id) VALUES (?,?,?,?,?,?,?,?)',
+                                 (save_id, session['id'], player['id'], 'player', player['character'], body, utc(), request_id))
                     conn.execute('UPDATE players SET ready=1 WHERE id=?', (player['id'],))
                     TYPING.get(save_id, {}).pop(player['id'], None)
                 elif action == 'ready':
@@ -836,6 +941,10 @@ class Handler(BaseHTTPRequestHandler):
             self.respond({'error': str(error), 'code': 'stale_beat', 'beat': error.beat}, 409)
         except (ValueError, KeyError, TypeError, json.JSONDecodeError, zipfile.BadZipFile, UnicodeDecodeError) as error:
             self.respond({'error': str(error)}, 400)
+        except (OSError, sqlite3.Error) as error:
+            if urlparse(self.path).path.startswith('/api/backups'):
+                return self.respond({'error': f'Backup storage failed: {error}'}, 500)
+            raise
 
     def get_images(self, parts):
         save_id = parts[2]
@@ -981,8 +1090,35 @@ class Handler(BaseHTTPRequestHandler):
             result['activity'] = activity(save_id)
         return self.respond(result)
 
+    def handle_restore(self, name):
+        with LOCK:
+            if GENERATING:
+                raise ValueError('Wait for the AI-DM to finish before restoring a backup')
+            with db() as conn:
+                if conn.execute("SELECT 1 FROM scene_images WHERE status='generating'").fetchone():
+                    raise ValueError('Wait for the scene illustration to finish before restoring a backup')
+            result = backups.restore(DATA, name)
+            TYPING.clear()
+            # Bring an older backup's schema up to date, then prove the live database matches it.
+            initialize()
+            live = backups.inspect(DATA, DATA / backups.DATABASE)
+            if live['counts'] != result['expected']['counts']:
+                raise ValueError('The restored database does not match the backup. '
+                                 f'Your previous data is kept in {result["safetyBackup"]}.')
+        return self.respond({**result, 'live': live})
+
     def handle_advance(self, save_id, payload):
-        return self.run_generation(save_id, begin_advance, publish_advance, payload)
+        override = {}
+
+        def begin(conn, save_id, payload):
+            context = begin_advance(conn, save_id, payload)
+            override.update(context.pop('override', {}))
+            return context
+
+        def publish(conn, save_id, text):
+            return publish_advance(conn, save_id, text, override or None)
+
+        return self.run_generation(save_id, begin, publish, payload)
 
     def handle_ask(self, save_id, payload):
         return self.run_generation(save_id, begin_ask, publish_ask, payload)

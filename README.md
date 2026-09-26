@@ -48,6 +48,18 @@ Image bytes and request metadata are stored with the save in `tableforge.sqlite3
 
 Image requests and estimated costs appear separately from text usage in the sidebar and Options. The Flare estimate uses reported text input and image output tokens at the [model's rates](https://developers.openai.com/api/docs/models/gpt-image-2.5-flare), dated 2026-09-25. Unknown models, missing usage, and failed or interrupted requests show cost unavailable. Discarding an image does not refund its generation. Requests can take up to a few minutes; failures and interrupted requests are never automatically retried. Check provider usage before explicitly retrying an uncertain request.
 
+### Drafts, retries, and Ready Override
+
+An unsent message is kept in this browser (per save and player) and comes back when you rejoin the table. If the AI-DM advanced while it was away, it returns held for review, the same as a draft that goes stale while you type. Each send carries a request ID, so retrying after a lost reply never posts the contribution twice. A **Ready Override** records which player used it, the beat, and who was not Ready; the table sees this on the AI-DM reply it produced.
+
+### Party knowledge
+
+**NPCs**, **Locations**, and **World Notes** in the left sidebar show only what Pilots have written down as known to the party. Nothing is read from the cartridge, and these notes are not sent to the AI-DM. In Pilot Mode, add, edit, or remove entries; removed entries stay in the save history.
+
+### Backups
+
+**Options → Backups → Back up now** copies the whole save database (transcripts, portraits, illustrations, party notes) into `data/backups/` using SQLite's online backup and verifies the copy before listing it. Cartridges are not copied; they stay in `data/cartridges/`, and a restored save whose cartridge is missing asks you to locate it. **Restore…** checks the backup's integrity, shows what it contains, backs up the current data first, then replaces it and confirms the result matches. To restore a downloaded backup, copy it into `data/backups/` first. Restore is refused while the AI-DM or a scene illustration is generating.
+
 Run the HTTP workflow tests with `python3 -m unittest discover -s tests -v`.
 
 The core model is simple:

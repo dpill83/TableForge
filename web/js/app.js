@@ -6,13 +6,23 @@
   const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, composer:false, draft:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0};
   $('appVersion').textContent = 'v2.0';
   const request = async (path, body) => {
-    const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST', headers:{'Content-Type':'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
-    if(response.status===404&&path.endsWith('/portrait')) throw Error('Portraits need the updated TableForge server. Restart the server and refresh this page.');
-    const result = await response.json();
-    if(!response.ok) throw Object.assign(Error(result.error || `Request failed (${response.status})`), {code:result.code});
-    return result;
+    const controller=new AbortController();
+    const generating=body!==undefined&&/\/(images|advance|ask|summary-draft)$/.test(path);
+    const timer=setTimeout(()=>controller.abort(),generating?210000:15000);
+    try{
+      const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST', signal:controller.signal, headers:{'Content-Type':'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
+      if(response.status===404&&path.endsWith('/portrait')) throw Error('Portraits need the updated TableForge server. Restart the server and refresh this page.');
+      const result = await response.json();
+      if(!response.ok) throw Object.assign(Error(result.error || `Request failed (${response.status})`), {code:result.code});
+      return result;
+    }catch(error){
+      if(error.name==='AbortError')throw Error(body===undefined?'The server is taking too long to respond.':'The request timed out. The server may still be working; check its status before retrying.');
+      throw error;
+    }finally{clearTimeout(timer);}
   };
   const notify = error => alert(error.message || String(error));
+  // Request IDs let the server recognize a retry of something it already did.
+  const newRequestId = () => typeof crypto.randomUUID==='function'?crypto.randomUUID():'10000000-1000-4000-8000-100000000000'.replace(/[018]/g,c=>(Number(c)^crypto.getRandomValues(new Uint8Array(1))[0]&15>>Number(c)/4).toString(16));
   const runtimeLabel = info => (info.provider === 'openai' ? 'OpenAI' : 'Mock AI') + ' · ' + info.model;
   const tokenLabel = value => new Intl.NumberFormat().format(value || 0);
   const costLabel = usage => {
@@ -21,7 +31,14 @@
     return value>0 && value<0.0001?'≈<$0.0001':`≈$${value.toFixed(4)}`;
   };
   const usageLine = usage => `${tokenLabel(usage.totalTokens)} tokens · ${costLabel(usage)}`;
-  const imageUsageLine = usage => `${usage.generated} image${usage.generated===1?'':'s'} / ${usage.requests} request${usage.requests===1?'':'s'} · ${costLabel(usage)}`;
+  const imageUsageLine = usage => {
+    const count=`${usage.generated} image${usage.generated===1?'':'s'} / ${usage.requests} request${usage.requests===1?'':'s'}`;
+    const known=usage.knownEstimatedCostUsd ?? usage.estimatedCostUsd;
+    const cost=known==null?'Refresh after restarting the server to see known costs':
+      `${usage.unpricedRequests?'Known estimated cost: ':'Estimated cost: '}${costLabel({estimatedCostUsd:known})}`;
+    const missing=usage.unpricedRequests?` · ${usage.unpricedRequests} request${usage.unpricedRequests===1?'':'s'} without cost data`:'';
+    return `${count} · ${cost}${missing}`;
+  };
   const showRuntime = async () => {
     const info = await request('runtime');
     $('runtimeProvider').textContent = info.provider === 'openai' ? 'OpenAI' : 'Mock AI';
@@ -35,11 +52,50 @@
       if(result.imageUsage) $('globalUsage').insertAdjacentHTML('beforeend',`<p><strong>Scene images (separate)</strong><br>${esc(imageUsageLine(result.imageUsage))}</p>`);
     } catch(error) { $('globalUsage').textContent='Restart the TableForge server to enable AI usage tracking.'; }
   };
+  // Backups copy the whole save database on the host; restore always backs up the current data first.
+  const byteLabel = n => n<1024*1024?`${Math.max(1,Math.round(n/1024))} KB`:`${(n/1024/1024).toFixed(1)} MB`;
+  const backupCounts = c => [[c.saves,'save'],[c.messages,'message'],[c.portraits,'portrait'],[c.images,'illustration'],[c.notes,'party note']].map(([n,word])=>`${tokenLabel(n)} ${word}${n===1?'':'s'}`).join(' · ');
+  const showBackups = async () => {
+    const list=$('backupList');
+    let result;
+    try{result=await request('backups');}
+    catch(error){list.textContent='Restart the TableForge server to enable backups.';return;}
+    list.innerHTML=(result.backups.length?result.backups.map(b=>`<div class="backup-row"><div><strong>${esc(b.name)}</strong><div class="muted">${new Date(b.modifiedAt).toLocaleString()} · ${byteLabel(b.bytes)}</div></div><div class="actions" style="margin-top:0"><a class="btn small" href="/api/backups/${encodeURIComponent(b.name)}" download>Download</a><button class="btn small warn restore-backup" data-name="${esc(b.name)}">Restore…</button></div></div>`).join(''):'<p class="muted">No backups yet.</p>')+
+      `<div class="muted backup-folder">Stored on the host in ${esc(result.folder)}. To restore a downloaded backup, copy it into that folder and reopen Options.</div>`;
+    list.querySelectorAll('.restore-backup').forEach(button=>button.onclick=()=>restoreBackup(button.dataset.name));
+  };
+  const restoreBackup = async name => {
+    let details;
+    try{details=await request('backups/'+encodeURIComponent(name)+'/verify',{});}
+    catch(error){return notify(error);}
+    const missing=details.missingCartridges.length;
+    const saves=details.saves.map(s=>`<li>${esc(s.name)}${s.title&&s.title!==s.name?` <span class="muted">· ${esc(s.title)}</span>`:''}${s.cartridgeAvailable?'':' <span class="binding-issue">cartridge missing</span>'}</li>`).join('');
+    modal(`<h3>Restore backup</h3><p><strong>${esc(name)}</strong> passed its integrity check.</p><p>${esc(backupCounts(details.counts))}</p><ul class="backup-saves">${saves||'<li>No saves</li>'}</ul>${missing?`<p class="binding-issue">${missing} cartridge${missing===1?' is':'s are'} not on this host. Those saves will ask you to locate the original package.</p>`:''}<p>Restoring replaces <strong>every</strong> save on this host with this backup. Your current data is backed up first, so this can be undone.</p><div class="actions"><button class="btn" data-close>Cancel</button><button class="btn warn" id="confirmRestore">Restore</button></div>`);
+    $('confirmRestore').onclick=async()=>{
+      $('confirmRestore').disabled=true;
+      try{
+        const result=await request('backups/'+encodeURIComponent(name)+'/restore',{});
+        state.save=null;state.feedKey=null;state.draft=null;
+        $('modalRoot').replaceChildren();
+        $('backupStatus').textContent=`Restored ${result.restored} and verified it (${backupCounts(result.live.counts)}). The previous data was saved as ${result.safetyBackup}.`;
+        await showBackups();
+      }catch(error){$('confirmRestore').disabled=false;notify(error);}
+    };
+  };
+  $('createBackup').onclick=async()=>{
+    const button=$('createBackup');button.disabled=true;$('backupStatus').textContent='Backing up…';
+    try{
+      const result=await request('backups',{});
+      $('backupStatus').textContent=`Saved and verified ${result.name} (${backupCounts(result.counts)}).`;
+      await showBackups();
+    }catch(error){$('backupStatus').textContent='';notify(error);}
+    finally{button.disabled=false;}
+  };
   const show = async id => {
     screens.forEach(el => el.classList.toggle('active', el.id === id));
     if(id === 'load') await refreshSaves();
-    if(id === 'options') {await showRuntime();await showUsage();}
-    if(id === 'play') $('feed').scrollTop = $('feed').scrollHeight;
+    if(id === 'options') {await showRuntime();await showUsage();await showBackups();}
+    if(id === 'play') scrollFeedToLatest();
   };
   document.querySelectorAll('[data-go]').forEach(btn => btn.onclick = () => show(btn.dataset.go).catch(notify));
 
@@ -187,7 +243,7 @@
         button.disabled=true;
         try{
           if(state.save.sessions.at(-1)?.ended_at) state.save=await request('saves/'+state.save.save.id+'/start-session',{playerId:player.id});
-          state.identity=player.id;sessionStorage.setItem('tableforge-player',player.id);render();await show('play');
+          state.identity=player.id;sessionStorage.setItem('tableforge-player',player.id);restoreDraft();render();await show('play');
         }catch(error){notify(error);button.disabled=false;}
       };wrap.append(button);
     });
@@ -246,21 +302,43 @@
     const status=$('pilotAskStatus');
     if(status) status.innerHTML=aiDmBusy('ask')?'The AI-DM is typing '+dots():'';
   };
+  const feedAtBottom=()=>{const feed=$('feed');return feed.scrollHeight-feed.scrollTop-feed.clientHeight<48;};
+  const scrollFeedToLatest=()=>{$('feed').scrollTop=$('feed').scrollHeight;state.followLatest=true;$('jumpLatest').classList.add('hidden');};
   const render=()=>{
     const s=state.save;if(!s)return;
     $('play').querySelector('.top-title strong').textContent=s.cartridge.title;
     $('partyList').innerHTML=s.players.map(p=>`<div class="party-card" style="${p.id===state.identity?'border-color:var(--accent2)':''}"><div class="party-top">${p.id===state.identity?`<button class="portrait-button" type="button" title="Edit ${esc(p.character)} portrait" aria-label="Edit ${esc(p.character)} portrait">${avatar(p,'party-avatar')}</button>`:avatar(p,'party-avatar')}<div class="party-name"><strong>${esc(p.character)}</strong><span>${esc(p.name)}</span></div><span class="ready-badge ${p.ready?'ready':''}">${p.ready?'Ready':'Not Ready'}</span></div></div>`).join('');
     $('partyList').querySelector('.portrait-button')?.addEventListener('click',openPortraitEditor);
     $('usageSummary').innerHTML=s.usage?`<strong>AI usage</strong><div>This session: ${esc(usageLine(s.usage.session))}</div><div>Playthrough: ${esc(usageLine(s.usage.save))}</div><div>${tokenLabel(s.usage.save.inputTokens)} input · ${tokenLabel(s.usage.save.outputTokens)} output</div><div>Estimated USD · <a href="${esc(s.usage.pricingUrl)}" target="_blank" rel="noopener">rates ${esc(s.usage.pricingAsOf)}</a></div>`:'<strong>AI usage</strong><div>Restart the TableForge server to enable tracking.</div>';
-    $('feedInner').replaceChildren();
     if(s.imageUsage) $('usageSummary').insertAdjacentHTML('beforeend',`<div class="image-usage"><strong>Scene images (separate)</strong><div>Session: ${esc(imageUsageLine(s.imageUsage.session))}</div><div>Playthrough: ${esc(imageUsageLine(s.imageUsage.save))}</div></div>`);
     $('illustrateScene').disabled=!state.identity||!s.messages.some(m=>m.kind==='ai');
+    // Rebuild the feed only when its content changes, so Ready/typing updates keep the reading position.
+    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,s.messages.map(m=>[m.id,m.body.length,m.image_id,!!s.images?.some(i=>i.id===m.image_id)]),s.players.map(p=>[p.id,p.character,p.portraitUrl])]);
+    const feedChanged=feedKey!==state.feedKey,previousIds=new Set(state.feedKey?[...$('feedInner').children].map(el=>el.id):[]);
+    const followLatest=state.followLatest!==false;
+    if(feedChanged){
+    state.feedKey=feedKey;
+    const top=feed.scrollTop;
+    $('feedInner').replaceChildren();
+    const overrides=new Map();
+    for(const e of s.events||[]){
+      if(e.kind!=='ready_override')continue;
+      try{const detail=JSON.parse(e.body);overrides.set(detail.messageId,{...detail,playerId:e.player_id});}catch(error){console.error(error);}
+    }
+    const character=id=>s.players.find(p=>p.id===id)?.character||'A player';
     for(const m of s.messages){
       const row=document.createElement('div');row.className='message '+(m.kind==='ai'?'ai':'player');
       row.innerHTML=`${avatar(s.players.find(p=>p.id===m.player_id),'avatar',m.kind==='ai'?'AI':m.name[0])}<div><div class="message-head"><strong>${esc(m.name)}</strong><span class="time">${new Date(m.created_at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</span></div><div class="message-body"></div><div class="message-actions"><button class="copy-message">Copy</button></div></div>`;
       row.querySelector('.message-body').innerHTML=TableForgeMarkdown.render(m.body);
       row.querySelector('.message-body').classList.add('markdown-body');
       row.id='message-'+m.id;
+      const override=overrides.get(m.id);
+      if(override){
+        const note=document.createElement('div');note.className='override-note';
+        note.textContent=`${character(override.playerId)} used Ready Override`+
+          (override.waitingOn?.length?` · not Ready: ${override.waitingOn.map(character).join(', ')}`:' · everyone was Ready');
+        row.querySelector('.message-head').after(note);
+      }
       if(m.kind==='image'){
         const record=s.images?.find(i=>i.id===m.image_id);
         if(record){
@@ -269,6 +347,7 @@
           link.target='_blank';link.rel='noopener';
           const img=document.createElement('img');img.src=link.href;img.alt='Scene illustration';
           img.className='scene-image';img.loading='lazy';link.append(img);
+          img.addEventListener('load',()=>{if(state.followLatest!==false)$('feed').scrollTop=$('feed').scrollHeight;});
           row.querySelector('.message-body').prepend(link);
           const source=document.createElement('button');source.className='btn small';source.textContent='View source narration';
           source.onclick=()=>document.getElementById('message-'+record.source_message_id)?.scrollIntoView({block:'center'});
@@ -278,7 +357,11 @@
       row.querySelector('.copy-message').onclick=async event=>{await navigator.clipboard.writeText(m.body);event.target.textContent='Copied';setTimeout(()=>event.target.textContent='Copy',1200);};
       row.dataset.searchText=(m.name+' '+m.body).toLowerCase();$('feedInner').append(row);
     }
-    applySearch();$('feed').scrollTop=$('feed').scrollHeight;
+    applySearch();
+    const added=s.messages.filter(m=>!previousIds.has('message-'+m.id));
+    if(followLatest||!previousIds.size||added.some(m=>m.player_id&&m.player_id===state.identity&&m.kind!=='ai')) scrollFeedToLatest();
+    else{feed.scrollTop=top;if(added.length)$('jumpLatest').classList.remove('hidden');}
+    }
     const current=s.players.find(p=>p.id===state.identity);
     $('readyBtn').disabled=!current||state.generating||state.updating;
     $('sendBtn').disabled=!current||state.generating||state.updating;
@@ -301,16 +384,39 @@
   const draftStale=()=>!!state.draft&&!!state.save&&(state.draft.saveId!==state.save.save.id||state.draft.beat!==state.save.save.beat);
   const syncDraft=()=>{
     if(!$('composer').value.trim()) state.draft=null;
-    else if(!state.draft&&state.save) state.draft={saveId:state.save.save.id,beat:state.save.save.beat};
+    else if(!state.draft&&state.save) state.draft={saveId:state.save.save.id,beat:state.save.save.beat,requestId:null};
+    storeDraft();
     renderDraft();
   };
+  // Drafts survive a refresh in this browser, keyed by save and player. The stored beat
+  // keeps the review requirement: a draft from an earlier beat comes back held for review.
+  const draftKey=()=>state.save&&state.identity?`tableforge-draft:${state.save.save.id}:${state.identity}`:null;
+  const storeDraft=()=>{
+    const key=draftKey();if(!key)return;
+    try{
+      if(state.draft&&state.draft.saveId===state.save.save.id)
+        localStorage.setItem(key,JSON.stringify({text:$('composer').value,beat:state.draft.beat,requestId:state.draft.requestId}));
+      else localStorage.removeItem(key);
+    }catch(error){console.error(error);}
+  };
+  const restoreDraft=()=>{
+    const key=draftKey();if(!key)return;
+    let saved=null;
+    try{saved=JSON.parse(localStorage.getItem(key)||'null');}catch(error){console.error(error);}
+    // A send whose reply was lost may have landed; the save is the record of what was sent.
+    if(saved?.requestId&&state.save.messages.some(m=>m.request_id===saved.requestId)) saved=null;
+    const usable=saved&&typeof saved.text==='string'&&saved.text.trim()&&Number.isInteger(saved.beat);
+    $('composer').value=usable?saved.text:'';
+    state.draft=usable?{saveId:state.save.save.id,beat:saved.beat,requestId:saved.requestId||null}:null;
+    storeDraft();resize();renderDraft();
+  };
+  const clearDraft=()=>{$('composer').value='';state.draft=null;storeDraft();resize();renderDraft();};
   const renderDraft=()=>{
     const stale=draftStale();
     $('draftNotice').classList.toggle('hidden',!stale);
     $('composerWrap').classList.toggle('draft-stale',stale);
   };
-  $('keepDraft').onclick=()=>{state.draft=null;syncDraft();$('composer').focus();};
-  const advanceTable = async (extra={}) => {
+  $('keepDraft').onclick=()=>{state.draft=null;syncDraft();$('composer').focus();};  const advanceTable = async (extra={}) => {
     if(state.generating || state.updating || state.asking) return;
     state.generating = true;
     render();
@@ -322,6 +428,8 @@
       if(state.save) render();
     }
   };
+  $('feed').addEventListener('scroll',()=>{state.followLatest=feedAtBottom();if(state.followLatest)$('jumpLatest').classList.add('hidden');},{passive:true});
+  $('jumpLatest').onclick=()=>$('feed').scrollTo({top:$('feed').scrollHeight,behavior:'smooth'});
   $('sendBtn').onclick=async()=>{
     const field=$('composer'),body=field.value.trim();if(!body)return;
     syncDraft();
@@ -332,9 +440,35 @@
       request('saves/'+state.save.save.id).then(next=>{state.save=next;render();}).catch(console.error);
       return true;
     };
-    if(await update('messages',{playerId:state.identity,text:body,beat:state.draft.beat},staleBeat)) {
-      field.value='';resize();typingSentAt=0;state.draft=null;renderDraft();
-      if(state.save.save.mode==='normal' && state.save.players.every(p=>p.ready)) await advanceTable();
+    const saveId=state.save.save.id;
+    // One ID per contribution, kept with the draft until it is sent, so any retry is recognized.
+    state.draft.requestId||=newRequestId();storeDraft();
+    const requestId=state.draft.requestId;
+    const landed=error=>{
+      if(staleBeat(error)) return true;
+      // The reply may be lost after the server saved the message; check before telling the player it failed.
+      request('saves/'+saveId).then(next=>{
+        if(state.save?.save.id!==saveId) return;
+        state.save=next;
+        const sent=next.messages.some(m=>m.request_id===requestId);
+        if(sent&&state.draft?.requestId===requestId)clearDraft();
+        render();
+        if(!sent) notify(error);
+        else if(next.save.mode==='normal'&&next.players.every(p=>p.ready)) advanceTable();
+      }).catch(()=>notify(error));
+      return true;
+    };
+    try {
+      if(await update('messages',{playerId:state.identity,text:body,beat:state.draft.beat,requestId},landed)) {
+        typingSentAt=0;
+        if(state.draft?.requestId===requestId) clearDraft();
+        if(state.save.save.mode==='normal' && state.save.players.every(p=>p.ready)) await advanceTable();
+      }
+    } finally {
+      // Sending and automatic advancement disable the field, which drops focus.
+      if(state.save?.save.id===saveId && $('play').classList.contains('active') &&
+         !$('modalRoot').childElementCount && !field.disabled &&
+         [document.body,field,$('sendBtn')].includes(document.activeElement)) field.focus();
     }
   };
   $('readyBtn').onclick=async()=>{
@@ -343,7 +477,12 @@
     if(await update('ready',{playerId:state.identity,ready:!current.ready}) &&
        state.save.save.mode==='normal' && state.save.players.every(p=>p.ready)) await advanceTable();
   };
-  $('readyOverride').onclick=()=>confirmBox('Ready Override','Advance the table without waiting for every player?',()=>advanceTable({override:true}));
+  $('readyOverride').onclick=()=>{
+    const waiting=state.save.players.filter(p=>!p.ready).map(p=>p.character);
+    const who=state.save.players.find(p=>p.id===state.identity)?.character||'you';
+    confirmBox('Ready Override',`${waiting.length?`Advance without waiting for ${waiting.join(', ')}?`:'Advance the table now?'} The table will see that ${who} used Ready Override.`,
+      ()=>advanceTable({override:true,playerId:state.identity}));
+  };
   $('combatToggle').onclick=()=>update('mode',{mode:'combat',playerId:state.identity});
   $('resumeCombat').onclick=()=>{
     modal('<h3>Resume AI-DM</h3><p>Summarize the combat outcome. It will be saved and included when the AI-DM next advances.</p><label>Combat outcome<textarea id="combatOutcome" rows="5" maxlength="20000" placeholder="What happened in combat?"></textarea></label><div class="actions"><button class="btn" data-close>Cancel</button><button class="btn good" id="submitCombatOutcome">Save outcome</button></div>');
@@ -361,7 +500,8 @@
   };
   const field=$('composer');
   function resize(){field.style.height='auto';field.style.height=(field.value?Math.min(Math.max(field.scrollHeight,48),184):48)+'px';field.style.overflowY=field.scrollHeight>184?'auto':'hidden';}
-  field.addEventListener('input',()=>{resize();syncDraft();});
+  // Editing makes it a different contribution, so a later send gets a fresh request ID.
+  field.addEventListener('input',()=>{if(state.draft)state.draft.requestId=null;resize();syncDraft();});
   // Heartbeat while composing; the server forgets a typist after a few quiet seconds.
   let typingSentAt=0;
   const sendTyping=typing=>{if(!state.save||!state.identity)return;typingSentAt=typing?Date.now():0;request('saves/'+state.save.save.id+'/typing',{playerId:state.identity,typing}).catch(()=>{});};
@@ -556,7 +696,7 @@
       dialog.submitting=true;const direction=$('sceneDirection').value;
       $('sceneImageError').textContent='';renderSceneImages(dialog);
       try{
-        const requestId=typeof crypto.randomUUID==='function'?crypto.randomUUID():'10000000-1000-4000-8000-100000000000'.replace(/[018]/g,c=>(Number(c)^crypto.getRandomValues(new Uint8Array(1))[0]&15>>Number(c)/4).toString(16));
+        const requestId=newRequestId();
         await request('saves/'+dialog.saveId+'/images',{playerId:state.identity,pilot:true,requestId,sourceMessageId:dialog.sourceId,direction});
       }catch(error){if(imageDialogActive(dialog))$('sceneImageError').textContent=error.message;}
       finally{
@@ -567,7 +707,7 @@
     try{await refreshSceneImages(dialog);}catch(error){if(imageDialogActive(dialog))$('sceneImageError').textContent=error.message;}
   };
   setInterval(async()=>{
-    const dialog=sceneDialog;if(!dialog||!imageDialogActive(dialog)||dialog.polling)return;
+    const dialog=sceneDialog;if(document.hidden||!dialog||!imageDialogActive(dialog)||dialog.polling)return;
     dialog.polling=true;
     try{await refreshSceneImages(dialog);}catch(error){if(imageDialogActive(dialog))$('sceneImageError').textContent=error.message;}
     finally{dialog.polling=false;}
@@ -695,7 +835,39 @@
   };
   $('reviewContext').onclick=openContextReview;
   $('pilotMap').onclick=()=>modal('<h3>GM Map</h3><p>Map viewing will be connected to validated cartridge assets.</p><div class="actions"><button class="btn" data-close>Close</button></div>');
-  document.querySelectorAll('.ref-open').forEach(b=>b.onclick=()=>modal(`<h3>${esc(b.textContent)}</h3><p>Player-safe reference entries will appear here after discovery tracking is built.</p><div class="actions"><button class="btn" data-close>Close</button></div>`));
+  // Party knowledge: only what a Pilot writes down as known to the party. Nothing is read from the cartridge.
+  const noteCategories={npcs:['npc','NPCs','NPC'],locations:['location','Locations','location'],notes:['world','World Notes','note']};
+  const openNotes=(ref,editing=null)=>{
+    const [category,heading,noun]=noteCategories[ref];
+    const s=state.save;if(!s)return;
+    const notes=(s.notes||[]).filter(n=>n.category===category);
+    const character=id=>s.players.find(p=>p.id===id)?.character||'a Pilot';
+    const canEdit=state.pilot&&!!state.identity;
+    const saveNote=async body=>{
+      try{state.save=await request('saves/'+s.save.id+'/notes',{playerId:state.identity,pilot:true,...body});render();openNotes(ref);}
+      catch(error){notify(error);}
+    };
+    const form=editing?`<div class="note-form"><label>Name<input id="noteTitle" maxlength="200"></label><label>Known to the party<textarea id="noteBody" rows="5" maxlength="10000" placeholder="Only what the party has learned in play."></textarea></label><div class="actions"><button class="btn" id="noteCancel">Cancel</button><button class="btn good" id="noteSave">Save</button></div></div>`:'';
+    const list=notes.map(n=>`<section class="note-card" data-note="${n.id}"><div class="row"><strong>${esc(n.title)}</strong>${canEdit&&!editing?'<span class="note-actions"><button class="btn small note-edit">Edit</button><button class="btn small warn note-remove">Remove</button></span>':''}</div><div class="markdown-body">${TableForgeMarkdown.render(n.body||'')}</div><div class="muted note-meta">Known · written by ${esc(character(n.updated_by||n.created_by))} · ${esc(when(n.updated_at))}</div></section>`).join('');
+    modal(`<h3>${esc(heading)}</h3><p class="muted">Known to the party. Pilots add what the table has learned in play.</p>${editing?.id?'':form}<div class="note-list">${list||(editing?'':`<p>No ${esc(heading==='NPCs'?heading:heading.toLowerCase())} recorded yet.${canEdit?'':' Pilots can add entries in Pilot Mode.'}</p>`)}</div><div class="actions">${canEdit&&!editing?`<button class="btn primary" id="noteAdd">Add ${esc(noun)}</button>`:''}<button class="btn" data-close>Close</button></div>`,'wide');
+    if(editing?.id) $('modalRoot').querySelector(`[data-note="${editing.id}"]`).innerHTML=form;
+    $('noteAdd')?.addEventListener('click',()=>openNotes(ref,{}));
+    $('modalRoot').querySelectorAll('.note-edit').forEach(button=>button.onclick=()=>openNotes(ref,notes.find(n=>n.id===Number(button.closest('[data-note]').dataset.note))));
+    $('modalRoot').querySelectorAll('.note-remove').forEach(button=>button.onclick=async()=>{
+      const note=notes.find(n=>n.id===Number(button.closest('[data-note]').dataset.note));
+      if(!confirm(`Remove “${note.title}” from ${heading}? It stays in the save history.`))return;
+      await saveNote({id:note.id,remove:true});
+    });
+    if(editing){
+      $('noteTitle').value=editing.title||'';$('noteBody').value=editing.body||'';$('noteTitle').focus();
+      $('noteCancel').onclick=()=>openNotes(ref);
+      $('noteSave').onclick=async()=>{
+        const title=$('noteTitle').value.trim();if(!title)return notify(Error(`Give the ${noun} a name.`));
+        await saveNote({id:editing.id,category,title,body:$('noteBody').value});
+      };
+    }
+  };
+  document.querySelectorAll('.ref-open').forEach(b=>b.onclick=()=>noteCategories[b.dataset.ref]?openNotes(b.dataset.ref):modal(`<h3>${esc(b.textContent)}</h3><p>Player-safe reference entries will appear here after discovery tracking is built.</p><div class="actions"><button class="btn" data-close>Close</button></div>`));
   const toggle=(id,css,key,other,symbols)=>{state[key]=!state[key];$(other).classList.toggle('collapsed',state[key]);$(id).textContent=state[key]?symbols[1]:symbols[0];if(css)$('workarea').classList.toggle(css,state[key]);};
   $('toggleLeft').onclick=()=>toggle('toggleLeft','left-collapsed','left','leftSidebar',['‹','›']);
   $('toggleRight').onclick=()=>toggle('toggleRight','right-collapsed','right','rightSidebar',['›','‹']);
@@ -706,5 +878,16 @@
   // Typing dots cycle . .. ... together wherever they appear.
   setInterval(()=>{dotCount=dotCount%3+1;document.querySelectorAll('.typing-dots').forEach(el=>el.textContent='.'.repeat(dotCount));},450);
   // Simple polling synchronizes browsers while WebSocket transport is pending.
-  setInterval(async()=>{if(!state.save || !$('play').classList.contains('active'))return;try{const next=await request('saves/'+state.save.save.id);if(next.save.updated_at!==state.save.save.updated_at){state.save=next;render();}else if(JSON.stringify(next.activity)!==JSON.stringify(state.save.activity)){state.save.activity=next.activity;fillPilotThread();renderActivity();}}catch(error){console.error(error);}},2500);
+  let refreshingTable=false;
+  setInterval(async()=>{
+    if(refreshingTable||document.hidden||!state.save||!$('play').classList.contains('active'))return;
+    const saveId=state.save.save.id;refreshingTable=true;
+    try{
+      const next=await request('saves/'+saveId);
+      if(state.save?.save.id!==saveId)return;
+      if(next.save.updated_at!==state.save.save.updated_at){state.save=next;render();}
+      else if(JSON.stringify(next.activity)!==JSON.stringify(state.save.activity)){state.save.activity=next.activity;fillPilotThread();renderActivity();}
+    }catch(error){console.error(error);}
+    finally{refreshingTable=false;}
+  },2500);
 })();

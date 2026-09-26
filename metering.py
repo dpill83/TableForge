@@ -84,6 +84,8 @@ def image_cost(model, usage):
 def image_summary(conn, where='', params=()):
     rows = conn.execute('SELECT status,completed_at,estimated_cost_usd FROM scene_images ' + where, params).fetchall()
     missing = sum(row['estimated_cost_usd'] is None for row in rows)
+    known_cost = round(sum(row['estimated_cost_usd'] or 0 for row in rows), 8)
     return {'requests': len(rows), 'generated': sum(row['completed_at'] is not None for row in rows),
             'unpricedRequests': missing,
-            'estimatedCostUsd': None if missing else round(sum(row['estimated_cost_usd'] for row in rows), 8)}
+            'knownEstimatedCostUsd': known_cost,
+            'estimatedCostUsd': None if missing else known_cost}
