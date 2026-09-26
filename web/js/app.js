@@ -3,7 +3,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const avatar = (player, className, fallback) => `<div class="${className}">${esc(fallback ?? player?.character?.[0] ?? '?')}${player?.portraitUrl?`<img src="${esc(player.portraitUrl)}" alt="">`:''}</div>`;
   const screens = [...document.querySelectorAll('.screen')];
-  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, composer:false, draft:null, generating:false, asking:false, updating:false, bindingRequest:0};
+  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, composer:false, draft:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0};
   $('appVersion').textContent = 'v2.0';
   const request = async (path, body) => {
     const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST', headers:{'Content-Type':'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
@@ -272,6 +272,8 @@
     $('resumeCombat').disabled=state.generating||state.updating;
     $('endSession').disabled=state.generating||state.updating;
     renderDraft();
+    renderLocation();
+    refreshContextFlag();
     fillPilotThread();
     renderActivity();
   };
@@ -349,7 +351,7 @@
   $('emojiBtn').onclick=()=>{field.value+=' 🙂';resize();field.focus();};
   // Attachments are intentionally disabled until byte storage is implemented.
   $('attachmentBtn').onclick=()=>modal('<h3>Attachments</h3><p>File attachments are coming in a later build.</p><div class="actions"><button class="btn" data-close>Close</button></div>');
-  const modal=html=>{const root=$('modalRoot');root.innerHTML=`<div class="overlay"><div class="modal">${html}</div></div>`;root.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>root.replaceChildren());root.querySelector('.overlay').onclick=e=>{if(e.target.classList.contains('overlay'))root.replaceChildren();};};
+  const modal=(html,size='')=>{const root=$('modalRoot');root.innerHTML=`<div class="overlay"><div class="modal ${size}">${html}</div></div>`;root.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>root.replaceChildren());root.querySelector('.overlay').onclick=e=>{if(e.target.classList.contains('overlay'))root.replaceChildren();};};
   const openPortraitEditor=()=>{
     const player=state.save?.players.find(p=>p.id===state.identity);
     if(!player)return;
@@ -469,7 +471,7 @@
       modal(`<h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge v2.0</p>${usage?`<p>AI usage this session: ${esc(usageLine(usage.session))}<br>Playthrough: ${esc(usageLine(usage.save))}<br>Estimates use <a href="${esc(usage.pricingUrl)}" target="_blank" rel="noopener">standard text rates</a> from ${esc(usage.pricingAsOf)}. Earlier activity is unavailable.</p>`:''}<div class="actions"><button class="btn" data-close>Close</button></div>`);
     } catch(error) { notify(error); }
   };
-  $('pilotToggle').onclick=()=>{state.pilot=!state.pilot;$('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');$('pilotPanel').classList.toggle('hidden',!state.pilot);};
+  $('pilotToggle').onclick=()=>{state.pilot=!state.pilot;$('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');$('pilotPanel').classList.toggle('hidden',!state.pilot);refreshContextFlag();};
   $('askAi').onclick=()=>{
     if(!state.pilot||!state.save||!state.identity)return;
     modal('<h3>Ask AI-DM</h3><p>Pilot conversation is saved separately from the table chat. Asking does not change Ready or advance the table.</p><div id="pilotThread" class="pilot-chat-log" role="log" aria-label="Pilot conversation"></div><div id="pilotAskStatus" class="muted" role="status" aria-live="polite"></div><label>Question<textarea id="pilotAsk" rows="4" maxlength="20000" placeholder="Ask the AI-DM a question"></textarea></label><div class="actions"><button class="btn" data-close>Close</button><button class="btn primary" id="pilotSend">Send question</button></div>');
@@ -497,7 +499,101 @@
     field.addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}});
     field.focus();
   };
-  $('reviewContext').onclick=()=>modal('<h3>Review Context</h3><p>Saved transcript and cartridge bindings are available for the future AI-DM runtime.</p><div class="actions"><button class="btn" data-close>Close</button></div>');
+  // Review Context shows the exact provider payload for the next advance and everything left out of it.
+  const count=value=>new Intl.NumberFormat().format(value||0);
+  const plural=(n,word)=>`${count(n)} ${word}${n===1?'':'s'}`;
+  const when=value=>value?new Date(value).toLocaleString([], {month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}):'';
+  const contextFlags=report=>{
+    const flags=[],module=report.module,transcript=report.transcript,outcomes=report.combatOutcomes;
+    if(module.truncated){
+      const later=module.omittedSections;
+      flags.push({level:'warn',text:`Module cut off: ${count(module.sentChars)} of ${count(module.chars)} characters sent.${module.cutSection?` The cut falls inside “${module.cutSection}”.`:''}${later.length?` ${plural(later.length,'later section')} not sent: ${later.slice(0,8).join(', ')}${later.length>8?', …':''}`:''}`});
+    }
+    if(transcript.omitted) flags.push({level:'warn',text:`${plural(transcript.omitted,'older message')} (${count(transcript.omittedChars)} characters, ${when(transcript.omittedFrom)} – ${when(transcript.omittedThrough)}) are not sent and not covered by a summary.`});
+    if(outcomes?.omitted) flags.push({level:'warn',text:`${plural(outcomes.omitted,'older combat outcome')} not sent; only the latest ${count(outcomes.total-outcomes.omitted)} are included.`});
+    if(transcript.currentBeatOverBudget) flags.push({level:'info',text:`The current beat is ${count(transcript.currentBeatChars)} characters, over the ${count(transcript.cap)}-character transcript budget. It is still sent in full.`});
+    if(transcript.summarized) flags.push({level:'info',text:`${plural(transcript.summarized,'earlier message')} are represented by the saved summary instead of verbatim.`});
+    if(module.staleLocation) flags.push({level:'warn',text:'The saved party location no longer exists in this cartridge. Approach is used until a Pilot picks the right area.'});
+    if(!flags.some(flag=>flag.level==='warn')) flags.unshift({level:'ok',text:module.mode==='focused'?'Nothing is unexpectedly omitted. Module sections outside the current focus are left out by design; see Module focus below.':'Nothing is omitted. The full module and every unsummarized message are sent.'});
+    return flags;
+  };
+  const contextKey=()=>state.save?state.save.save.id+'|'+state.save.save.updated_at:'';
+  let contextFlagKey='';
+  const refreshContextFlag=async()=>{
+    const button=$('reviewContext'),key=contextKey();
+    if(!state.pilot||!key||key===contextFlagKey||!state.save.cartridge.available)return;
+    contextFlagKey=key;
+    try{
+      const preview=await request('saves/'+state.save.save.id+'/context');
+      state.locations=preview.report.locations||[];renderLocation();
+      const warnings=contextFlags(preview.report).filter(flag=>flag.level==='warn').length;
+      button.classList.toggle('flagged',!!warnings);
+      button.textContent=warnings?`Review Context · ${plural(warnings,'omission')}`:'Review Context';
+    }catch(error){contextFlagKey='';console.error(error);}
+  };
+  const renderLocation=()=>{
+    const wrap=$('pilotLocationWrap'),select=$('pilotLocation');
+    wrap.classList.toggle('hidden',!state.locations.length);
+    if(!state.locations.length||!state.save)return;
+    const options=state.locations.map(item=>`<option value="${item.value??''}">${esc(item.label)}</option>`).join('');
+    if(select.dataset.options!==options){select.innerHTML=options;select.dataset.options=options;}
+    select.value=String(state.save.save.location??'');
+    select.disabled=!state.identity||state.generating||state.updating;
+  };
+  $('pilotLocation').onchange=async event=>{
+    const value=event.target.value;
+    await update('location',{playerId:state.identity,location:value===''?null:Number(value)});
+    renderLocation();
+  };
+  const moduleFocus=module=>{
+    if(module.mode!=='focused') return `<p>${module.roomsInRunData?'run-data.json lists rooms, but module.md has no matching “### Area N” headings under “## Areas”, so':'run-data.json has no rooms, so'} the full module is sent every time.</p>`;
+    const included=module.included.filter(item=>item.chars>20);
+    const rows=included.map(item=>`<li><span>${esc(item.title.replace(/\s*\*\(.*\)\*\s*$/,''))}</span><span class="muted">${esc(item.reason)} · ${count(item.chars)}</span></li>`).join('');
+    const skipped=module.excluded.map(title=>`<li>${esc(title.replace(/\s*\*\(.*\)\*\s*$/,''))}</li>`).join('');
+    return `<p>Focused on <strong>${esc(module.locationLabel)}</strong>: sending ${count(module.sentChars)} of ${count(module.fullChars)} module characters. The core is always sent; areas and stat blocks follow the party and the subjects of current contributions. This count covers module text only.</p>
+      <ul class="context-sections">${rows}</ul>
+      ${skipped?`<details class="context-message"><summary>Not sent this turn · ${plural(module.excluded.length,'section')}</summary><ul class="context-skipped">${skipped}</ul></details>`:''}`;
+  };
+  const openContextReview=async()=>{
+    if(!state.pilot||!state.save)return;
+    modal('<h3>Review Context</h3><p>Loading the next AI-DM request…</p>','wide');
+    let preview;
+    try{preview=await request('saves/'+state.save.save.id+'/context');}
+    catch(error){$('modalRoot').querySelector('.modal p').textContent=error.message;return;}
+    const {report,summary,messages,runtime}=preview,total=messages.reduce((sum,m)=>sum+m.content.length,0);
+    const flags=contextFlags(report).map(flag=>`<li class="context-flag ${flag.level}">${esc(flag.text)}</li>`).join('');
+    const summaryBlock=summary?`<div class="context-summary"><div class="muted">Saved by ${esc(summary.player_character||'a Pilot')} · ${esc(when(summary.created_at))}</div><div class="markdown-body">${TableForgeMarkdown.render(summary.body)}</div></div>`:'<p>No summary saved yet.</p>';
+    const canSummarize=report.summaryAvailable>0;
+    const payload=messages.map((m,i)=>`<details class="context-message"${i===messages.length-1?' open':''}><summary><strong>${esc(m.role)}</strong> · ${count(m.content.length)} characters</summary><pre>${esc(m.content)}</pre></details>`).join('');
+    modal(`<h3>Review Context</h3>
+      <p>${esc(runtime.provider==='openai'?`Exactly what the next advance sends to ${runtimeLabel(runtime)}, as the table stands right now.`:'Mock AI is active, so nothing leaves this machine. This is exactly what a live provider would receive for the next advance.')}</p>
+      <ul class="context-flags">${flags}</ul>
+      <div class="context-section"><div class="section-title">Module focus</div>${moduleFocus(report.module)}</div>
+      <div class="context-section"><div class="section-title">Continuity summary</div>${summaryBlock}
+        <div id="summaryDraft"></div>
+        <div class="actions"><button class="btn" id="draftSummary"${canSummarize?'':' disabled'}>${canSummarize?`Summarize ${plural(report.summaryAvailable,'older message')}`:'Recent history fits; nothing to summarize yet'}</button></div>
+      </div>
+      <div class="context-section"><div class="section-title">Request · ${plural(messages.length,'message')} · ${count(total)} characters</div>${payload}</div>
+      <div class="actions"><button class="btn" data-close>Close</button></div>`,'wide');
+    $('draftSummary').onclick=()=>draftSummary(report.summaryAvailable);
+  };
+  const draftSummary=async size=>{
+    const button=$('draftSummary'),target=$('summaryDraft');
+    button.disabled=true;button.textContent='Drafting summary…';
+    let draft;
+    try{draft=await request('saves/'+state.save.save.id+'/summary-draft',{playerId:state.identity});}
+    catch(error){button.disabled=false;button.textContent=`Summarize ${plural(size,'older message')}`;return notify(error);}
+    button.classList.add('hidden');
+    target.innerHTML=`<label>Draft summary · replaces the saved summary and covers ${plural(draft.messageCount,'more message')}. Edit anything that is wrong before saving.<textarea id="summaryText" rows="10" maxlength="20000"></textarea></label><div class="actions"><button class="btn" id="discardSummary">Discard draft</button><button class="btn good" id="saveSummary">Save summary</button></div>`;
+    $('summaryText').value=draft.draft;
+    $('discardSummary').onclick=openContextReview;
+    $('saveSummary').onclick=async()=>{
+      const text=$('summaryText').value.trim();if(!text)return notify(Error('The summary cannot be empty.'));
+      try{state.save=await request('saves/'+state.save.save.id+'/summaries',{playerId:state.identity,text,basedOn:draft.basedOn,throughMessageId:draft.throughMessageId});render();await openContextReview();}
+      catch(error){notify(error);}
+    };
+  };
+  $('reviewContext').onclick=openContextReview;
   $('pilotMap').onclick=()=>modal('<h3>GM Map</h3><p>Map viewing will be connected to validated cartridge assets.</p><div class="actions"><button class="btn" data-close>Close</button></div>');
   document.querySelectorAll('.ref-open').forEach(b=>b.onclick=()=>modal(`<h3>${esc(b.textContent)}</h3><p>Player-safe reference entries will appear here after discovery tracking is built.</p><div class="actions"><button class="btn" data-close>Close</button></div>`));
   const toggle=(id,css,key,other,symbols)=>{state[key]=!state[key];$(other).classList.toggle('collapsed',state[key]);$(id).textContent=state[key]?symbols[1]:symbols[0];if(css)$('workarea').classList.toggle(css,state[key]);};

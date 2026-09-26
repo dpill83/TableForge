@@ -328,6 +328,235 @@ class FlowTest(unittest.TestCase):
         kept = self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'I drafted this earlier.', 'beat': 2})
         self.assertEqual(kept['messages'][-1]['body'], 'I drafted this earlier.')
 
+    def play_long_history(self, save_id, player, beats=4, size=15000):
+        for beat in range(beats):
+            self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': str(beat) * size})
+            self.api(f'/api/saves/{save_id}/advance', {'override': True})
+
+    def test_context_preview_is_the_exact_provider_payload(self):
+        save_id = self.ready_save('# Intro\n' + 'x' * ai.MODULE_CAP + '\n# Finale\nSecret ending.\n## Epilogue\n')
+        preview = self.api(f'/api/saves/{save_id}/context')
+        module = preview['report']['module']
+        self.assertTrue(module['truncated'])
+        self.assertEqual(module['cutSection'], '# Intro')
+        self.assertEqual(module['omittedSections'], ['# Finale', '## Epilogue'])
+        self.assertNotIn('Secret ending', preview['messages'][0]['content'])
+        self.assertEqual(preview['report']['transcript']['omitted'], 0)
+        fake = FakeProvider()
+        with patch.object(ai, 'current_provider', return_value=fake):
+            self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
+        self.assertEqual(preview['messages'], ai.chat_messages(fake.context))
+
+    def test_current_beat_is_never_trimmed_and_omissions_are_reported(self):
+        save_id = self.ready_save()
+        first, second = [p['id'] for p in self.api(f'/api/saves/{save_id}')['players']]
+        self.play_long_history(save_id, first)
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'a' * 20000})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': second, 'text': 'b' * 20000})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'I keep watch.'})
+        report = self.api(f'/api/saves/{save_id}/context')['report']['transcript']
+        self.assertEqual(report['currentBeat'], 3)
+        self.assertTrue(report['currentBeatOverBudget'])
+        self.assertEqual(report['history'], 0)
+        self.assertEqual(report['omitted'], 9)
+        fake = FakeProvider()
+        with patch.object(ai, 'current_provider', return_value=fake):
+            self.api(f'/api/saves/{save_id}/advance', {'override': True})
+        self.assertEqual([m['body'] for m in fake.context['messages']], ['a' * 20000, 'b' * 20000, 'I keep watch.'])
+
+    def test_summary_is_drafted_reviewed_saved_and_used(self):
+        save_id = self.ready_save()
+        first, second = [p['id'] for p in self.api(f'/api/saves/{save_id}')['players']]
+        self.assertIn('no older history', self.api_error(f'/api/saves/{save_id}/summary-draft', {'playerId': first})['error'])
+        self.play_long_history(save_id, first)
+        before = self.api(f'/api/saves/{save_id}/context')
+        self.assertGreater(before['report']['transcript']['omitted'], 0)
+        draft = self.api(f'/api/saves/{save_id}/summary-draft', {'playerId': first})
+        self.assertIsNone(draft['basedOn'])
+        self.assertIn('Mock summary', draft['draft'])
+        self.assertIsNone(self.api(f'/api/saves/{save_id}')['summary'])
+        with patch.object(ai, 'current_provider', return_value=MeteredProvider()):
+            self.api(f'/api/saves/{save_id}/summary-draft', {'playerId': first})
+        with closing(sqlite3.connect(self.path / 'tableforge.sqlite3')) as conn:
+            self.assertEqual([row[0] for row in conn.execute('SELECT purpose FROM ai_usage')], ['summary'])
+
+        current = self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'Open beat.'})
+        open_id = current['messages'][-1]['id']
+        error = self.api_error(f'/api/saves/{save_id}/summaries', {'playerId': first, 'text': 'x', 'basedOn': None,
+                                                                   'throughMessageId': open_id})
+        self.assertIn('completed beats', error['error'])
+        saved = self.api(f'/api/saves/{save_id}/summaries', {'playerId': second, 'text': 'The party crossed the moor.',
+                                                             'basedOn': None, 'throughMessageId': draft['throughMessageId']})
+        self.assertEqual(saved['summary']['player_character'], 'Ethereal')
+        self.assertEqual(saved['summary']['through_message_id'], draft['throughMessageId'])
+        stale = self.api_error(f'/api/saves/{save_id}/summaries', {'playerId': first, 'text': 'Again.', 'basedOn': None,
+                                                                   'throughMessageId': draft['throughMessageId']})
+        self.assertIn('Another summary', stale['error'])
+
+        after = self.api(f'/api/saves/{save_id}/context')
+        self.assertIn('The party crossed the moor.', after['messages'][0]['content'])
+        self.assertEqual(after['report']['transcript']['summarized'],
+                         len([m for m in saved['messages'] if m['id'] <= draft['throughMessageId']]))
+        self.assertEqual(after['report']['transcript']['omitted'], 0)
+        self.assertEqual(after['messages'][-1]['content'], 'George: Open beat.')
+
+    FOCUSED_MODULE = """# Well Job
+Always-known premise.
+
+## Running notes
+The bell clock rings.
+
+## Hook
+
+### Player Briefing (read aloud)
+Sybil hires you.
+
+### DM Secrets (never read aloud)
+The robbers are hostages.
+
+## Approach & arrival
+The road to the graveyard.
+
+## Areas
+
+### Area 1: Gate  *(entrance)*
+Gate text.
+
+### Area 2: Hall  *(breather)*
+Hall text.
+
+### Area 3: Stage  *(boss)*
+Stage text.
+
+## Stat blocks
+
+### Muxus (CR 15)
+Muxus block.
+
+### Flyman (CR 7)
+Flyman block.
+"""
+    FOCUSED_RUN_DATA = {'title': 'Well Job', 'rooms': [
+        {'roomNumber': 1, 'beat': 'entrance', 'connectsTo': [2], 'encounter': {'monsters': []}},
+        {'roomNumber': 2, 'beat': 'breather', 'connectsTo': [1, 3], 'encounter': {'monsters': []}},
+        {'roomNumber': 3, 'beat': 'boss', 'connectsTo': [2], 'encounter': {'monsters': ['Muxus', '2 Flyman']}}]}
+
+    def focused_save(self, module=None, run_data=None):
+        cartridge = self.cartridge_zip({'manifest.json': json.dumps({'format': 'tableforge-adventure', 'formatVersion': 1,
+                                                                     'title': 'Well Job', 'resources': {}}),
+                                        'module.md': module if module is not None else self.FOCUSED_MODULE,
+                                        'run-data.json': json.dumps(run_data if run_data is not None else self.FOCUSED_RUN_DATA)})
+        save = self.api('/api/saves', {'cartridgeId': cartridge['id'], 'players': [{'name': 'A', 'character': 'Alice'}]})
+        return save['save']['id'], save['players'][0]['id']
+
+    def test_action_retrieval_matches_preview_and_expires_with_beat(self):
+        from test_module_context import MODULE, ROOMS
+        save_id, player = self.focused_save(MODULE, {'rooms': ROOMS})
+        self.api(f'/api/saves/{save_id}/location', {'playerId': player, 'location': 5})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'I read the prompt-book.'})
+        preview = self.api(f'/api/saves/{save_id}/context')
+        fake = FakeProvider('You study the book. [Location: Area 5]')
+        with patch.object(ai, 'current_provider', return_value=fake):
+            advanced = self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
+        self.assertEqual(preview['messages'], ai.chat_messages(fake.context))
+        self.assertIn('EXACT MUXUS LAIR ACTIONS', fake.context['module'])
+        self.assertNotIn('OBSERVATORY SECRET', fake.context['module'])
+        self.assertEqual(advanced['save']['location'], 5)
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'I wait quietly.'})
+        next_context = ai.build_context(self.api(f'/api/saves/{save_id}'), self.path)
+        self.assertNotIn('EXACT MUXUS LAIR ACTIONS', next_context['module'])
+        self.assertIn('I read the prompt-book.', [m['body'] for m in next_context['messages']])
+
+    def test_remote_pilot_question_retrieves_stat_block_without_table_changes(self):
+        from test_module_context import MODULE, ROOMS
+        save_id, player = self.focused_save(MODULE, {'rooms': ROOMS})
+        before = self.api(f'/api/saves/{save_id}/location', {'playerId': player, 'location': 1})
+        fake = FakeProvider('Those are the available lair actions.')
+        with patch.object(ai, 'current_provider', return_value=fake):
+            after = self.api(f'/api/saves/{save_id}/ask', {'playerId': player, 'text': "What are Muxus's lair actions?"})
+        self.assertIn('EXACT MUXUS LAIR ACTIONS', fake.context['module'])
+        self.assertNotIn('OBSERVATORY SECRET', fake.context['module'])
+        self.assertEqual(after['save']['location'], 1)
+        self.assertEqual(after['save']['beat'], before['save']['beat'])
+        self.assertEqual(after['messages'], before['messages'])
+        self.assertEqual([p['ready'] for p in after['players']], [p['ready'] for p in before['players']])
+
+    def test_followup_uses_immediate_narration_for_retrieval(self):
+        from test_module_context import MODULE, ROOMS
+        save_id, player = self.focused_save(MODULE, {'rooms': ROOMS})
+        self.api(f'/api/saves/{save_id}/location', {'playerId': player, 'location': 5})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'Look around.'})
+        fake = FakeProvider('The prompt-book lies open on the chair. [Location: Area 5]')
+        with patch.object(ai, 'current_provider', return_value=fake):
+            self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'I read it.'})
+        context = ai.build_context(self.api(f'/api/saves/{save_id}'), self.path)
+        self.assertIn('EXACT MUXUS LAIR ACTIONS', context['module'])
+        self.assertTrue(any('preceding reply' in s['reason'] for s in context['report']['module']['included']))
+
+    def test_focused_context_follows_ai_dm_location_marker(self):
+        save_id, player = self.focused_save()
+        preview = self.api(f'/api/saves/{save_id}/context')
+        module = preview['report']['module']
+        self.assertEqual((module['mode'], module['location']), ('focused', None))
+        system = preview['messages'][0]['content']
+        for text in ('Always-known premise', 'bell clock', 'hostages', 'Sybil hires you', 'road to the graveyard', 'Gate text'):
+            self.assertIn(text, system)
+        for text in ('Hall text', 'Stage text', 'Muxus block'):
+            self.assertNotIn(text, system)
+        self.assertIn('[Location: Area N]', system)
+        self.assertEqual([item['label'] for item in preview['report']['locations']],
+                         ['Approach (not yet at the site)', 'Area 1: Gate', 'Area 2: Hall', 'Area 3: Stage'])
+
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'We go in.'})
+        with patch.object(ai, 'current_provider', return_value=FakeProvider('You pass the gate into the hall.\n\n[Location: Area 2]')):
+            advanced = self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
+        self.assertEqual(advanced['messages'][-1]['body'], 'You pass the gate into the hall.')
+        self.assertEqual(advanced['save']['location'], 2)
+        event = [e for e in advanced['events'] if e['kind'] == 'location'][-1]
+        self.assertEqual((event['player_id'], json.loads(event['body'])), (None, {'location': 2, 'source': 'ai-dm'}))
+
+        system = self.api(f'/api/saves/{save_id}/context')['messages'][0]['content']
+        for text in ('Gate text', 'Hall text', 'Stage text', 'Muxus block', 'Flyman block', 'bell clock'):
+            self.assertIn(text, system)
+        self.assertNotIn('Sybil hires you', system)
+
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'Wait.'})
+        with patch.object(ai, 'current_provider', return_value=FakeProvider('Nothing moves. [Location: Area 9]')):
+            advanced = self.api(f'/api/saves/{save_id}/advance', {'beat': 2})
+        self.assertEqual(advanced['messages'][-1]['body'], 'Nothing moves.')
+        self.assertEqual(advanced['save']['location'], 2)
+
+    def test_pilot_corrects_location(self):
+        save_id, player = self.focused_save()
+        moved = self.api(f'/api/saves/{save_id}/location', {'playerId': player, 'location': 3})
+        self.assertEqual(moved['save']['location'], 3)
+        event = [e for e in moved['events'] if e['kind'] == 'location'][-1]
+        self.assertEqual((event['player_id'], json.loads(event['body'])['source']), (player, 'pilot'))
+        for bad in (7, '3'):
+            self.assertIn('Choose a location', self.api_error(f'/api/saves/{save_id}/location',
+                                                              {'playerId': player, 'location': bad})['error'])
+        preview = self.api(f'/api/saves/{save_id}/context')
+        self.assertIn('Muxus block', preview['messages'][0]['content'])
+        self.assertNotIn('Gate text', preview['messages'][0]['content'])
+        back = self.api(f'/api/saves/{save_id}/location', {'playerId': player, 'location': None})
+        self.assertIsNone(back['save']['location'])
+
+    def test_mock_ai_dm_keeps_location_and_hides_marker(self):
+        save_id, player = self.focused_save()
+        self.api(f'/api/saves/{save_id}/location', {'playerId': player, 'location': 1})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'Look around.'})
+        advanced = self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
+        self.assertNotIn('[Location', advanced['messages'][-1]['body'])
+        self.assertEqual(advanced['save']['location'], 1)
+
+    def test_unstructured_run_data_sends_full_module(self):
+        save_id = self.ready_save('# Test adventure\n\n## Areas\n\n### Area 1: Gate\nGate text.')
+        preview = self.api(f'/api/saves/{save_id}/context')
+        self.assertEqual(preview['report']['module']['mode'], 'full')
+        self.assertIn('Gate text', preview['messages'][0]['content'])
+        self.assertNotIn('[Location:', preview['messages'][0]['content'])
+
     def test_manifest_paths_and_saved_bindings(self):
         manifest = {'format': 'tableforge-adventure', 'formatVersion': 1,
                     'title': 'Manifest Adventure',

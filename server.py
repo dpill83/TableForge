@@ -19,6 +19,7 @@ from urllib.parse import quote, urlparse
 
 import ai
 import metering
+import module_context
 
 ROOT = Path(__file__).resolve().parent
 WEB = ROOT / "web"
@@ -131,6 +132,13 @@ def initialize():
                 FOREIGN KEY(save_id) REFERENCES saves(id),
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
             );
+            CREATE TABLE IF NOT EXISTS summaries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, save_id TEXT NOT NULL,
+                through_message_id INTEGER NOT NULL, based_on INTEGER,
+                body TEXT NOT NULL, player_id TEXT, created_at TEXT NOT NULL,
+                FOREIGN KEY(save_id) REFERENCES saves(id),
+                FOREIGN KEY(based_on) REFERENCES summaries(id)
+            );
             CREATE TABLE IF NOT EXISTS ai_usage (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 save_id TEXT NOT NULL, session_id TEXT NOT NULL,
@@ -151,6 +159,9 @@ def initialize():
             conn.execute('ALTER TABLE saves ADD COLUMN adventure_title TEXT')
         if 'format_version' not in columns:
             conn.execute('ALTER TABLE saves ADD COLUMN format_version INTEGER NOT NULL DEFAULT 1')
+        if 'location' not in columns:
+            # NULL means the party has not yet reached the site (approach).
+            conn.execute('ALTER TABLE saves ADD COLUMN location INTEGER')
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(messages)')}
         if 'session_id' not in columns:
             conn.execute('ALTER TABLE messages ADD COLUMN session_id TEXT')
@@ -359,6 +370,9 @@ def snapshot(conn, save_id):
     if checkpoint:
         checkpoint['ready'] = json.loads(checkpoint['ready'])
     players = [dict(row) for row in conn.execute('SELECT * FROM players WHERE save_id=? ORDER BY rowid', (save_id,))]
+    summary = conn.execute(
+        'SELECT s.*, p.character AS player_character FROM summaries s LEFT JOIN players p ON p.id=s.player_id '
+        'WHERE s.save_id=? ORDER BY s.id DESC LIMIT 1', (save_id,)).fetchone()
     portraits = {row['player_id']: row['updated_at'] for row in conn.execute(
         'SELECT player_id,updated_at FROM player_portraits WHERE save_id=?', (save_id,))}
     for player in players:
@@ -374,6 +388,7 @@ def snapshot(conn, save_id):
         'sessions': sessions,
         'events': [dict(row) for row in conn.execute('SELECT * FROM session_events WHERE save_id=? ORDER BY id', (save_id,))],
         'checkpoint': checkpoint,
+        'summary': dict(summary) if summary else None,
         'activity': activity(save_id),
         'usage': {
             'session': metering.summary(conn, 'WHERE session_id=?', (sessions[-1]['id'],)) if sessions else metering.summary(conn, 'WHERE 0'),
@@ -437,8 +452,77 @@ def begin_ask(conn, save_id, payload):
     return context
 
 
+def context_preview(conn, save_id):
+    """The exact provider payload the next advance would send, with everything left out."""
+    state = snapshot(conn, save_id)
+    if not state['cartridge']['available']:
+        raise ValueError('Locate the cartridge to review AI context')
+    context = ai.build_context(state, DATA)
+    report = context.pop('report')
+    return {'purpose': context['purpose'], 'beat': context['beat'], 'mode': state['save']['mode'],
+            'runtime': ai.runtime_status(), 'messages': ai.chat_messages(context), 'report': report,
+            'summary': state['summary']}
+
+
+def begin_summary(conn, save_id, payload):
+    state = snapshot(conn, save_id)
+    if not active_session(conn, save_id):
+        raise ValueError('Start the next session before summarizing')
+    require_player(state, payload.get('playerId'))
+    if save_id in GENERATING:
+        raise ValueError('The AI-DM is already responding')
+    context = ai.build_summary_context(state)
+    context['basedOn'] = state['summary']['id'] if state['summary'] else None
+    GENERATING[save_id] = 'summary'
+    return context
+
+
+def save_summary(conn, save_id, payload):
+    state = snapshot(conn, save_id)
+    player = require_player(state, payload.get('playerId'))
+    body = str(payload.get('text') or '').strip()
+    if not body or len(body) > 20000:
+        raise ValueError('Summary must contain 1 to 20,000 characters')
+    current = state['summary']
+    if payload.get('basedOn') != (current['id'] if current else None):
+        raise ValueError('Another summary was saved first. Draft a new summary from the latest one.')
+    through = int(payload.get('throughMessageId'))
+    history, _ = ai.split_beat(state['messages'])
+    if not any(message['id'] == through for message in history):
+        raise ValueError('Summaries can only cover completed beats')
+    if current and through <= current['through_message_id']:
+        raise ValueError('This history is already summarized')
+    conn.execute('INSERT INTO summaries (save_id,through_message_id,based_on,body,player_id,created_at) VALUES (?,?,?,?,?,?)',
+                 (save_id, through, current['id'] if current else None, body, player['id'], utc()))
+    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+
+
+def adventure_for(state):
+    cartridge = state['cartridge']
+    return module_context.load(DATA, cartridge['id'], cartridge['resources'])
+
+
+def set_location(conn, state, location, player_id, source):
+    """Move the party's tracked location; every change is kept as a session event."""
+    if location == state['save']['location']:
+        return
+    session = active_session(conn, state['save']['id'])
+    conn.execute('UPDATE saves SET location=?, updated_at=? WHERE id=?', (location, utc(), state['save']['id']))
+    conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
+                 (state['save']['id'], session['id'], player_id, 'location',
+                  json.dumps({'location': location, 'source': source}), utc()))
+
+
 def publish_advance(conn, save_id, text):
     session = active_session(conn, save_id)
+    text, marked, location = module_context.take_marker(text)
+    if not text:
+        raise ValueError('The AI-DM returned an empty response')
+    if marked:
+        state = snapshot(conn, save_id)
+        adventure = adventure_for(state)
+        if adventure.focused and adventure.valid(location):
+            set_location(conn, state, location, None, 'ai-dm')
     conn.execute(
         'INSERT INTO messages (save_id,session_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?)',
         (save_id, session['id'], 'ai', 'AI-DM', text, utc()),
@@ -513,6 +597,9 @@ class Handler(BaseHTTPRequestHandler):
                         item['cartridgeAvailable'] = (DATA / 'cartridges' / (item['cartridge_id'] + '.zip')).is_file()
                         saves.append(item)
                     return self.respond({'saves': saves})
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'context':
+                with LOCK, db() as conn:
+                    return self.respond(context_preview(conn, parts[2]))
             if path.startswith('/api/saves/'):
                 with LOCK, db() as conn:
                     return self.respond(snapshot(conn, path.rsplit('/', 1)[-1]))
@@ -540,6 +627,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.handle_advance(parts[2], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'ask':
                 return self.handle_ask(parts[2], payload)
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'summary-draft':
+                return self.handle_summary_draft(parts[2], payload)
             with LOCK, db() as conn:
                 if len(parts) == 6 and parts[:2] == ['api', 'saves'] and parts[3] == 'players' and parts[5] == 'portrait':
                     save_id, player_id = parts[2], parts[4]
@@ -668,6 +757,21 @@ class Handler(BaseHTTPRequestHandler):
                                  (stamp, payload['playerId'], session['id']))
                     conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (stamp, save_id))
                     return self.respond(snapshot(conn, save_id))
+                if action == 'location':
+                    player = require_player(state, payload.get('playerId'))
+                    location = payload.get('location')
+                    if location is not None and type(location) is not int:
+                        raise ValueError('Choose a location from the list')
+                    if not state['cartridge']['available']:
+                        raise ValueError('Locate the cartridge before changing location')
+                    adventure = adventure_for(state)
+                    if not adventure.focused or not adventure.valid(location):
+                        raise ValueError('Choose a location from the list')
+                    set_location(conn, state, location, player['id'], 'pilot')
+                    return self.respond(snapshot(conn, save_id))
+                if action == 'summaries':
+                    save_summary(conn, save_id, payload)
+                    return self.respond(snapshot(conn, save_id))
                 if action == 'combat-outcome':
                     if state['save']['mode'] != 'combat':
                         raise ValueError('The table is not in Combat Mode')
@@ -753,6 +857,20 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_ask(self, save_id, payload):
         return self.run_generation(save_id, begin_ask, publish_ask, payload)
+
+    def handle_summary_draft(self, save_id, payload):
+        # Drafts are returned for Pilot review; nothing is saved until they choose to keep it.
+        drafted = {}
+
+        def begin(conn, save_id, payload):
+            drafted.update(begin_summary(conn, save_id, payload))
+            return drafted
+
+        def publish(conn, save_id, text):
+            return {'draft': text, 'basedOn': drafted['basedOn'], 'messageCount': len(drafted['messages']),
+                    'fromMessageId': drafted['fromMessageId'], 'throughMessageId': drafted['throughMessageId']}
+
+        return self.run_generation(save_id, begin, publish, payload)
 
 
 if __name__ == '__main__':

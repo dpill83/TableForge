@@ -1,10 +1,11 @@
 """AI-DM providers and context assembly for table advancement."""
 import json
 import os
+import re
 import urllib.error
 import urllib.request
-import zipfile
-from pathlib import Path
+
+import module_context
 
 SYSTEM_PROMPT = (
     'You are the AI-DM for TableForge, running an AdventureForge cartridge. '
@@ -16,8 +17,19 @@ ASK_PROMPT = (
     'Answer the Pilot. Do not narrate a new table beat. '
     'Do not treat this reply as public #table narration.'
 )
+SUMMARY_PROMPT = (
+    'You maintain the durable campaign summary for a TableForge playthrough. '
+    'Rewrite the previous summary and the new transcript into one cumulative summary of what has happened: '
+    'party decisions, discoveries, NPCs met and their attitudes, locations visited, items gained or lost, '
+    'combat outcomes, and open threads. Use only facts from the summary and transcript. '
+    'Be concise, use plain prose or short bullet lists, and do not narrate a new beat.'
+)
 MODULE_CAP = 60_000
 TRANSCRIPT_CAP = 40_000
+# Older history is summarized so the verbatim window keeps headroom for new play.
+SUMMARY_WINDOW = TRANSCRIPT_CAP // 2
+SUMMARY_INPUT_CAP = 120_000
+COMBAT_OUTCOME_LIMIT = 5
 OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
 OPENAI_TIMEOUT = 60
 
@@ -48,16 +60,87 @@ def current_provider():
     return MockProvider()
 
 
-def read_module(data_dir, cartridge_id, resources):
-    archive_path = Path(data_dir) / 'cartridges' / (cartridge_id + '.zip')
-    name = resources.get('module.md')
-    if not name:
-        raise ValueError('Cartridge is missing module.md')
-    if not archive_path.is_file():
-        raise ValueError('Locate the cartridge for this save')
-    with zipfile.ZipFile(archive_path) as archive:
-        text = archive.read(name).decode('utf-8')
-    return text[:MODULE_CAP]
+def module_report(text, cap=MODULE_CAP):
+    """Describe how much of the module fits and which sections fall past the cut."""
+    report = {'chars': len(text), 'sentChars': min(len(text), cap), 'truncated': len(text) > cap,
+              'cutSection': None, 'omittedSections': []}
+    if not report['truncated']:
+        return report
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if line.startswith('#'):
+            heading = line.strip()
+            if offset < cap:
+                report['cutSection'] = heading
+            else:
+                report['omittedSections'].append(heading)
+        offset += len(line)
+    return report
+
+
+def message_size(message):
+    return len(message.get('body') or '') + len(message.get('name') or '')
+
+
+def split_beat(messages):
+    """Split messages into completed history and the open beat after the latest AI-DM narration."""
+    messages = list(messages)
+    last_ai = max((index for index, message in enumerate(messages) if message['kind'] == 'ai'), default=-1)
+    return messages[:last_ai + 1], messages[last_ai + 1:]
+
+
+def unsummarized(messages, summary):
+    if not summary:
+        return list(messages)
+    return [message for message in messages if message['id'] > summary['through_message_id']]
+
+
+def recent_history(history, budget):
+    kept = []
+    for message in reversed(history):
+        if message_size(message) > budget:
+            break
+        kept.append(message)
+        budget -= message_size(message)
+    kept.reverse()
+    return kept
+
+
+def select_transcript(messages, summary=None, cap=TRANSCRIPT_CAP):
+    """Always keep the open beat; fill the remaining budget with the newest unsummarized history."""
+    history, current = split_beat(unsummarized(messages, summary))
+    current_chars = sum(message_size(message) for message in current)
+    kept = recent_history(history, max(0, cap - current_chars))
+    omitted = history[:len(history) - len(kept)]
+    report = {
+        'total': len(messages),
+        'summarized': len(messages) - len(history) - len(current),
+        'currentBeat': len(current),
+        'currentBeatChars': current_chars,
+        'currentBeatOverBudget': current_chars > cap,
+        'history': len(kept),
+        'omitted': len(omitted),
+        'omittedChars': sum(message_size(message) for message in omitted),
+        'omittedFrom': omitted[0]['created_at'] if omitted else None,
+        'omittedThrough': omitted[-1]['created_at'] if omitted else None,
+        'cap': cap,
+    }
+    return kept + current, report
+
+
+def summary_range(messages, summary=None):
+    """Oldest unsummarized history outside the recent window, sized for one summary request."""
+    history, current = split_beat(unsummarized(messages, summary))
+    current_chars = sum(message_size(message) for message in current)
+    kept = recent_history(history, max(0, SUMMARY_WINDOW - current_chars))
+    candidates = history[:len(history) - len(kept)]
+    selected, total = [], 0
+    for message in candidates:
+        if selected and total + message_size(message) > SUMMARY_INPUT_CAP:
+            break
+        selected.append(message)
+        total += message_size(message)
+    return selected
 
 
 def trim_transcript(messages, cap=TRANSCRIPT_CAP):
@@ -74,29 +157,94 @@ def trim_transcript(messages, cap=TRANSCRIPT_CAP):
 
 
 def build_context(state, data_dir, purpose='advance'):
+    """Assemble provider context plus a report of everything left out of it."""
     cartridge = state['cartridge']
-    messages = trim_transcript(state['messages'])
+    summary = state.get('summary')
+    adventure = module_context.load(data_dir, cartridge['id'], cartridge['resources'])
+    location = state['save'].get('location')
+    stale_location = not adventure.valid(location)
+    if stale_location:
+        location = None
+    # Only the open response window drives action retrieval. Old dialogue remains
+    # in history without repeatedly pulling its former locations into the module.
+    history, current = split_beat(state['messages'])
+    queries = [('current player contributions', '\n'.join(m['body'] for m in current))]
+    if purpose == 'ask':
+        pilot_history, pilot_current = split_beat(state.get('pilot') or [])
+        queries = [('current Pilot question', '\n'.join(m['body'] for m in pilot_current))]
+        previous = pilot_history[-1:]
+    else:
+        previous = history[-1:]
+    # Resolve short follow-ups such as "I read it" from the immediate reply,
+    # without using the entire transcript or summary as a retrieval query.
+    if any(re.search(r'\b(it|that|those|them|there|him|her|this)\b', query, re.I) for _, query in queries):
+        queries += [('preceding reply', m['body']) for m in previous]
+    module, focus = adventure.assemble(location, queries)
+    messages, transcript = select_transcript(state['messages'], summary)
     context = {
         'purpose': purpose,
         'title': cartridge['title'],
-        'module': read_module(data_dir, cartridge['id'], cartridge['resources']),
+        'module': module[:MODULE_CAP],
+        'location': location,
         'beat': state['save']['beat'],
+        'summary': {'body': summary['body'], 'throughMessageId': summary['through_message_id']} if summary else None,
         'messages': [{'kind': m['kind'], 'name': m['name'], 'body': m['body']} for m in messages],
     }
+    report = {
+        'module': {**module_report(module), **focus, 'fullChars': len(adventure.module_text),
+                   'roomsInRunData': len(adventure.rooms), 'staleLocation': stale_location},
+        'locations': adventure.locations() if adventure.focused else [],
+        'transcript': transcript,
+        'summaryAvailable': len(summary_range(state['messages'], summary)),
+    }
+    context['report'] = report
     if purpose == 'ask':
-        context['pilot'] = [{'kind': m['kind'], 'name': m['name'], 'body': m['body']}
-                            for m in trim_transcript(state.get('pilot') or [])]
+        pilot = state.get('pilot') or []
+        kept = trim_transcript(pilot)
+        context['pilot'] = [{'kind': m['kind'], 'name': m['name'], 'body': m['body']} for m in kept]
+        report['pilot'] = {'total': len(pilot), 'omitted': len(pilot) - len(kept)}
         return context
-    outcomes = [event for event in state.get('events', []) if event['kind'] == 'combat_outcome'][-5:]
+    context['locationInstructions'] = adventure.marker_instructions()
+    outcomes = [event for event in state.get('events', []) if event['kind'] == 'combat_outcome']
     context['checkpoint'] = state.get('checkpoint')
-    context['combatOutcomes'] = [{'body': event['body'], 'createdAt': event['created_at']} for event in outcomes]
+    context['combatOutcomes'] = [{'body': event['body'], 'createdAt': event['created_at']}
+                                 for event in outcomes[-COMBAT_OUTCOME_LIMIT:]]
+    report['combatOutcomes'] = {'total': len(outcomes), 'omitted': max(0, len(outcomes) - COMBAT_OUTCOME_LIMIT)}
     return context
+
+
+def build_summary_context(state):
+    """Context for rolling the oldest out-of-window history into the durable summary."""
+    summary = state.get('summary')
+    selected = summary_range(state['messages'], summary)
+    if not selected:
+        raise ValueError('There is no older history to summarize yet')
+    return {
+        'purpose': 'summary',
+        'title': state['cartridge']['title'],
+        'beat': state['save']['beat'],
+        'previousSummary': summary['body'] if summary else '',
+        'messages': [{'kind': m['kind'], 'name': m['name'], 'body': m['body']} for m in selected],
+        'fromMessageId': selected[0]['id'],
+        'throughMessageId': selected[-1]['id'],
+    }
+
+
+def summary_text(context):
+    if not context.get('summary'):
+        return ''
+    return ('\n\nSummary of earlier play (older transcript messages are not repeated below):\n'
+            + context['summary']['body'])
 
 
 def chat_messages(context):
     if context.get('purpose') == 'ask':
         return ask_chat_messages(context)
-    system = SYSTEM_PROMPT + f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
+    if context.get('purpose') == 'summary':
+        return summary_chat_messages(context)
+    system = SYSTEM_PROMPT + context.get('locationInstructions', '')
+    system += f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
+    system += summary_text(context)
     checkpoint = context.get('checkpoint')
     if checkpoint:
         system += (f"\n\nLast session checkpoint (beat {checkpoint['beat']}, mode {checkpoint['mode']}): "
@@ -117,6 +265,7 @@ def chat_messages(context):
 
 def ask_chat_messages(context):
     system = ASK_PROMPT + f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
+    system += summary_text(context)
     table = context.get('messages') or []
     if table:
         system += '\n\nRecent table transcript (background only):\n' + '\n'.join(
@@ -132,15 +281,31 @@ def ask_chat_messages(context):
     return messages
 
 
+def summary_chat_messages(context):
+    transcript = '\n\n'.join(f"{item['name']}: {item['body']}" for item in context['messages'])
+    return [
+        {'role': 'system', 'content': SUMMARY_PROMPT + f"\n\nAdventure: {context['title']}"},
+        {'role': 'user', 'content': 'Previous summary:\n' + (context['previousSummary'] or '(none yet)')
+                                    + '\n\nNew transcript to fold in:\n' + transcript},
+    ]
+
+
 class MockProvider:
     def generate(self, context):
+        if context.get('purpose') == 'summary':
+            previous = context['previousSummary'] + ' ' if context['previousSummary'] else ''
+            return f"Mock summary: {previous}{len(context['messages'])} more messages of play happened."
         if context.get('purpose') == 'ask':
             return 'Mock AI-DM (Pilot): This is an operational answer. No table beat was advanced.'
         beat = context['beat']
-        return (
+        text = (
             'Mock AI-DM, beat ' + str(beat) + ': The party has a moment to consider what happens next. '
             'This is placeholder narration; no AI provider is connected yet.'
         )
+        if context.get('locationInstructions'):
+            where = context.get('location')
+            text += '\n\n[Location: ' + ('Approach' if where is None else f'Area {where}') + ']'
+        return text
 
 
 class OpenAIProvider:

@@ -605,6 +605,36 @@ Current player messages
 AI-DM request
 ```
 
+### Focused module context
+
+TableForge does not send the whole `module.md` with every AI-DM request. It sends:
+
+1. **Core** (always): every section not listed below, in authored order. This keeps adventure-wide facts, running notes and clocks, DM secrets, and the site flow table in a stable, cacheable prefix.
+2. **Current area**: the module section for the party's tracked location.
+3. **Horizon**: sections for areas in that room's `connectsTo`, plus stat blocks for creatures listed in the current and connected rooms' `encounter.monsters`.
+4. **Approach** sections, only before the party reaches the site. The horizon is then the `entrance` room.
+5. **Action references**, selected before generation from current-beat player contributions, or the current Pilot question for Ask AI-DM. Named areas (by number or title) bring in their sections, immediate neighbors, and encounter stat blocks. Named creatures bring in their stat blocks. Named objects/subjects bring in their source area and explicit area/creature references from matching paragraphs. A short follow-up using pronouns also searches the preceding AI reply.
+
+Object/subject matching uses named bold or uppercase definitions in area prose and names from `rooms[].treasure`. Matching ignores case, hyphens, and punctuation; it is a name lookup, not semantic understanding of arbitrary paraphrases. Explicit references such as `Area 8` or `Areas 6, 3, and 2` are followed one step, without recursively loading the entire dungeon. Retrieval reasons appear in Review Context. Searching never changes the saved party location or marks information as discovered.
+
+Only current contributions drive retrieval; older transcript and summary text do not keep old rooms loaded forever. Lookup occurs before the AI responds, so an explicitly named unexpected destination is available for that response. Unnamed destinations and novel paraphrases can still need Pilot correction. There is no model-driven search tool in this implementation.
+
+Module character counts exclude instructions, transcript, summary, and other request context. The core and connected areas can grow with the adventure; neither constant request size nor cache hits are guaranteed. The existing 60,000-character module cap still applies to the assembled text, including full-module fallback, with truncation reported in Review Context.
+
+Older play is carried by the transcript and saved continuity summaries, not by the module.
+
+Sections are matched by convention until the manifest can declare them:
+
+| `module.md` heading | Matched to |
+|---|---|
+| `### Area N: Name` under `## Areas` | `run-data.json` `rooms[].roomNumber` N |
+| `### Name (CR x)` under `## Stat blocks` | a monster named `Name` (a leading count such as `2 Name` is ignored) |
+| `Player Briefing…`, `Approach…` | approach only |
+
+If any `run-data.json` room has no matching `### Area N` heading, TableForge falls back to sending the full module and says so in Review Context.
+
+The AI-DM ends each narration with `[Location: Area N]` or `[Location: Approach]`. TableForge strips the marker before players see the message, moves the tracked location when it names a known area, and logs every change as a session event. Pilots can correct the location from Pilot Controls.
+
 The cartridge should not contain API keys, provider credentials, or user-specific runtime secrets.
 
 AI-provider configuration belongs in TableForge Options/server configuration.
