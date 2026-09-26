@@ -6,12 +6,8 @@ import urllib.error
 import urllib.request
 
 import module_context
+import runtime_prompts
 
-SYSTEM_PROMPT = (
-    'You are the AI-DM for TableForge, running an AdventureForge cartridge. '
-    'Narrate the scene and play NPCs. Treat the transcript as what has already happened. '
-    'Do not run combat turns. Do not ask players to reconfirm actions they already declared.'
-)
 ASK_PROMPT = (
     'You are the AI-DM for TableForge in an operational Pilot console. '
     'Answer the Pilot. Do not narrate a new table beat. '
@@ -206,6 +202,15 @@ def build_context(state, data_dir, purpose='advance'):
         context['pilot'] = [{'kind': m['kind'], 'name': m['name'], 'body': m['body']} for m in kept]
         report['pilot'] = {'total': len(pilot), 'omitted': len(pilot) - len(kept)}
         return context
+    prompt = runtime_prompts.load_saved(data_dir, state['save']['id'])
+    context['narrationPrompt'] = prompt
+    report['narrationPrompt'] = runtime_prompts.metadata(prompt)
+    if prompt['kind'] == 'stage3':
+        context['opening'] = (state['save']['beat'] == 1 and not summary
+                              and not any(m['kind'] == 'ai' for m in state['messages'])
+                              and not state.get('checkpoint') and not state.get('save', {}).get('location'))
+        context['party'] = [{'player': p['name'], 'character': p['character']} for p in state['players']]
+        context['runData'] = adventure.structured_context(focus)
     context['locationInstructions'] = adventure.marker_instructions()
     outcomes = [event for event in state.get('events', []) if event['kind'] == 'combat_outcome']
     context['checkpoint'] = state.get('checkpoint')
@@ -244,9 +249,15 @@ def chat_messages(context):
         return ask_chat_messages(context)
     if context.get('purpose') == 'summary':
         return summary_chat_messages(context)
-    system = SYSTEM_PROMPT + context.get('locationInstructions', '')
+    system = context['narrationPrompt']['instructions'] + context.get('locationInstructions', '')
     system += f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
     system += summary_text(context)
+    if 'runData' in context:
+        system += '\n\nRun-data (authored reference, not party knowledge):\n' + json.dumps(context['runData'], ensure_ascii=False)
+        system += '\n\nSaved player/character assignments:\n' + json.dumps(context['party'], ensure_ascii=False)
+        if not context.get('opening'):
+            system += ('\n\nRuntime request: continue the current situation. Do not restart the session opening. '
+                       'If combat has just been resumed, narrate its aftermath using the recorded outcome.')
     checkpoint = context.get('checkpoint')
     if checkpoint:
         system += (f"\n\nLast session checkpoint (beat {checkpoint['beat']}, mode {checkpoint['mode']}): "
@@ -260,7 +271,11 @@ def chat_messages(context):
             messages.append({'role': 'assistant', 'content': item['body']})
         else:
             messages.append({'role': 'user', 'content': f"{item['name']}: {item['body']}"})
-    if not any(item['role'] == 'user' for item in messages):
+    if context.get('opening'):
+        messages.append({'role': 'user', 'content':
+                         'Begin the adventure. This is the first AI-DM narration. Follow the opening sequence '
+                         'as adapted for TableForge, honoring any player contributions above.'})
+    elif not any(item['role'] == 'user' for item in messages):
         messages.append({'role': 'user', 'content': 'Continue the adventure from the current beat.'})
     return messages
 

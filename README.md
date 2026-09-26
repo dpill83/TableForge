@@ -14,6 +14,17 @@ Open [http://127.0.0.1:8765](http://127.0.0.1:8765) in a browser. On Windows, `p
 
 New Adventure requires `manifest.json` with a title and reads its resource paths. It detects known filenames for undeclared roles, lists every file in the ZIP, and lets each resource selector correct a missing or mistaken path. Missing required resources and invalid selections block Begin Adventure. The selected bindings are saved with that playthrough, leaving the cartridge and other saves unchanged. Previously created saves can still locate their original pre-manifest cartridges.
 
+### AI-DM runtime instructions
+
+New adventures use the bundled **AdventureForge Stage 3 v2.1.1** prompt with a
+small TableForge integration layer for Pilot Mode and the shared conversation.
+The first authorized AI-DM advance starts the opening sequence; later advances
+continue it. Each save retains its exact instructions across restarts and updates.
+Older saves keep their previous instructions until a player explicitly upgrades
+them through **Pilot Mode → Review Context → Use these instructions for this save…**.
+See [AI-DM prompt integration](docs/AI-DM-PROMPTS.md) for source provenance,
+context behavior, save migration, and the upgrade procedure.
+
 ### Keep your API key between restarts
 
 Create a `.env` file alongside `server.py` (copy `.env.example` if needed), then enter your key locally:

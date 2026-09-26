@@ -801,6 +801,11 @@
     try{preview=await request('saves/'+state.save.save.id+'/context');}
     catch(error){$('modalRoot').querySelector('.modal p').textContent=error.message;return;}
     const {report,summary,messages,runtime}=preview,total=messages.reduce((sum,m)=>sum+m.content.length,0);
+    const prompt=report.narrationPrompt,upgrade=preview.promptUpdate;
+    const promptLabel=p=>p.kind==='legacy'?'Legacy AI-DM instructions':`AdventureForge Stage 3 ${p.version} · TableForge integration ${p.integrationVersion}`;
+    const promptInfo=`<div class="context-section"><div class="section-title">AI-DM instructions</div><p>${esc(promptLabel(prompt))}</p>
+      ${upgrade?`<p>A prompt upgrade is available for this save. It changes future narration; history and Ready states are preserved.</p><details class="context-message"><summary>Review ${esc(promptLabel(upgrade))}</summary><pre>${esc(upgrade.instructions)}</pre></details><div class="actions"><button class="btn" id="upgradeNarrationPrompt"${state.identity&&!state.save.activity.aiDm?'':' disabled'}>Use these instructions for this save…</button></div>`:''}
+      ${preview.promptUpdateError?`<p class="muted">${esc(preview.promptUpdateError)} The saved instructions remain in use.</p>`:''}</div>`;
     const flags=contextFlags(report).map(flag=>`<li class="context-flag ${flag.level}">${esc(flag.text)}</li>`).join('');
     const summaryBlock=summary?`<div class="context-summary"><div class="muted">Saved by ${esc(summary.player_character||'a Pilot')} · ${esc(when(summary.created_at))}</div><div class="markdown-body">${TableForgeMarkdown.render(summary.body)}</div></div>`:'<p>No summary saved yet.</p>';
     const canSummarize=report.summaryAvailable>0;
@@ -808,6 +813,7 @@
     modal(`<h3>Review Context</h3>
       <p>${esc(runtime.provider==='openai'?`Exactly what the next advance sends to ${runtimeLabel(runtime)}, as the table stands right now.`:'Mock AI is active, so nothing leaves this machine. This is exactly what a live provider would receive for the next advance.')}</p>
       <ul class="context-flags">${flags}</ul>
+      ${promptInfo}
       <div class="context-section"><div class="section-title">Module focus</div>${moduleFocus(report.module)}</div>
       <div class="context-section"><div class="section-title">Continuity summary</div>${summaryBlock}
         <div id="summaryDraft"></div>
@@ -816,6 +822,14 @@
       <div class="context-section"><div class="section-title">Request · ${plural(messages.length,'message')} · ${count(total)} characters</div>${payload}</div>
       <div class="actions"><button class="btn" data-close>Close</button></div>`,'wide');
     $('draftSummary').onclick=()=>draftSummary(report.summaryAvailable);
+    $('upgradeNarrationPrompt')?.addEventListener('click',async()=>{
+      if(!confirm(`Use ${promptLabel(upgrade)} for future narration in this save? This does not generate a reply or restart the adventure.`))return;
+      try{
+        state.save=await request('saves/'+state.save.save.id+'/narration-prompt',{
+          playerId:state.identity,pilot:true,confirm:true,fromSha256:prompt.sha256,toSha256:upgrade.sha256});
+        render();await openContextReview();
+      }catch(error){notify(error);}
+    });
   };
   const draftSummary=async size=>{
     const button=$('draftSummary'),target=$('summaryDraft');

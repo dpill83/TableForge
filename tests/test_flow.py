@@ -20,6 +20,7 @@ from unittest.mock import patch
 import ai
 import metering
 import server
+import runtime_prompts
 
 
 class FakeProvider:
@@ -236,7 +237,8 @@ class FlowTest(unittest.TestCase):
                     'usage': {'prompt_tokens': 50, 'completion_tokens': 20, 'total_tokens': 70}}
         with patch.object(ai.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(response).encode())):
             result = ai.OpenAIProvider('test-key', 'gpt-6-sol').generate({
-                'purpose': 'advance', 'title': 'Test', 'module': '# Test', 'messages': [], 'beat': 1})
+                'purpose': 'advance', 'title': 'Test', 'module': '# Test', 'messages': [], 'beat': 1,
+                'narrationPrompt': runtime_prompts.default_snapshot()})
         self.assertEqual(result, 'The door opens.')
         self.assertEqual(result.usage['total_tokens'], 70)
         self.assertEqual(result.model, 'gpt-6-sol')
@@ -965,9 +967,12 @@ class MigrationTest(unittest.TestCase):
                 self.assertEqual(state['cartridge']['resources'], {'module.md':'module.md'})
                 self.assertEqual(len(state['sessions']), 1)
                 self.assertIsNone(state['sessions'][0]['ended_at'])
+                with server.db() as conn:
+                    self.assertEqual(runtime_prompts.for_save(conn, 'old-save'), runtime_prompts.legacy_snapshot())
                 server.initialize()
                 with server.db() as conn:
                     self.assertEqual(len(server.snapshot(conn, 'old-save')['sessions']), 1)
+                    self.assertEqual(runtime_prompts.for_save(conn, 'old-save'), runtime_prompts.legacy_snapshot())
             finally:
                 server.DATA = old_data
 

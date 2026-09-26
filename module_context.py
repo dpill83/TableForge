@@ -71,6 +71,7 @@ def classify(section):
 
 class Adventure:
     def __init__(self, module_text, run_data):
+        self.run_data = run_data
         self.module_text = module_text
         self.sections = split_sections(module_text)
         self.rooms = {}
@@ -207,6 +208,24 @@ class Adventure:
             'excluded': [s['title'] for s in self.sections if id(s) not in reasons],
         }
         return text, report
+
+    def structured_context(self, focus):
+        """Supply Stage 3's authored numbers and opening data with the same room focus."""
+        if not self.focused:
+            return self.run_data
+        titles = {item['title'] for item in focus['included']}
+        areas = {s['key'] for s in self.sections if s['kind'] == 'area' and s['title'] in titles}
+        creatures = {s['key'] for s in self.sections if s['kind'] == 'stat' and s['title'] in titles}
+        for number in areas:
+            creatures.update(stat_name(name) for name in (self.rooms[number].get('encounter') or {}).get('monsters') or [])
+        stats = self.run_data.get('statBlocks', [])
+        if isinstance(stats, list):
+            stats = [block for block in stats if isinstance(block, dict) and stat_name(block.get('name', '')) in creatures]
+        elif isinstance(stats, dict):
+            stats = {name: block for name, block in stats.items() if stat_name(name) in creatures}
+        return {**{key: value for key, value in self.run_data.items() if key not in ('rooms', 'statBlocks')},
+                'rooms': [room for room in self.run_data.get('rooms', []) if room.get('roomNumber') in areas],
+                'statBlocks': stats}
 
     def marker_instructions(self):
         if not self.focused:

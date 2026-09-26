@@ -56,7 +56,7 @@ class LocalConfigTest(unittest.TestCase):
         app = self.path.parent / 'app'
         app.mkdir()
         root = Path(__file__).resolve().parents[1]
-        for name in ('server.py', 'local_config.py', 'ai.py', 'scene_images.py', 'metering.py', 'module_context.py', 'backups.py'):
+        for name in ('server.py', 'local_config.py', 'ai.py', 'scene_images.py', 'metering.py', 'module_context.py', 'backups.py', 'runtime_prompts.py'):
             shutil.copyfile(root / name, app / name)
         data = self.path.parent / 'custom data'
         (app / '.env').write_text(f'TABLEFORGE_OPENAI_API_KEY=local-test-key\nTABLEFORGE_DATA={data}\n', encoding='utf-8')

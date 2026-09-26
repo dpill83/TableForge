@@ -22,6 +22,7 @@ import backups
 import metering
 import scene_images
 import module_context
+import runtime_prompts
 from local_config import load_env
 
 ROOT = Path(__file__).resolve().parent
@@ -162,8 +163,15 @@ def initialize():
                 updated_by TEXT, updated_at TEXT NOT NULL, removed_at TEXT, removed_by TEXT,
                 FOREIGN KEY(save_id) REFERENCES saves(id)
             );
+            CREATE TABLE IF NOT EXISTS narration_prompts (
+                sha256 TEXT PRIMARY KEY, snapshot TEXT NOT NULL
+            );
         """)
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(saves)')}
+        if 'narration_prompt_id' not in columns:
+            conn.execute('ALTER TABLE saves ADD COLUMN narration_prompt_id TEXT REFERENCES narration_prompts(sha256)')
+            legacy_id = runtime_prompts.store(conn, runtime_prompts.legacy_snapshot())
+            conn.execute('UPDATE saves SET narration_prompt_id=?', (legacy_id,))
         if 'resource_bindings' not in columns:
             conn.execute('ALTER TABLE saves ADD COLUMN resource_bindings TEXT')
         if 'adventure_title' not in columns:
@@ -497,9 +505,35 @@ def context_preview(conn, save_id):
         raise ValueError('Locate the cartridge to review AI context')
     context = ai.build_context(state, DATA)
     report = context.pop('report')
+    update, update_error = None, None
+    try:
+        candidate = runtime_prompts.default_snapshot()
+        if candidate['sha256'] != report['narrationPrompt']['sha256']:
+            update = candidate
+    except ValueError as error:
+        update_error = str(error)
     return {'purpose': context['purpose'], 'beat': context['beat'], 'mode': state['save']['mode'],
             'runtime': ai.runtime_status(), 'messages': ai.chat_messages(context), 'report': report,
-            'summary': state['summary']}
+            'summary': state['summary'], 'promptUpdate': update, 'promptUpdateError': update_error}
+
+
+def upgrade_narration_prompt(conn, state, session, payload):
+    if payload.get('pilot') is not True or payload.get('confirm') is not True:
+        raise ValueError('Review and confirm the AI-DM prompt upgrade in Pilot Mode')
+    player = require_player(state, payload.get('playerId'))
+    current = runtime_prompts.for_save(conn, state['save']['id'])
+    candidate = runtime_prompts.default_snapshot()
+    if payload.get('fromSha256') != current['sha256'] or payload.get('toSha256') != candidate['sha256']:
+        raise ValueError('The AI-DM prompt changed. Review the prompt upgrade again')
+    if current['sha256'] == candidate['sha256']:
+        return
+    prompt_id = runtime_prompts.store(conn, candidate)
+    stamp = utc()
+    conn.execute('UPDATE saves SET narration_prompt_id=?,updated_at=? WHERE id=?',
+                 (prompt_id, stamp, state['save']['id']))
+    conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
+                 (state['save']['id'], session['id'], player['id'], 'prompt_upgrade',
+                  json.dumps({'from': runtime_prompts.metadata(current), 'to': runtime_prompts.metadata(candidate)}), stamp))
 
 
 def begin_summary(conn, save_id, payload):
@@ -796,10 +830,11 @@ class Handler(BaseHTTPRequestHandler):
                     if not roster or any(not str(p.get('name', '')).strip() or not str(p.get('character', '')).strip() for p in roster):
                         raise ValueError('Every player needs a name and character')
                     save_id = str(uuid.uuid4())
+                    prompt_id = runtime_prompts.store(conn, runtime_prompts.default_snapshot())
                     stamp = utc()
-                    conn.execute('INSERT INTO saves (id,name,cartridge_id,created_at,updated_at,resource_bindings,adventure_title) VALUES (?,?,?,?,?,?,?)',
+                    conn.execute('INSERT INTO saves (id,name,cartridge_id,created_at,updated_at,resource_bindings,adventure_title,narration_prompt_id) VALUES (?,?,?,?,?,?,?,?)',
                                  (save_id, str(payload.get('name') or info['title']).strip(), payload['cartridgeId'], stamp, stamp,
-                                  json.dumps(info['resources']), info['title']))
+                                   json.dumps(info['resources']), info['title'], prompt_id))
                     for player in roster:
                         conn.execute('INSERT INTO players (id,save_id,name,character) VALUES (?,?,?,?)', (str(uuid.uuid4()), save_id, player['name'].strip(), player['character'].strip()))
                     start_session(conn, save_id)
@@ -866,6 +901,9 @@ class Handler(BaseHTTPRequestHandler):
                 session = active_session(conn, save_id)
                 if not session:
                     raise ValueError('Start the next session before playing')
+                if action == 'narration-prompt':
+                    upgrade_narration_prompt(conn, state, session, payload)
+                    return self.respond(snapshot(conn, save_id))
                 if action == 'end-session':
                     require_player(state, payload.get('playerId'))
                     note = str(payload.get('note') or '').strip()
