@@ -978,7 +978,7 @@
     if(state.save?.save.id!==saveId||!state.pilot)return;
     const roles=['run-data.json','module.md','cast.json','scenes.json'];
     const artifacts=Object.fromEntries(Object.entries(result.artifacts).map(([role,item])=>[role,{...item}]));
-    const validateArtifacts=async()=>{
+    const validateArtifacts=async(scrollToReport=false)=>{
       const report=$('artifactReport');report.textContent='Checking artifacts…';
       try{
         const runText=artifacts['run-data.json'].text;
@@ -998,8 +998,9 @@
         const {validateModuleArtifacts}=await import('/js/adventureforge/pages/module-validate.js');
         const result=validateModuleArtifacts(runData,options);
         const order={fail:0,warn:1,skip:2,pass:3};
-        report.innerHTML=[...result.checks].sort((a,b)=>order[a.status]-order[b.status]).map(check=>`<div class="artifact-${esc(check.status)}">[${esc(check.status.toUpperCase())}] ${esc(check.name)}${check.messages.length?check.messages.map(message=>`<div>  — ${esc(message)}</div>`).join(''):'<div>  — ok</div>'}</div>`).join('')+`<strong>${esc(result.summaryLine)}</strong>`;
+        report.innerHTML=`<strong>${esc(result.summaryLine)}</strong>`+[...result.checks].sort((a,b)=>order[a.status]-order[b.status]).map(check=>`<div class="artifact-${esc(check.status)}">[${esc(check.status.toUpperCase())}] ${esc(check.name)}${check.messages.length?check.messages.map(message=>`<div>  — ${esc(message)}</div>`).join(''):'<div>  — ok</div>'}</div>`).join('');
       }catch(error){report.textContent=error instanceof SyntaxError?`Invalid JSON: ${error.message}`:error.message||String(error);}
+      if(scrollToReport){report.scrollIntoView({block:'start'});report.focus();}
     };
     const renderArtifacts=()=>{
       const rows=roles.map(role=>{
@@ -1008,8 +1009,8 @@
         const preview=loaded?`<details><summary>View contents</summary><pre class="artifact-content">${esc(item.text)}</pre></details>`:'';
         return `<section class="artifact-card" data-role="${esc(role)}"><div><strong>${esc(role)}</strong><span class="muted"> · ${esc(source)}${item.path?` · ${esc(item.path)}`:''}</span></div>${preview}<div class="actions"><label class="btn small">Choose file<input type="file" class="artifact-file hidden" accept="${role.endsWith('.json')?'.json,application/json':'.md,text/plain,text/markdown'}"></label>${item.override?'<button class="btn small artifact-reset" type="button">Use cartridge</button>':''}</div></section>`;
       }).join('');
-      modal(`<div id="moduleValidatorDialog"><h3>Module Validator</h3><p>The current save supplies these files from its cartridge. Choose a local file only to inspect a different version; overrides are not saved.</p><div class="artifact-list">${rows}</div><div class="actions"><button class="btn primary" id="validateArtifacts" type="button">Validate</button><button class="btn" data-close>Close</button></div><div id="artifactReport" class="artifact-report" role="status"></div></div>`,'wide');
-      $('validateArtifacts').onclick=validateArtifacts;
+      modal(`<div id="moduleValidatorDialog"><h3>Module Validator</h3><p>Validation runs automatically using the current save's cartridge files. Choose a local file only to inspect a different version; overrides are not saved.</p><div id="artifactReport" class="artifact-report" role="status" tabindex="-1"></div><div class="artifact-list">${rows}</div><div class="actions"><button class="btn primary" id="validateArtifacts" type="button">Validate again</button><button class="btn" data-close>Close</button></div></div>`,'wide');
+      $('validateArtifacts').onclick=()=>validateArtifacts(true);
       $('modalRoot').querySelectorAll('.artifact-file').forEach(input=>input.onchange=async()=>{
         const file=input.files?.[0];if(!file)return;
         const role=input.closest('[data-role]').dataset.role;
