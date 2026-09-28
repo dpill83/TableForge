@@ -688,7 +688,7 @@
       modal(`<h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge v2.0</p>${usage?`<p>AI usage this session: ${esc(usageLine(usage.session))}<br>Playthrough: ${esc(usageLine(usage.save))}<br>Estimates use <a href="${esc(usage.pricingUrl)}" target="_blank" rel="noopener">standard text rates</a> from ${esc(usage.pricingAsOf)}. Earlier activity is unavailable.</p>`:''}<div class="actions"><button class="btn" data-close>Close</button></div>`);
     } catch(error) { notify(error); }
   };
-  $('pilotToggle').onclick=()=>{state.pilot=!state.pilot;$('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');$('pilotPanel').classList.toggle('hidden',!state.pilot);refreshContextFlag();if(!state.pilot&&($('sceneImageDialog')||$('moduleValidatorDialog')))$('modalRoot').replaceChildren();};
+  $('pilotToggle').onclick=()=>{state.pilot=!state.pilot;$('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');$('pilotPanel').classList.toggle('hidden',!state.pilot);refreshContextFlag();if(!state.pilot){if($('sceneImageDialog'))$('modalRoot').replaceChildren();if(!$('moduleViewer').classList.contains('hidden'))showTool(null);}};
   let sceneDialog=null;
   const imageDialogActive = dialog => sceneDialog===dialog&&!!$('sceneImageDialog')&&state.pilot&&state.save?.save.id===dialog.saveId;
   const renderSceneImages = dialog => {
@@ -956,12 +956,12 @@
   };
   const openModuleViewer=async()=>{
     if(!state.pilot){
-      modal('<h3>Module Viewer</h3><p>Enable Pilot Mode to inspect cartridge files, which may contain adventure spoilers.</p><div class="actions"><button class="btn" data-close>Close</button></div>');
+      modal('<h3>Module Viewer</h3><p>Enable Pilot Mode to read the adventure module, which may contain spoilers.</p><div class="actions"><button class="btn" data-close>Close</button></div>');
       return;
     }
     if(!state.save||!state.identity)return notify(Error('Choose a player first.'));
     const saveId=state.save.save.id;
-    modal('<div id="moduleValidatorDialog"><h3>Cartridge artifacts</h3><p>Loading files bound to this adventure…</p><div class="actions"><button class="btn" data-close>Close</button></div></div>','wide');
+    modal('<h3>Module Reader</h3><p>Loading this adventure’s cartridge…</p><div class="actions"><button class="btn" data-close>Close</button></div>');
     let result;
     try{result=await request(`saves/${saveId}/artifacts?playerId=${encodeURIComponent(state.identity)}&pilot=true`);}
     catch(error){
@@ -972,64 +972,29 @@
           message='The web page has newer code than the running TableForge server. Restart server.py on the host, then reload this page.';
         }catch{/* The save itself is unavailable; keep the original error. */}
       }
-      if(state.save?.save.id===saveId)modal(`<div id="moduleValidatorDialog"><h3>Cartridge artifacts</h3><p class="binding-issue">${esc(message)}</p><div class="actions"><button class="btn" data-close>Close</button></div></div>`);
+      if(state.save?.save.id===saveId)modal(`<h3>Module Reader</h3><p class="binding-issue">${esc(message)}</p><div class="actions"><button class="btn" data-close>Close</button></div>`);
       return;
     }
     if(state.save?.save.id!==saveId||!state.pilot)return;
-    const roles=['run-data.json','module.md','cast.json','scenes.json'];
-    const artifacts=Object.fromEntries(Object.entries(result.artifacts).map(([role,item])=>[role,{...item}]));
-    const validateArtifacts=async(scrollToReport=false)=>{
-      const report=$('artifactReport');report.textContent='Checking artifacts…';
-      try{
-        const runText=artifacts['run-data.json'].text;
-        if(runText===null)throw Error('run-data.json is required.');
-        const runData=JSON.parse(runText);
-        if(!runData||typeof runData!=='object'||!Array.isArray(runData.rooms))throw Error('run-data.json must include a rooms array.');
-        const options={};
-        if(artifacts['module.md'].text!==null)options.moduleText=artifacts['module.md'].text;
-        for(const [role,key] of [['cast.json','cast'],['scenes.json','scenes']]){
-          const value=artifacts[role].text;
-          if(value!==null){
-            const parsed=JSON.parse(value);
-            if(!parsed||typeof parsed!=='object')throw Error(`${role} must contain a JSON object.`);
-            options[key]=parsed;
-          }
-        }
-        const {validateModuleArtifacts}=await import('/js/adventureforge/pages/module-validate.js');
-        const result=validateModuleArtifacts(runData,options);
-        const order={fail:0,warn:1,skip:2,pass:3};
-        report.innerHTML=`<strong>${esc(result.summaryLine)}</strong>`+[...result.checks].sort((a,b)=>order[a.status]-order[b.status]).map(check=>`<div class="artifact-${esc(check.status)}">[${esc(check.status.toUpperCase())}] ${esc(check.name)}${check.messages.length?check.messages.map(message=>`<div>  — ${esc(message)}</div>`).join(''):'<div>  — ok</div>'}</div>`).join('');
-      }catch(error){report.textContent=error instanceof SyntaxError?`Invalid JSON: ${error.message}`:error.message||String(error);}
-      if(scrollToReport){report.scrollIntoView({block:'start'});report.focus();}
-    };
-    const renderArtifacts=()=>{
-      const rows=roles.map(role=>{
-        const item=artifacts[role],loaded=item.text!==null;
-        const source=item.override?'Local override':loaded?'From cartridge':'Missing from cartridge';
-        const preview=loaded?`<details><summary>View contents</summary><pre class="artifact-content">${esc(item.text)}</pre></details>`:'';
-        return `<section class="artifact-card" data-role="${esc(role)}"><div><strong>${esc(role)}</strong><span class="muted"> · ${esc(source)}${item.path?` · ${esc(item.path)}`:''}</span></div>${preview}<div class="actions"><label class="btn small">Choose file<input type="file" class="artifact-file hidden" accept="${role.endsWith('.json')?'.json,application/json':'.md,text/plain,text/markdown'}"></label>${item.override?'<button class="btn small artifact-reset" type="button">Use cartridge</button>':''}</div></section>`;
-      }).join('');
-      modal(`<div id="moduleValidatorDialog"><h3>Module Validator</h3><p>Validation runs automatically using the current save's cartridge files. Choose a local file only to inspect a different version; overrides are not saved.</p><div id="artifactReport" class="artifact-report" role="status" tabindex="-1"></div><div class="artifact-list">${rows}</div><div class="actions"><button class="btn primary" id="validateArtifacts" type="button">Validate again</button><button class="btn" data-close>Close</button></div></div>`,'wide');
-      $('validateArtifacts').onclick=()=>validateArtifacts(true);
-      $('modalRoot').querySelectorAll('.artifact-file').forEach(input=>input.onchange=async()=>{
-        const file=input.files?.[0];if(!file)return;
-        const role=input.closest('[data-role]').dataset.role;
-        artifacts[role].text=await file.text();artifacts[role].path=file.name;artifacts[role].override=true;
-        renderArtifacts();
-      });
-      $('modalRoot').querySelectorAll('.artifact-reset').forEach(button=>button.onclick=()=>{
-        const role=button.closest('[data-role]').dataset.role;
-        artifacts[role]={...result.artifacts[role],override:false};
-        renderArtifacts();
-      });
-      void validateArtifacts();
-    };
-    renderArtifacts();
+    const runData=result.artifacts['run-data.json']?.text;
+    const moduleText=result.artifacts['module.md']?.text;
+    if(runData===null||runData===undefined){
+      modal('<h3>Module Reader</h3><p class="binding-issue">This cartridge has no bound run-data.json. Correct the cartridge binding in New Adventure to use the Module Reader.</p><div class="actions"><button class="btn" data-close>Close</button></div>');
+      return;
+    }
+    $('modalRoot').replaceChildren();
+    const frame=$('moduleViewer');
+    const payload={type:'tableforge:load-module-reader',saveId,runData,module:moduleText};
+    const send=()=>frame.contentWindow?.postMessage(payload,window.location.origin);
+    frame.onload=()=>{frame.dataset.ready='true';send();};
+    showTool('showModuleViewer');
+    if(frame.dataset.ready==='true')send();
   };
   document.querySelectorAll('.ref-open').forEach(b=>b.onclick=()=>noteCategories[b.dataset.ref]?openNotes(b.dataset.ref):b.dataset.ref==='map'?openMaps():b.dataset.ref==='module'?openModuleViewer():modal(`<h3>${esc(b.textContent)}</h3><p>Player-safe reference entries will appear here after discovery tracking is built.</p><div class="actions"><button class="btn" data-close>Close</button></div>`));
   const toolFrames=[
     {id:'castViewer',url:'https://adventure-forge.pages.dev/cast-viewer',button:'showCastViewer'},
-    {id:'sceneViewer',url:'https://adventure-forge.pages.dev/scene-viewer',button:'showSceneViewer'}
+    {id:'sceneViewer',url:'https://adventure-forge.pages.dev/scene-viewer',button:'showSceneViewer'},
+    {id:'moduleViewer',url:'/adventureforge-reader/index.html',button:'showModuleViewer'}
   ];
   const showTool=buttonId=>{
     const open=toolFrames.find(tool=>tool.button===buttonId)||null;
@@ -1043,8 +1008,8 @@
     }
   };
   $('showTable').onclick=()=>showTool(null);
-  for(const tool of toolFrames) $(tool.button).onclick=()=>showTool(tool.button);
-  $('showModuleViewer').onclick=()=>{showTool(null);openModuleViewer();};
+  for(const tool of toolFrames.filter(tool=>tool.button!=='showModuleViewer')) $(tool.button).onclick=()=>showTool(tool.button);
+  $('showModuleViewer').onclick=openModuleViewer;
   const toggle=(id,css,key,other,symbols)=>{state[key]=!state[key];$(other).classList.toggle('collapsed',state[key]);$(id).textContent=state[key]?symbols[1]:symbols[0];if(css)$('workarea').classList.toggle(css,state[key]);};
   $('toggleLeft').onclick=()=>toggle('toggleLeft','left-collapsed','left','leftSidebar',['‹','›']);
   $('toggleRight').onclick=()=>toggle('toggleRight','right-collapsed','right','rightSidebar',['›','‹']);

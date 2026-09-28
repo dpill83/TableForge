@@ -752,18 +752,6 @@ textarea{padding:10px;resize:none}
 .note-list{display:grid;gap:10px;margin-top:12px}
 .note-card{padding:11px;border:1px solid var(--border);border-radius:10px;background:#101318}
 .note-card .markdown-body{margin-top:6px;font-size:14px}
-.artifact-list{display:grid;gap:10px;margin:14px 0}
-.artifact-card{padding:11px;border:1px solid var(--border);border-radius:10px;background:#101318}
-.artifact-card .actions{margin:8px 0 0}
-.artifact-card details{margin-top:8px;color:var(--muted);font-size:12px}
-.artifact-content{max-height:240px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--text);font-size:12px}
-.artifact-report{display:grid;gap:8px;margin-top:12px;padding:12px;border:1px solid var(--border);border-radius:10px;white-space:pre-wrap;font-size:12px}
-.artifact-report:empty{display:none}
-.artifact-report>strong{font-size:14px;color:var(--text)}
-.artifact-fail{color:var(--bad)}
-.artifact-warn{color:var(--warn)}
-.artifact-skip{color:var(--muted)}
-.artifact-pass{color:var(--good)}
 .note-meta{margin-top:6px;font-size:12px}
 .note-actions{display:flex;gap:6px}
 .note-form{display:grid;gap:10px;margin-top:10px}
