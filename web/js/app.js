@@ -964,7 +964,17 @@
     modal('<div id="moduleValidatorDialog"><h3>Cartridge artifacts</h3><p>Loading files bound to this adventure…</p><div class="actions"><button class="btn" data-close>Close</button></div></div>','wide');
     let result;
     try{result=await request(`saves/${saveId}/artifacts?playerId=${encodeURIComponent(state.identity)}&pilot=true`);}
-    catch(error){if(state.save?.save.id===saveId)modal(`<div id="moduleValidatorDialog"><h3>Cartridge artifacts</h3><p class="binding-issue">${esc(error.message)}</p><div class="actions"><button class="btn" data-close>Close</button></div></div>`);return;}
+    catch(error){
+      let message=error.message;
+      if(message==='Save not found'){
+        try{
+          await request(`saves/${saveId}`);
+          message='The web page has newer code than the running TableForge server. Restart server.py on the host, then reload this page.';
+        }catch{/* The save itself is unavailable; keep the original error. */}
+      }
+      if(state.save?.save.id===saveId)modal(`<div id="moduleValidatorDialog"><h3>Cartridge artifacts</h3><p class="binding-issue">${esc(message)}</p><div class="actions"><button class="btn" data-close>Close</button></div></div>`);
+      return;
+    }
     if(state.save?.save.id!==saveId||!state.pilot)return;
     const roles=['run-data.json','module.md','cast.json','scenes.json'];
     const artifacts=Object.fromEntries(Object.entries(result.artifacts).map(([role,item])=>[role,{...item}]));
