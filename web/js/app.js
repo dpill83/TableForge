@@ -22,6 +22,21 @@
     }finally{clearTimeout(timer);}
   };
   const notify = error => alert(error.message || String(error));
+  const copyText = async text => {
+    if(navigator.clipboard&&window.isSecureContext){
+      try{await navigator.clipboard.writeText(text);return true;}
+      catch{/* The browser may expose the API but still reject the write. */}
+    }
+    const field=document.createElement('textarea');
+    field.value=text;field.setAttribute('readonly','');
+    field.style.cssText='position:fixed;top:0;left:0;width:1px;height:1px;padding:0;border:0;opacity:0';
+    document.body.append(field);field.focus();field.select();field.setSelectionRange(0,field.value.length);
+    let copied=false;
+    try{copied=document.execCommand('copy');}
+    catch{/* Clipboard access is browser controlled. */}
+    field.remove();
+    return copied;
+  };
   // Request IDs let the server recognize a retry of something it already did.
   const newRequestId = () => typeof crypto.randomUUID==='function'?crypto.randomUUID():'10000000-1000-4000-8000-100000000000'.replace(/[018]/g,c=>(Number(c)^crypto.getRandomValues(new Uint8Array(1))[0]&15>>Number(c)/4).toString(16));
   const runtimeLabel = info => (info.provider === 'openai' ? 'OpenAI' : 'Mock AI') + ' · ' + info.model;
@@ -373,7 +388,11 @@
         img.addEventListener('load',()=>{if(state.followLatest!==false)$('feed').scrollTop=$('feed').scrollHeight;});
         row.querySelector('.message-body').prepend(link);
       }
-      row.querySelector('.copy-message').onclick=async event=>{await navigator.clipboard.writeText(m.body);event.target.textContent='Copied';setTimeout(()=>event.target.textContent='Copy',1200);};
+      row.querySelector('.copy-message').onclick=async event=>{
+        const button=event.currentTarget;
+        button.textContent=await copyText(m.body)?'Copied':'Copy failed';
+        setTimeout(()=>button.textContent='Copy',1200);
+      };
       row.dataset.searchText=(m.name+' '+m.body).toLowerCase();$('feedInner').append(row);
     }
     applySearch();
