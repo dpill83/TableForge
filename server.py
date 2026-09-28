@@ -38,6 +38,7 @@ TYPING = {}
 TYPING_SECONDS = 6
 MAX_REQUEST = 32 * 1024 * 1024
 MAX_PORTRAIT_BYTES = 5 * 1024 * 1024
+MAX_CHAT_IMAGE_BYTES = 20 * 1024 * 1024
 PORTRAIT_SIGNATURES = {
     'image/png': lambda data: data.startswith(b'\x89PNG\r\n\x1a\n'),
     'image/jpeg': lambda data: data.startswith(b'\xff\xd8\xff') and data.endswith(b'\xff\xd9'),
@@ -65,6 +66,25 @@ class StaleBeat(ValueError):
 
 def utc():
     return datetime.now(timezone.utc).isoformat()
+
+
+def decode_chat_image(payload):
+    """Return (mime, bytes) when a chat image is present; None when the field is omitted."""
+    image = payload.get('image')
+    if image is None:
+        return None
+    if not isinstance(image, dict):
+        raise ValueError('Choose a PNG, JPEG, or WebP image up to 20 MB')
+    mime, encoded = image.get('mime'), image.get('data')
+    if mime not in PORTRAIT_SIGNATURES or not isinstance(encoded, str) or len(encoded) > ((MAX_CHAT_IMAGE_BYTES + 2) // 3) * 4:
+        raise ValueError('Choose a PNG, JPEG, or WebP image up to 20 MB')
+    try:
+        data = base64.b64decode(encoded, validate=True)
+    except (binascii.Error, ValueError) as error:
+        raise ValueError('Image data is invalid') from error
+    if not data or len(data) > MAX_CHAT_IMAGE_BYTES or not PORTRAIT_SIGNATURES[mime](data):
+        raise ValueError('Image data is invalid')
+    return mime, data
 
 
 @contextmanager
@@ -112,6 +132,14 @@ def initialize():
                 player_id TEXT, kind TEXT NOT NULL, name TEXT NOT NULL,
                 body TEXT NOT NULL, created_at TEXT NOT NULL,
                 FOREIGN KEY(save_id) REFERENCES saves(id)
+            );
+            CREATE TABLE IF NOT EXISTS chat_images (
+                id TEXT PRIMARY KEY, save_id TEXT NOT NULL,
+                message_id INTEGER NOT NULL UNIQUE, player_id TEXT NOT NULL,
+                mime TEXT NOT NULL, image BLOB NOT NULL, created_at TEXT NOT NULL,
+                FOREIGN KEY(save_id) REFERENCES saves(id),
+                FOREIGN KEY(message_id) REFERENCES messages(id),
+                FOREIGN KEY(player_id) REFERENCES players(id)
             );
             CREATE TABLE IF NOT EXISTS pilot_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, save_id TEXT NOT NULL,
@@ -500,6 +528,10 @@ def snapshot(conn, save_id):
             'SELECT id,category,title,body,created_by,created_at,updated_by,updated_at FROM party_notes '
             'WHERE save_id=? AND removed_at IS NULL ORDER BY category, title COLLATE NOCASE, id', (save_id,))],
         'activity': activity(save_id),
+        'attachments': [{'id': row['id'], 'messageId': row['message_id'], 'mime': row['mime']}
+                        for row in conn.execute(
+                            'SELECT id,message_id,mime FROM chat_images WHERE save_id=? ORDER BY created_at',
+                            (save_id,))],
         'images': scene_images.list_images(conn, save_id, shared_only=True),
         'imageSettings': scene_images.settings(),
         'imageUsage': {
@@ -784,6 +816,8 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header('X-Content-Type-Options', 'nosniff')
                     self.end_headers()
                     return self.wfile.write(image)
+            if len(parts) == 5 and parts[:2] == ['api', 'saves'] and parts[3] == 'attachments':
+                return self.get_attachment(parts[2], parts[4])
             if path == '/api/runtime':
                 return self.respond(ai.runtime_status())
             if path == '/api/backups':
@@ -967,16 +1001,22 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(activity(save_id))
                 state = snapshot(conn, save_id)
                 request_id = None
+                chat_image = decode_chat_image(payload) if action == 'messages' else None
                 if action == 'messages' and payload.get('requestId') is not None:
                     try:
                         request_id = str(uuid.UUID(str(payload['requestId'])))
                     except ValueError as error:
                         raise ValueError('A valid message request ID is required') from error
-                    sent = conn.execute('SELECT player_id,body FROM messages WHERE save_id=? AND request_id=?',
+                    sent = conn.execute('SELECT id,player_id,body FROM messages WHERE save_id=? AND request_id=?',
                                         (save_id, request_id)).fetchone()
                     if sent:
+                        stored = conn.execute('SELECT image FROM chat_images WHERE message_id=?', (sent['id'],)).fetchone()
+                        incoming = chat_image[1] if chat_image else None
+                        stored_bytes = stored['image'] if stored else None
                         # A retry of a send that already landed: report the table as it is now.
-                        if sent['player_id'] != payload.get('playerId') or sent['body'] != str(payload.get('text', '')).strip():
+                        if (sent['player_id'] != payload.get('playerId')
+                                or sent['body'] != str(payload.get('text', '')).strip()
+                                or stored_bytes != incoming):
                             raise ValueError('This message request was already used for a different message')
                         return self.respond(snapshot(conn, save_id))
                 if action == 'notes':
@@ -1062,13 +1102,21 @@ class Handler(BaseHTTPRequestHandler):
                 if action == 'messages':
                     player = require_player(state, payload.get('playerId'))
                     body = str(payload.get('text', '')).strip()
-                    if not body or len(body) > 20000:
+                    if len(body) > 20000:
+                        raise ValueError('Message must contain 1 to 20,000 characters')
+                    if not body and not chat_image:
                         raise ValueError('Message must contain 1 to 20,000 characters')
                     # Drafts carry the beat they were started in so they never slip into a later one.
                     if payload.get('beat') is not None and int(payload['beat']) != state['save']['beat']:
                         raise StaleBeat(state['save']['beat'])
-                    conn.execute('INSERT INTO messages (save_id,session_id,player_id,kind,name,body,created_at,request_id) VALUES (?,?,?,?,?,?,?,?)',
-                                 (save_id, session['id'], player['id'], 'player', player['character'], body, utc(), request_id))
+                    inserted = conn.execute(
+                        'INSERT INTO messages (save_id,session_id,player_id,kind,name,body,created_at,request_id) VALUES (?,?,?,?,?,?,?,?)',
+                        (save_id, session['id'], player['id'], 'player', player['character'], body, utc(), request_id))
+                    if chat_image:
+                        mime, data = chat_image
+                        conn.execute(
+                            'INSERT INTO chat_images (id,save_id,message_id,player_id,mime,image,created_at) VALUES (?,?,?,?,?,?,?)',
+                            (str(uuid.uuid4()), save_id, inserted.lastrowid, player['id'], mime, data, utc()))
                     conn.execute('UPDATE players SET ready=1 WHERE id=?', (player['id'],))
                     TYPING.get(save_id, {}).pop(player['id'], None)
                 elif action == 'ready':
@@ -1096,6 +1144,22 @@ class Handler(BaseHTTPRequestHandler):
             if urlparse(self.path).path.startswith('/api/backups'):
                 return self.respond({'error': f'Backup storage failed: {error}'}, 500)
             raise
+
+    def get_attachment(self, save_id, attachment_id):
+        with LOCK, db() as conn:
+            row = conn.execute('SELECT mime,image FROM chat_images WHERE save_id=? AND id=?',
+                               (save_id, attachment_id)).fetchone()
+            if not row:
+                return self.send_error(404)
+            content = row['image']
+            mime = row['mime']
+        self.send_response(200)
+        self.send_header('Content-Type', mime)
+        self.send_header('Content-Length', str(len(content)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        self.wfile.write(content)
 
     def get_images(self, parts):
         save_id = parts[2]

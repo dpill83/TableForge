@@ -15,7 +15,7 @@ DATABASE = 'tableforge.sqlite3'
 REQUIRED_TABLES = ('cartridges', 'saves', 'players', 'messages', 'sessions')
 # Counted tables; missing ones (older backups) count as zero.
 COUNTED = {'saves': 'saves', 'messages': 'messages', 'portraits': 'player_portraits',
-           'images': 'scene_images', 'notes': 'party_notes'}
+           'images': 'scene_images', 'attachments': 'chat_images', 'notes': 'party_notes'}
 NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,120}\.sqlite3$')
 
 

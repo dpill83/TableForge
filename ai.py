@@ -79,9 +79,14 @@ def message_size(message):
     return len(message.get('body') or '') + len(message.get('name') or '')
 
 
+def context_messages(messages):
+    """Drop AI artwork and image-only player shares; those stay on the table, not in the model."""
+    return [m for m in messages if m['kind'] != 'image' and (m.get('body') or '').strip()]
+
+
 def split_beat(messages):
     """Split messages into completed history and the open beat after the latest AI-DM narration."""
-    messages = [m for m in messages if m['kind'] != 'image']
+    messages = context_messages(messages)
     last_ai = max((index for index, message in enumerate(messages) if message['kind'] == 'ai'), default=-1)
     return messages[:last_ai + 1], messages[last_ai + 1:]
 
@@ -105,7 +110,7 @@ def recent_history(history, budget):
 
 def select_transcript(messages, summary=None, cap=TRANSCRIPT_CAP):
     """Always keep the open beat; fill the remaining budget with the newest unsummarized history."""
-    messages = [m for m in messages if m['kind'] != 'image']
+    messages = context_messages(messages)
     history, current = split_beat(unsummarized(messages, summary))
     current_chars = sum(message_size(message) for message in current)
     kept = recent_history(history, max(0, cap - current_chars))

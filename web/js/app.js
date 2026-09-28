@@ -3,12 +3,13 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const avatar = (player, className, fallback) => `<div class="${className}">${esc(fallback ?? player?.character?.[0] ?? '?')}${player?.portraitUrl?`<img src="${esc(player.portraitUrl)}" alt="">`:''}</div>`;
   const screens = [...document.querySelectorAll('.screen')];
-  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, composer:false, draft:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0};
+  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, composer:false, draft:null, pendingImage:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0};
   $('appVersion').textContent = 'v2.0';
   const request = async (path, body) => {
     const controller=new AbortController();
     const generating=body!==undefined&&/\/(images|advance|ask|summary-draft)$/.test(path);
-    const timer=setTimeout(()=>controller.abort(),generating?210000:15000);
+    const bulky=!!body?.image;
+    const timer=setTimeout(()=>controller.abort(),generating?210000:bulky?120000:15000);
     try{
       const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST', signal:controller.signal, headers:{'Content-Type':'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
       if(response.status===404&&path.endsWith('/portrait')) throw Error('Portraits need the updated TableForge server. Restart the server and refresh this page.');
@@ -54,7 +55,7 @@
   };
   // Backups copy the whole save database on the host; restore always backs up the current data first.
   const byteLabel = n => n<1024*1024?`${Math.max(1,Math.round(n/1024))} KB`:`${(n/1024/1024).toFixed(1)} MB`;
-  const backupCounts = c => [[c.saves,'save'],[c.messages,'message'],[c.portraits,'portrait'],[c.images,'illustration'],[c.notes,'party note']].map(([n,word])=>`${tokenLabel(n)} ${word}${n===1?'':'s'}`).join(' · ');
+  const backupCounts = c => [[c.saves,'save'],[c.messages,'message'],[c.portraits,'portrait'],[c.images,'illustration'],[c.attachments,'attachment'],[c.notes,'party note']].map(([n,word])=>`${tokenLabel(n)} ${word}${n===1?'':'s'}`).join(' · ');
   const showBackups = async () => {
     const list=$('backupList');
     let result;
@@ -321,7 +322,7 @@
     if(s.imageUsage) $('usageSummary').insertAdjacentHTML('beforeend',`<div class="image-usage"><strong>Scene images (separate)</strong><div>Session: ${esc(imageUsageLine(s.imageUsage.session))}</div><div>Playthrough: ${esc(imageUsageLine(s.imageUsage.save))}</div></div>`);
     $('illustrateScene').disabled=!state.identity||!s.messages.some(m=>m.kind==='ai');
     // Rebuild the feed only when its content changes, so Ready/typing updates keep the reading position.
-    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,s.messages.map(m=>[m.id,m.body.length,m.image_id,!!s.images?.some(i=>i.id===m.image_id)]),s.players.map(p=>[p.id,p.character,p.portraitUrl])]);
+    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,s.messages.map(m=>[m.id,m.body.length,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl])]);
     const feedChanged=feedKey!==state.feedKey,previousIds=new Set(state.feedKey?[...$('feedInner').children].map(el=>el.id):[]);
     const followLatest=state.followLatest!==false;
     if(feedChanged){
@@ -362,6 +363,16 @@
           row.querySelector('.message-actions').append(source);
         }
       }
+      const attachment=s.attachments?.find(a=>a.messageId===m.id);
+      if(attachment){
+        const link=document.createElement('a');
+        link.href=`/api/saves/${encodeURIComponent(s.save.id)}/attachments/${encodeURIComponent(attachment.id)}`;
+        link.target='_blank';link.rel='noopener';
+        const img=document.createElement('img');img.src=link.href;img.alt=m.body.trim()||'Attached image';
+        img.className='scene-image';img.loading='lazy';link.append(img);
+        img.addEventListener('load',()=>{if(state.followLatest!==false)$('feed').scrollTop=$('feed').scrollHeight;});
+        row.querySelector('.message-body').prepend(link);
+      }
       row.querySelector('.copy-message').onclick=async event=>{await navigator.clipboard.writeText(m.body);event.target.textContent='Copied';setTimeout(()=>event.target.textContent='Copy',1200);};
       row.dataset.searchText=(m.name+' '+m.body).toLowerCase();$('feedInner').append(row);
     }
@@ -374,6 +385,8 @@
     $('readyBtn').disabled=!current||state.generating||state.updating;
     $('sendBtn').disabled=!current||state.generating||state.updating;
     $('composer').disabled=state.generating||state.updating;
+    $('attachmentBtn').disabled=!current||state.generating||state.updating;
+    if($('attachmentBtn').disabled)$('attachmentMenu').classList.add('hidden');
     $('readyBtn').querySelector('.ready-label').textContent=current?.ready?'Unready':'Ready';
     $('readyBtn').classList.toggle('ready',!!current?.ready);
     $('combatToggle').classList.toggle('hidden',s.save.mode==='combat');
@@ -390,8 +403,17 @@
   // A draft belongs to the beat it was started in. If the table moves on, keep the
   // text but hold it until the player confirms it still fits the new beat.
   const draftStale=()=>!!state.draft&&!!state.save&&(state.draft.saveId!==state.save.save.id||state.draft.beat!==state.save.save.beat);
+  const pendingContribution=()=>!!$('composer').value.trim()||!!state.pendingImage;
+  const renderPending=()=>{
+    const tray=$('attachmentTray'),pending=state.pendingImage;
+    tray.classList.toggle('hidden',!pending);
+    if(!pending){tray.replaceChildren();return;}
+    tray.innerHTML=`<div class="attachment-chip"><span>${esc(pending.name)}</span><button type="button" id="removeAttachment" aria-label="Remove attachment">×</button></div>`;
+    $('removeAttachment').onclick=()=>{state.pendingImage=null;renderPending();syncDraft();};
+  };
+  const clearPendingImage=()=>{state.pendingImage=null;renderPending();};
   const syncDraft=()=>{
-    if(!$('composer').value.trim()) state.draft=null;
+    if(!pendingContribution()) state.draft=null;
     else if(!state.draft&&state.save) state.draft={saveId:state.save.save.id,beat:state.save.save.beat,requestId:null};
     storeDraft();
     renderDraft();
@@ -402,7 +424,7 @@
   const storeDraft=()=>{
     const key=draftKey();if(!key)return;
     try{
-      if(state.draft&&state.draft.saveId===state.save.save.id)
+      if(state.draft&&state.draft.saveId===state.save.save.id&&$('composer').value.trim())
         localStorage.setItem(key,JSON.stringify({text:$('composer').value,beat:state.draft.beat,requestId:state.draft.requestId}));
       else localStorage.removeItem(key);
     }catch(error){console.error(error);}
@@ -416,9 +438,10 @@
     const usable=saved&&typeof saved.text==='string'&&saved.text.trim()&&Number.isInteger(saved.beat);
     $('composer').value=usable?saved.text:'';
     state.draft=usable?{saveId:state.save.save.id,beat:saved.beat,requestId:saved.requestId||null}:null;
+    clearPendingImage();
     storeDraft();resize();renderDraft();
   };
-  const clearDraft=()=>{$('composer').value='';state.draft=null;storeDraft();resize();renderDraft();};
+  const clearDraft=()=>{$('composer').value='';state.draft=null;clearPendingImage();storeDraft();resize();renderDraft();};
   const renderDraft=()=>{
     const stale=draftStale();
     $('draftNotice').classList.toggle('hidden',!stale);
@@ -439,7 +462,7 @@
   $('feed').addEventListener('scroll',()=>{state.followLatest=feedAtBottom();if(state.followLatest)$('jumpLatest').classList.add('hidden');},{passive:true});
   $('jumpLatest').onclick=()=>$('feed').scrollTo({top:$('feed').scrollHeight,behavior:'smooth'});
   $('sendBtn').onclick=async()=>{
-    const field=$('composer'),body=field.value.trim();if(!body)return;
+    const field=$('composer'),body=field.value.trim(),image=state.pendingImage;if(!body&&!image)return;
     syncDraft();
     if(draftStale()) return;
     const staleBeat=error=>{
@@ -466,8 +489,10 @@
       }).catch(()=>notify(error));
       return true;
     };
+    const payload={playerId:state.identity,text:body,beat:state.draft.beat,requestId};
+    if(image) payload.image={mime:image.mime,data:image.data};
     try {
-      if(await update('messages',{playerId:state.identity,text:body,beat:state.draft.beat,requestId},landed)) {
+      if(await update('messages',payload,landed)) {
         typingSentAt=0;
         if(state.draft?.requestId===requestId) clearDraft();
         if(state.save.save.mode==='normal' && state.save.players.every(p=>p.ready)) await advanceTable();
@@ -516,8 +541,33 @@
   field.addEventListener('input',()=>{const typing=!!field.value.trim();if(typing&&Date.now()-typingSentAt>2500)sendTyping(true);else if(!typing&&typingSentAt)sendTyping(false);});
   field.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('sendBtn').click();}});
   $('emojiBtn').onclick=()=>{field.value+=' 🙂';resize();field.focus();};
-  // Attachments are intentionally disabled until byte storage is implemented.
-  $('attachmentBtn').onclick=()=>modal('<h3>Attachments</h3><p>File attachments are coming in a later build.</p><div class="actions"><button class="btn" data-close>Close</button></div>');
+  $('attachmentBtn').onclick=event=>{
+    event.stopPropagation();
+    if($('attachmentBtn').disabled)return;
+    $('attachmentMenu').classList.toggle('hidden');
+  };
+  $('attachmentMenu').onclick=event=>event.stopPropagation();
+  $('addPhotosFiles').onclick=event=>{
+    event.stopPropagation();
+    $('attachmentMenu').classList.add('hidden');
+    $('attachmentInput').value='';
+    $('attachmentInput').click();
+  };
+  document.addEventListener('click',()=>$('attachmentMenu').classList.add('hidden'));
+  $('attachmentInput').onchange=async event=>{
+    const file=event.target.files?.[0];
+    event.target.value='';
+    if(!file)return;
+    if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>20*1024*1024){
+      notify(Error('Choose a PNG, JPEG, or WebP image up to 20 MB.'));
+      return;
+    }
+    try{
+      state.pendingImage={name:file.name,mime:file.type,data:await bytes64(file)};
+      renderPending();
+      syncDraft();
+    }catch(error){notify(error);}
+  };
   const modal=(html,size='')=>{const root=$('modalRoot');root.innerHTML=`<div class="overlay"><div class="modal ${size}">${html}</div></div>`;root.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>root.replaceChildren());root.querySelector('.overlay').onclick=e=>{if(e.target.classList.contains('overlay'))root.replaceChildren();};};
   const openPortraitEditor=()=>{
     const player=state.save?.players.find(p=>p.id===state.identity);
