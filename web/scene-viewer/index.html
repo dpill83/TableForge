@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Scene Viewer — TableForge</title>
+<style>
+  :root {
+    --void: #0b0d0f;
+    --ash: #14171a;
+    --ash-lit: #1b1f23;
+    --soot: #2a2f34;
+    --smoke: #3a4147;
+    --bone: #d6d0c4;
+    --bone-dim: #8a8578;
+    --ice: #6fa8c7;
+    --ice-glow: rgba(111, 168, 199, 0.22);
+    --rust: #b5644a;
+    --fern: #6f8f5a;
+    --seal: #46524a;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', 'Palatino', 'Georgia', serif;
+    --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: 'SFMono-Regular', 'Consolas', 'Menlo', monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background:
+      radial-gradient(1200px 600px at 50% -10%, #171b1f 0%, var(--void) 70%);
+    color: var(--bone);
+    font-family: var(--sans);
+    line-height: 1.55;
+    min-height: 100vh;
+    padding: 0 0 100px;
+  }
+  .wrap { max-width: 780px; margin: 0 auto; padding: 0 18px; }
+
+  /* Masthead */
+  header.mast {
+    padding: 48px 0 28px;
+    border-bottom: 1px solid var(--soot);
+    margin-bottom: 8px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--ice);
+    margin: 0 0 14px;
+  }
+  h1.title {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(30px, 6vw, 46px);
+    line-height: 1.05;
+    margin: 0;
+    letter-spacing: -0.5px;
+  }
+  h1.title .empty { color: var(--bone-dim); font-style: italic; font-weight: 400; }
+  .lede {
+    color: var(--bone-dim);
+    font-size: 14.5px;
+    margin: 16px 0 0;
+    max-width: 62ch;
+  }
+
+  /* Loader */
+  .loader {
+    margin: 26px 0 10px;
+    border: 1px dashed var(--smoke);
+    border-radius: 10px;
+    padding: 26px 22px;
+    text-align: center;
+    background: var(--ash);
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .loader.drag { border-color: var(--ice); background: var(--ash-lit); }
+  .loader p { margin: 0 0 14px; color: var(--bone-dim); font-size: 14px; }
+  .loader .btns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    font-family: var(--sans);
+    font-size: 13.5px;
+    font-weight: 500;
+    border-radius: 7px;
+    padding: 9px 16px;
+    cursor: pointer;
+    border: 1px solid var(--smoke);
+    background: var(--ash-lit);
+    color: var(--bone);
+    transition: border-color 0.15s, color 0.15s, background 0.15s;
+  }
+  .btn:hover { border-color: var(--ice); color: #fff; }
+  .btn.primary { background: var(--ice); color: var(--void); border-color: var(--ice); font-weight: 600; }
+  .btn.primary:hover { filter: brightness(1.08); }
+  textarea.paste {
+    width: 100%;
+    margin-top: 12px;
+    background: var(--void);
+    border: 1px solid var(--smoke);
+    border-radius: 7px;
+    color: var(--bone);
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 10px;
+    min-height: 90px;
+    resize: vertical;
+    display: none;
+  }
+  textarea.paste.show { display: block; }
+
+  /* Style bar */
+  .stylebar {
+    display: none;
+    margin: 20px 0 4px;
+    padding: 14px 16px;
+    background: var(--ash);
+    border: 1px solid var(--soot);
+    border-left: 3px solid var(--ice);
+    border-radius: 8px;
+  }
+  .stylebar.show { display: block; }
+  .stylebar .lab {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--ice);
+    margin: 0 0 6px;
+  }
+  .stylebar .val { font-size: 13px; color: var(--bone-dim); font-style: italic; }
+
+  /* Progress */
+  .progress {
+    display: none;
+    margin: 22px 0 6px;
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: 1px;
+    color: var(--bone-dim);
+    text-transform: uppercase;
+  }
+  .progress.show { display: block; }
+  .progress b { color: var(--ice); }
+
+  /* Toggle for copy mode */
+  .copymode {
+    display: none;
+    align-items: center;
+    gap: 10px;
+    margin: 8px 0 22px;
+    font-size: 13px;
+    color: var(--bone-dim);
+  }
+  .copymode.show { display: flex; }
+  .switch { position: relative; width: 42px; height: 22px; flex-shrink: 0; }
+  .switch input { display: none; }
+  .switch .track {
+    position: absolute; inset: 0;
+    background: var(--soot);
+    border-radius: 22px;
+    transition: background 0.15s;
+  }
+  .switch .knob {
+    position: absolute; top: 3px; left: 3px;
+    width: 16px; height: 16px;
+    background: var(--bone-dim);
+    border-radius: 50%;
+    transition: transform 0.15s, background 0.15s;
+  }
+  .switch input:checked + .track { background: var(--ice); }
+  .switch input:checked + .track .knob { transform: translateX(20px); background: var(--void); }
+
+  /* Room cards */
+  .rooms { display: flex; flex-direction: column; gap: 14px; }
+  .room {
+    border: 1px solid var(--soot);
+    border-radius: 12px;
+    background: var(--ash);
+    overflow: hidden;
+    transition: border-color 0.2s;
+  }
+  .room.unlocked { border-color: var(--smoke); }
+
+  /* Sealed state */
+  .seal {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 22px 20px;
+    cursor: pointer;
+    -webkit-user-select: none;
+    user-select: none;
+  }
+  .seal:hover .seal-icon { border-color: var(--ice); color: var(--ice); }
+  .seal-icon {
+    width: 44px; height: 44px;
+    flex-shrink: 0;
+    border: 1.5px solid var(--seal);
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    color: var(--seal);
+    font-size: 20px;
+    transition: border-color 0.2s, color 0.2s;
+  }
+  .seal-text .rlabel {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 2px;
+    text-transform: uppercase;
+    color: var(--bone-dim);
+  }
+  .seal-text .rhint {
+    font-family: var(--serif);
+    font-size: 18px;
+    color: var(--bone);
+    margin-top: 2px;
+  }
+  .seal-text .rsub { font-size: 12.5px; color: var(--bone-dim); margin-top: 2px; }
+
+  /* Opened room body */
+  .body { display: none; padding: 4px 20px 22px; }
+  .room.unlocked .seal { display: none; }
+  .room.unlocked .body { display: block; }
+
+  .room-head {
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    padding: 18px 0 14px;
+    border-bottom: 1px solid var(--soot);
+    margin-bottom: 16px;
+  }
+  .room-num {
+    font-family: var(--serif);
+    font-size: 15px;
+    color: var(--ice);
+    font-weight: 600;
+  }
+  .room-head .re-lock {
+    margin-left: auto;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 1px;
+    color: var(--bone-dim);
+    text-transform: uppercase;
+    cursor: pointer;
+    border: 1px solid var(--soot);
+    padding: 4px 9px;
+    border-radius: 5px;
+  }
+  .room-head .re-lock:hover { border-color: var(--rust); color: var(--rust); }
+
+  /* Reveal blocks */
+  .reveal { margin-bottom: 14px; }
+  .reveal:last-child { margin-bottom: 0; }
+  .rv-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    margin-bottom: 8px;
+  }
+  .rv-tag.one { color: var(--fern); }
+  .rv-tag.two { color: var(--rust); }
+  .rv-tag .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+  .prompt {
+    background: var(--void);
+    border: 1px solid var(--soot);
+    border-radius: 8px;
+    padding: 14px 15px;
+    font-size: 13.5px;
+    color: #c3beb2;
+    line-height: 1.6;
+  }
+  .prompt-actions { margin-top: 10px; display: flex; gap: 9px; align-items: center; flex-wrap: wrap; }
+  .copy-btn {
+    font-family: var(--sans);
+    font-size: 12.5px;
+    font-weight: 600;
+    border: none;
+    border-radius: 6px;
+    padding: 8px 15px;
+    cursor: pointer;
+    background: var(--fern);
+    color: var(--void);
+    transition: filter 0.15s;
+  }
+  .copy-btn.two { background: var(--rust); }
+  .copy-btn:hover { filter: brightness(1.1); }
+  .copy-btn.done { background: var(--soot); color: var(--bone); }
+
+  /* Reveal-2 seal (inside an opened room) */
+  .rv2-seal {
+    border: 1px dashed var(--smoke);
+    border-radius: 8px;
+    padding: 14px 15px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    -webkit-user-select: none;
+    user-select: none;
+    transition: border-color 0.15s;
+  }
+  .rv2-seal:hover { border-color: var(--rust); }
+  .rv2-seal .lock-ico { color: var(--rust); font-size: 15px; }
+  .rv2-seal .txt { font-size: 13px; color: var(--bone-dim); }
+  .rv2-seal .txt b { color: var(--bone); font-weight: 600; }
+  .rv2-seal .trig { font-style: italic; }
+
+  footer.foot {
+    margin-top: 40px;
+    padding-top: 20px;
+    border-top: 1px solid var(--soot);
+    font-size: 12px;
+    color: var(--bone-dim);
+    text-align: center;
+  }
+  @media (max-width: 520px) {
+    header.mast { padding: 34px 0 22px; }
+    .seal { padding: 18px 16px; gap: 12px; }
+    .body { padding: 4px 15px 18px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow">Scene Viewer</p>
+    <h1 class="title" id="advTitle"><span class="empty">No adventure loaded</span></h1>
+    <p class="lede" id="advLede">Load a scenes file to reveal rooms one at a time. Each room stays sealed until you open it, so nobody sees what's ahead. Hidden surprises stay hidden until they spring.</p>
+  </header>
+
+  <div class="loader" id="loader">
+    <p>Drop a <b>scenes .json</b> here, choose a file, or paste its contents.</p>
+    <div class="btns">
+      <button class="btn primary" id="pickBtn">Choose file</button>
+      <button class="btn" id="pasteBtn">Paste JSON</button>
+      <input type="file" id="fileInput" accept=".json,application/json" hidden>
+    </div>
+    <textarea class="paste" id="pasteArea" placeholder="Paste the scenes JSON here, then click Choose file → Load pasted text..."></textarea>
+  </div>
+
+  <div class="stylebar" id="styleBar">
+    <p class="lab">Art style — prepended when the toggle is on</p>
+    <p class="val" id="styleVal"></p>
+  </div>
+
+  <div class="progress" id="progress"></div>
+
+  <label class="copymode" id="copyMode">
+    <span class="switch">
+      <input type="checkbox" id="styleToggle" checked>
+      <span class="track"><span class="knob"></span></span>
+    </span>
+    <span id="copyModeLabel">Copy includes the art-style line</span>
+  </label>
+
+  <div class="rooms" id="rooms"></div>
+
+  <footer class="foot" id="foot"></footer>
+</div>
+
+<script src="./app/pages/scene-viewer.js" type="module"></script>
+</body>
+</html>

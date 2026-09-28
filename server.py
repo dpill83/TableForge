@@ -457,6 +457,24 @@ def bound_artifacts(state):
     return {'artifacts': artifacts}
 
 
+def bound_cast(state):
+    """Read the cast resource bound to this save's mounted cartridge."""
+    files = stored_cartridge_files(state['cartridge']['id'])
+    path = state['cartridge']['resources'].get('cast.json')
+    if not path or path not in files:
+        return {'path': path, 'text': None}
+    return {'path': path, 'text': files[path].decode('utf-8')}
+
+
+def bound_scenes(state):
+    """Read the scenes resource bound to this save's mounted cartridge."""
+    files = stored_cartridge_files(state['cartridge']['id'])
+    path = state['cartridge']['resources'].get('scenes.json')
+    if not path or path not in files:
+        return {'path': path, 'text': None}
+    return {'path': path, 'text': files[path].decode('utf-8')}
+
+
 def unpack_payload(payload):
     kind = payload.get('kind')
     if kind == 'zip':
@@ -877,6 +895,22 @@ class Handler(BaseHTTPRequestHandler):
                     if query.get('pilot', ['false'])[0] != 'true':
                         raise ValueError('Enable Pilot Mode to view cartridge artifacts')
                     return self.respond(bound_artifacts(state))
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'cast':
+                query = parse_qs(urlparse(self.path).query)
+                with LOCK, db() as conn:
+                    state = snapshot(conn, parts[2])
+                    require_player(state, query.get('playerId', [None])[0])
+                    if query.get('pilot', ['false'])[0] != 'true':
+                        raise ValueError('Enable Pilot Mode to view the cartridge cast')
+                    return self.respond(bound_cast(state))
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'scenes':
+                query = parse_qs(urlparse(self.path).query)
+                with LOCK, db() as conn:
+                    state = snapshot(conn, parts[2])
+                    require_player(state, query.get('playerId', [None])[0])
+                    if query.get('pilot', ['false'])[0] != 'true':
+                        raise ValueError('Enable Pilot Mode to view cartridge scenes')
+                    return self.respond(bound_scenes(state))
             if path.startswith('/api/saves/'):
                 with LOCK, db() as conn:
                     return self.respond(snapshot(conn, path.rsplit('/', 1)[-1]))

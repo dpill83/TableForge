@@ -688,7 +688,7 @@
       modal(`<h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge v2.0</p>${usage?`<p>AI usage this session: ${esc(usageLine(usage.session))}<br>Playthrough: ${esc(usageLine(usage.save))}<br>Estimates use <a href="${esc(usage.pricingUrl)}" target="_blank" rel="noopener">standard text rates</a> from ${esc(usage.pricingAsOf)}. Earlier activity is unavailable.</p>`:''}<div class="actions"><button class="btn" data-close>Close</button></div>`);
     } catch(error) { notify(error); }
   };
-  $('pilotToggle').onclick=()=>{state.pilot=!state.pilot;$('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');$('pilotPanel').classList.toggle('hidden',!state.pilot);refreshContextFlag();if(!state.pilot&&($('sceneImageDialog')||$('moduleValidatorDialog')))$('modalRoot').replaceChildren();};
+  $('pilotToggle').onclick=()=>{state.pilot=!state.pilot;$('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');$('pilotPanel').classList.toggle('hidden',!state.pilot);refreshContextFlag();if(!state.pilot&&($('sceneImageDialog')||$('moduleValidatorDialog')))$('modalRoot').replaceChildren();if(!state.pilot&&$('mainChat').classList.contains('showing-tool')&&(!$('castViewer').classList.contains('hidden')||!$('sceneViewer').classList.contains('hidden'))){showTool(null);$('castViewer').src='about:blank';$('sceneViewer').src='about:blank';}};
   let sceneDialog=null;
   const imageDialogActive = dialog => sceneDialog===dialog&&!!$('sceneImageDialog')&&state.pilot&&state.save?.save.id===dialog.saveId;
   const renderSceneImages = dialog => {
@@ -1028,18 +1028,29 @@
   };
   document.querySelectorAll('.ref-open').forEach(b=>b.onclick=()=>noteCategories[b.dataset.ref]?openNotes(b.dataset.ref):b.dataset.ref==='map'?openMaps():b.dataset.ref==='module'?openModuleViewer():modal(`<h3>${esc(b.textContent)}</h3><p>Player-safe reference entries will appear here after discovery tracking is built.</p><div class="actions"><button class="btn" data-close>Close</button></div>`));
   const toolFrames=[
-    {id:'castViewer',url:'https://adventure-forge.pages.dev/cast-viewer',button:'showCastViewer'},
-    {id:'sceneViewer',url:'https://adventure-forge.pages.dev/scene-viewer',button:'showSceneViewer'}
+    {id:'castViewer',url:()=>{
+      const params=new URLSearchParams({saveId:state.save?.save.id||'',playerId:state.identity||''});
+      return `/cast-viewer/index.html?${params}`;
+    },button:'showCastViewer'},
+    {id:'sceneViewer',url:()=>{
+      const params=new URLSearchParams({saveId:state.save?.save.id||'',playerId:state.identity||''});
+      return `/scene-viewer/index.html?${params}`;
+    },button:'showSceneViewer'}
   ];
   const showTool=buttonId=>{
     const open=toolFrames.find(tool=>tool.button===buttonId)||null;
+    if(open&&(!state.pilot||!state.save||!state.identity)){
+      if(!state.pilot)modal(`<h3>${open.id==='sceneViewer'?'Scene Viewer':'Cast Viewer'}</h3><p>Enable Pilot Mode to inspect cartridge content, which may contain adventure spoilers.</p><div class="actions"><button class="btn" data-close>Close</button></div>`);
+      else notify(Error('Choose a player first.'));
+      return;
+    }
     $('mainChat').classList.toggle('showing-tool',!!open);
     $('showTable').classList.toggle('active',!open);
     for(const tool of toolFrames){
       const on=tool===open;
       $(tool.id).classList.toggle('hidden',!on);
       $(tool.button).classList.toggle('active',on);
-      if(on&&!$(tool.id).getAttribute('src'))$(tool.id).src=tool.url;
+      if(on){const url=typeof tool.url==='function'?tool.url():tool.url;if($(tool.id).getAttribute('src')!==url)$(tool.id).src=url;}
     }
   };
   $('showTable').onclick=()=>showTool(null);

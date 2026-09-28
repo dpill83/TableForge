@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cast Viewer — TableForge</title>
+<style>
+  :root {
+    --void: #0b0d0f;
+    --ash: #14171a;
+    --ash-lit: #1b1f23;
+    --soot: #2a2f34;
+    --smoke: #3a4147;
+    --bone: #d6d0c4;
+    --bone-dim: #8a8578;
+    --ice: #6fa8c7;
+    --rust: #b5644a;
+    --fern: #7fa86a;
+    --gold: #c9954a;
+    --seal: #46524a;
+    --villain: #b5644a;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', 'Palatino', 'Georgia', serif;
+    --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: 'SFMono-Regular', 'Consolas', 'Menlo', monospace;
+  }
+  * { box-sizing: border-box; }
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 50% -10%, #171b1f 0%, var(--void) 70%);
+    color: var(--bone);
+    font-family: var(--sans);
+    line-height: 1.55;
+    min-height: 100vh;
+    padding: 0 0 100px;
+  }
+  .wrap { max-width: 800px; margin: 0 auto; padding: 0 18px; }
+
+  header.mast { padding: 48px 0 28px; border-bottom: 1px solid var(--soot); margin-bottom: 8px; }
+  .eyebrow {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 3px;
+    text-transform: uppercase; color: var(--ice); margin: 0 0 14px;
+  }
+  h1.title {
+    font-family: var(--serif); font-weight: 600;
+    font-size: clamp(30px, 6vw, 46px); line-height: 1.05; margin: 0; letter-spacing: -0.5px;
+  }
+  h1.title .empty { color: var(--bone-dim); font-style: italic; font-weight: 400; }
+  .lede { color: var(--bone-dim); font-size: 14.5px; margin: 16px 0 0; max-width: 62ch; }
+
+  /* Section headings */
+  .cast-section {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 2.5px;
+    text-transform: uppercase; color: var(--ice); margin: 28px 0 4px;
+    padding-bottom: 8px; border-bottom: 1px solid var(--soot);
+  }
+  .cast-section:first-child { margin-top: 8px; }
+
+  /* Loader */
+  .loader {
+    margin: 26px 0 10px; border: 1px dashed var(--smoke); border-radius: 10px;
+    padding: 26px 22px; text-align: center; background: var(--ash);
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .loader.drag { border-color: var(--ice); background: var(--ash-lit); }
+  .loader p { margin: 0 0 14px; color: var(--bone-dim); font-size: 14px; }
+  .loader .btns { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    font-family: var(--sans); font-size: 13.5px; font-weight: 500; border-radius: 7px;
+    padding: 9px 16px; cursor: pointer; border: 1px solid var(--smoke);
+    background: var(--ash-lit); color: var(--bone);
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .btn:hover { border-color: var(--ice); color: #fff; }
+  .btn.primary { background: var(--ice); color: var(--void); border-color: var(--ice); font-weight: 600; }
+  textarea.paste {
+    width: 100%; margin-top: 12px; background: var(--void); border: 1px solid var(--smoke);
+    border-radius: 7px; color: var(--bone); font-family: var(--mono); font-size: 12px;
+    padding: 10px; min-height: 90px; resize: vertical; display: none;
+  }
+  textarea.paste.show { display: block; }
+
+  /* Style bar */
+  .stylebar {
+    display: none; margin: 20px 0 4px; padding: 14px 16px; background: var(--ash);
+    border: 1px solid var(--soot); border-left: 3px solid var(--ice); border-radius: 8px;
+  }
+  .stylebar.show { display: block; }
+  .stylebar .lab {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 1.5px;
+    text-transform: uppercase; color: var(--ice); margin: 0 0 6px;
+  }
+  .stylebar .val { font-size: 13px; color: var(--bone-dim); font-style: italic; }
+
+  /* Copy toggle */
+  .copymode {
+    display: none; align-items: center; gap: 10px; margin: 12px 0 24px;
+    font-size: 13px; color: var(--bone-dim);
+  }
+  .copymode.show { display: flex; }
+  .switch { position: relative; width: 42px; height: 22px; flex-shrink: 0; }
+  .switch input { display: none; }
+  .switch .track { position: absolute; inset: 0; background: var(--soot); border-radius: 22px; transition: background 0.15s; }
+  .switch .knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; background: var(--bone-dim); border-radius: 50%; transition: transform 0.15s, background 0.15s; }
+  .switch input:checked + .track { background: var(--ice); }
+  .switch input:checked + .track .knob { transform: translateX(20px); background: var(--void); }
+
+  /* Cast cards */
+  .cast { display: flex; flex-direction: column; gap: 16px; }
+  .char {
+    border: 1px solid var(--soot); border-radius: 12px; background: var(--ash);
+    overflow: hidden; transition: border-color 0.2s;
+  }
+  .char.villain { border-color: rgba(181,100,74,0.4); }
+  .char.monster { border-color: rgba(111,168,199,0.28); }
+
+  /* Sealed villain */
+  .seal {
+    display: flex; align-items: center; gap: 16px; padding: 24px 20px;
+    cursor: pointer; user-select: none;
+  }
+  .seal:hover .seal-icon { border-color: var(--villain); color: var(--villain); }
+  .seal-icon {
+    width: 46px; height: 46px; flex-shrink: 0; border: 1.5px solid var(--seal);
+    border-radius: 8px; display: grid; place-items: center; color: var(--seal);
+    font-size: 20px; transition: border-color 0.2s, color 0.2s;
+  }
+  .seal-text .slabel {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 2px;
+    text-transform: uppercase; color: var(--villain);
+  }
+  .seal-text .shint { font-family: var(--serif); font-size: 19px; color: var(--bone); margin-top: 3px; }
+  .seal-text .ssub { font-size: 12.5px; color: var(--bone-dim); margin-top: 3px; }
+
+  .char.sealed .body { display: none; }
+  .char.sealed .seal { display: flex; }
+  .char:not(.sealed) .seal { display: none; }
+
+  /* Card body */
+  .body { padding: 4px 20px 22px; }
+  .char-head {
+    display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap;
+    padding: 18px 0 6px;
+  }
+  .cname { font-family: var(--serif); font-size: 22px; font-weight: 600; }
+  .tier-badge {
+    font-family: var(--mono); font-size: 10px; letter-spacing: 1.5px;
+    text-transform: uppercase; padding: 3px 9px; border-radius: 5px;
+  }
+  .tier-badge.villain { background: rgba(181,100,74,0.16); color: var(--villain); }
+  .tier-badge.lieutenant { background: rgba(201,149,74,0.16); color: var(--gold); }
+  .tier-badge.minor { background: rgba(127,168,106,0.16); color: var(--fern); }
+  .tier-badge.monster { background: rgba(111,168,199,0.16); color: var(--ice); }
+  .reseal {
+    margin-left: auto; font-family: var(--mono); font-size: 10px; letter-spacing: 1px;
+    color: var(--bone-dim); text-transform: uppercase; cursor: pointer;
+    border: 1px solid var(--soot); padding: 4px 9px; border-radius: 5px;
+  }
+  .reseal:hover { border-color: var(--villain); color: var(--villain); }
+  .role { font-size: 13px; color: var(--bone-dim); font-style: italic; margin: 0 0 14px; }
+  .appears {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ice);
+    margin: 0 0 14px;
+  }
+
+  .look {
+    font-size: 14px; color: #c3beb2; line-height: 1.6;
+    padding: 12px 14px; background: var(--void); border-radius: 8px;
+    border-left: 2px solid var(--smoke); margin-bottom: 16px;
+  }
+
+  /* Section labels */
+  .sec-lab {
+    font-family: var(--mono); font-size: 10.5px; letter-spacing: 1.5px;
+    text-transform: uppercase; color: var(--bone-dim); margin: 0 0 8px;
+    display: flex; align-items: center; gap: 7px;
+  }
+  .sec-lab .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .sec-lab.combat .dot { background: var(--gold); }
+  .sec-lab.statblock .dot { background: var(--gold); }
+  .sec-lab.portrait .dot { background: var(--ice); }
+
+  /* Combat block */
+  .combat { margin-bottom: 16px; }
+  .combat-summary { font-size: 13.5px; color: var(--bone); margin: 0 0 8px; }
+  .statref { font-family: var(--mono); font-size: 11.5px; color: var(--bone-dim); }
+  .full-block {
+    margin-top: 10px; background: var(--void); border: 1px solid var(--soot);
+    border-radius: 8px; padding: 14px; font-family: var(--mono); font-size: 11.5px;
+    line-height: 1.55; color: #b8b3a7; max-height: 240px; overflow-y: auto;
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+  .full-toggle {
+    font-family: var(--mono); font-size: 11px; letter-spacing: 0.5px; color: var(--gold);
+    cursor: pointer; border: 1px solid var(--soot); border-radius: 5px;
+    padding: 5px 10px; display: inline-block; margin-top: 4px;
+  }
+  .full-toggle:hover { border-color: var(--gold); }
+
+  /* Statblock / portrait prompts */
+  .statblock-prompt { margin-bottom: 16px; }
+  .portrait { margin-top: 4px; }
+  .prompt {
+    background: var(--void); border: 1px solid var(--soot); border-radius: 8px;
+    padding: 14px 15px; font-size: 13px; color: #c3beb2; line-height: 1.6;
+    white-space: pre-wrap; word-wrap: break-word;
+  }
+  .prompt-actions { margin-top: 10px; display: flex; gap: 9px; flex-wrap: wrap; }
+  .copy-btn {
+    font-family: var(--sans); font-size: 12.5px; font-weight: 600; border: none;
+    border-radius: 6px; padding: 8px 15px; cursor: pointer;
+    background: var(--ice); color: var(--void); transition: filter 0.15s;
+  }
+  .copy-btn:hover { filter: brightness(1.1); }
+  .copy-btn.secondary {
+    background: transparent; color: var(--gold); border: 1px solid var(--soot);
+  }
+  .copy-btn.secondary:hover { border-color: var(--gold); filter: none; }
+  .copy-btn.done { background: var(--soot); color: var(--bone); }
+  .copy-btn.fail { background: var(--rust); color: #fff; }
+
+  footer.foot {
+    margin-top: 40px; padding-top: 20px; border-top: 1px solid var(--soot);
+    font-size: 12px; color: var(--bone-dim); text-align: center;
+  }
+  @media (max-width: 520px) {
+    header.mast { padding: 34px 0 22px; }
+    .body { padding: 4px 15px 18px; }
+    .seal { padding: 18px 16px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow">Cast Viewer</p>
+    <h1 class="title" id="advTitle"><span class="empty">No cast loaded</span></h1>
+    <p class="lede" id="advLede">Load a cast file to see every named character and monster — look, stats, and a portrait or token prompt to copy. The villain stays sealed until you choose to reveal it, so it's safe to have open during prep.</p>
+  </header>
+
+  <div class="loader" id="loader">
+    <p>Drop a <b>cast .json</b> here, choose a file, or paste its contents.</p>
+    <div class="btns">
+      <button class="btn primary" id="pickBtn">Choose file</button>
+      <button class="btn" id="pasteBtn">Paste JSON</button>
+      <input type="file" id="fileInput" accept=".json,application/json" hidden>
+    </div>
+    <textarea class="paste" id="pasteArea" placeholder="Paste the cast JSON here, then click Choose file → Load pasted text..."></textarea>
+  </div>
+
+  <div class="stylebar" id="styleBar">
+    <p class="lab">Art style — prepended to portrait / token prompts when the toggle is on</p>
+    <p class="val" id="styleVal"></p>
+  </div>
+
+  <label class="copymode" id="copyMode">
+    <span class="switch">
+      <input type="checkbox" id="styleToggle" checked>
+      <span class="track"><span class="knob"></span></span>
+    </span>
+    <span id="copyModeLabel">Copy includes the art-style line</span>
+  </label>
+
+  <div class="cast" id="cast"></div>
+
+  <footer class="foot" id="foot"></footer>
+</div>
+
+<script src="./app/pages/cast-viewer.js" type="module"></script>
+</body>
+</html>
