@@ -443,6 +443,20 @@ def stored_cartridge_files(cartridge_id):
     return read_archive(path.read_bytes())
 
 
+def bound_artifacts(state):
+    """Read the four module-validator inputs from this save's cartridge bindings."""
+    files = stored_cartridge_files(state['cartridge']['id'])
+    bindings = state['cartridge']['resources']
+    artifacts = {}
+    for role in ('run-data.json', 'module.md', 'cast.json', 'scenes.json'):
+        path = bindings.get(role)
+        if path and path in files:
+            artifacts[role] = {'path': path, 'text': files[path].decode('utf-8')}
+        else:
+            artifacts[role] = {'path': path, 'text': None}
+    return {'artifacts': artifacts}
+
+
 def unpack_payload(payload):
     kind = payload.get('kind')
     if kind == 'zip':
@@ -855,6 +869,14 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'context':
                 with LOCK, db() as conn:
                     return self.respond(context_preview(conn, parts[2]))
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'artifacts':
+                query = parse_qs(urlparse(self.path).query)
+                with LOCK, db() as conn:
+                    state = snapshot(conn, parts[2])
+                    require_player(state, query.get('playerId', [None])[0])
+                    if query.get('pilot', ['false'])[0] != 'true':
+                        raise ValueError('Enable Pilot Mode to view cartridge artifacts')
+                    return self.respond(bound_artifacts(state))
             if path.startswith('/api/saves/'):
                 with LOCK, db() as conn:
                     return self.respond(snapshot(conn, path.rsplit('/', 1)[-1]))

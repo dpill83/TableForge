@@ -130,6 +130,32 @@ class FlowTest(unittest.TestCase):
                     archive.writestr(name, content)
             return self.api('/api/cartridges', {'kind': 'zip', 'data': base64.b64encode(file.getvalue()).decode()})
 
+    def test_module_artifacts_follow_saved_cartridge_bindings(self):
+        resources = {'module':'content/story.md', 'runData':'content/runtime.json',
+                     'cast':'content/people.json', 'scenes':'content/beats.json',
+                     'stage3Prompt':STAGE3_NAME}
+        cartridge = self.cartridge_zip({
+            'manifest.json':json.dumps({'format':'tableforge-adventure','formatVersion':1,
+                                        'title':'Bound adventure','resources':resources}),
+            'content/story.md':'# Bound module',
+            'content/runtime.json':'{"rooms":[]}',
+            'content/people.json':'{"npcs":[]}',
+            'content/beats.json':'{"scenes":[]}',
+        })
+        save = self.api('/api/saves', {'cartridgeId':cartridge['id'],'name':'Our game',
+                                       'players':[{'name':'Dan','character':'George'}]})
+        save_id = save['save']['id']
+        player_id = save['players'][0]['id']
+        path = f'/api/saves/{save_id}/artifacts?playerId={player_id}&pilot=true'
+        artifacts = self.api(path)['artifacts']
+        self.assertEqual(artifacts['module.md'], {'path':'content/story.md','text':'# Bound module'})
+        self.assertEqual(artifacts['run-data.json'], {'path':'content/runtime.json','text':'{"rooms":[]}'})
+        self.assertEqual(artifacts['cast.json']['text'], '{"npcs":[]}')
+        self.assertEqual(artifacts['scenes.json']['text'], '{"scenes":[]}')
+        self.assertIn('Enable Pilot Mode', self.api_error(path.replace('&pilot=true',''))['error'])
+        self.assertIn('Select a player', self.api_error(
+            f'/api/saves/{save_id}/artifacts?pilot=true')['error'])
+
     def test_playthrough_and_reload(self):
         with io.BytesIO() as file:
             with zipfile.ZipFile(file, 'w') as archive:
