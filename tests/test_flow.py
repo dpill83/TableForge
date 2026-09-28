@@ -150,8 +150,7 @@ class FlowTest(unittest.TestCase):
         artifacts = self.api(path)['artifacts']
         self.assertEqual(artifacts['module.md'], {'path':'content/story.md','text':'# Bound module'})
         self.assertEqual(artifacts['run-data.json'], {'path':'content/runtime.json','text':'{"rooms":[]}'})
-        self.assertEqual(artifacts['cast.json']['text'], '{"npcs":[]}')
-        self.assertEqual(artifacts['scenes.json']['text'], '{"scenes":[]}')
+        self.assertEqual(set(artifacts), {'module.md', 'run-data.json'})
         self.assertIn('Enable Pilot Mode', self.api_error(path.replace('&pilot=true',''))['error'])
         self.assertIn('Select a player', self.api_error(
             f'/api/saves/{save_id}/artifacts?pilot=true')['error'])

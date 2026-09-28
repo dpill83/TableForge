@@ -444,11 +444,11 @@ def stored_cartridge_files(cartridge_id):
 
 
 def bound_artifacts(state):
-    """Read the four module-validator inputs from this save's cartridge bindings."""
+    """Read Module Reader inputs from this save's cartridge bindings."""
     files = stored_cartridge_files(state['cartridge']['id'])
     bindings = state['cartridge']['resources']
     artifacts = {}
-    for role in ('run-data.json', 'module.md', 'cast.json', 'scenes.json'):
+    for role in ('run-data.json', 'module.md'):
         path = bindings.get(role)
         if path and path in files:
             artifacts[role] = {'path': path, 'text': files[path].decode('utf-8')}

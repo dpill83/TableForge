@@ -1,0 +1,452 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Module Reader — Adventure Forge</title>
+<style>
+  :root {
+    --void: #0b0d0f;
+    --ash: #14171a;
+    --ash-lit: #1b1f23;
+    --soot: #2a2f34;
+    --smoke: #3a4147;
+    --bone: #d6d0c4;
+    --bone-dim: #8a8578;
+    --ice: #6fa8c7;
+    --ice-glow: rgba(111, 168, 199, 0.22);
+    --rust: #b5644a;
+    --fern: #6f8f5a;
+    --gold: #c9954a;
+    --serif: 'Iowan Old Style', 'Palatino Linotype', 'Palatino', 'Georgia', serif;
+    --sans: 'Inter', system-ui, -apple-system, 'Segoe UI', sans-serif;
+    --mono: 'SFMono-Regular', 'Consolas', 'Menlo', monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 50% -10%, #171b1f 0%, var(--void) 70%);
+    color: var(--bone);
+    font-family: var(--sans);
+    line-height: 1.55;
+    min-height: 100vh;
+    padding: 0 0 88px;
+  }
+  .wrap { max-width: 960px; margin: 0 auto; padding: 0 18px; }
+
+  header.mast {
+    padding: 40px 0 20px;
+    border-bottom: 1px solid var(--soot);
+    margin-bottom: 8px;
+  }
+  .eyebrow {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 3px;
+    text-transform: uppercase;
+    color: var(--ice);
+    margin: 0 0 12px;
+  }
+  h1.title {
+    font-family: var(--serif);
+    font-weight: 600;
+    font-size: clamp(26px, 5vw, 40px);
+    line-height: 1.05;
+    margin: 0;
+  }
+  h1.title .empty { color: var(--bone-dim); font-style: italic; font-weight: 400; }
+  .lede { color: var(--bone-dim); font-size: 14px; margin: 12px 0 0; max-width: 65ch; }
+
+  .loaders {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+    margin: 22px 0 10px;
+  }
+  .loaders.session-ready {
+    grid-template-columns: 1fr;
+    margin-top: 12px;
+  }
+  .loaders.session-ready #loaderRunData { display: none; }
+  @media (max-width: 640px) { .loaders { grid-template-columns: 1fr; } }
+
+  .loader {
+    border: 1px dashed var(--smoke);
+    border-radius: 10px;
+    padding: 18px 16px;
+    text-align: center;
+    background: var(--ash);
+    transition: border-color 0.2s, background 0.2s;
+  }
+  .loader.loaded { border-style: solid; border-color: var(--fern); }
+  .loader.optional.loaded { border-color: var(--ice); }
+  .loader.drag { border-color: var(--ice); background: var(--ash-lit); }
+  .loader .lab {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--bone-dim);
+    margin: 0 0 8px;
+  }
+  .loader .lab b { color: var(--rust); }
+  .loader .status { font-size: 12.5px; color: var(--bone-dim); margin: 0 0 10px; min-height: 1.2em; }
+  .loader .status.ok { color: var(--fern); }
+  .loader .btns { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+  .btn {
+    font-family: var(--sans);
+    font-size: 13px;
+    font-weight: 500;
+    border-radius: 7px;
+    padding: 8px 14px;
+    cursor: pointer;
+    border: 1px solid var(--smoke);
+    background: var(--ash-lit);
+    color: var(--bone);
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .btn:hover { border-color: var(--ice); color: #fff; }
+  .btn.primary { background: var(--ice); color: var(--void); border-color: var(--ice); font-weight: 600; }
+  .btn.small { font-size: 11.5px; padding: 5px 10px; }
+  textarea.paste {
+    width: 100%;
+    margin-top: 10px;
+    background: var(--void);
+    border: 1px solid var(--smoke);
+    border-radius: 7px;
+    color: var(--bone);
+    font-family: var(--mono);
+    font-size: 11px;
+    padding: 8px;
+    min-height: 70px;
+    resize: vertical;
+    display: none;
+  }
+  textarea.paste.show { display: block; }
+
+  .party-strip {
+    display: none;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin: 16px 0 8px;
+  }
+  .party-strip.show { display: flex; }
+  .pc-chip {
+    font-size: 12px;
+    background: var(--ash);
+    border: 1px solid var(--soot);
+    border-radius: 6px;
+    padding: 6px 10px;
+    color: var(--bone-dim);
+  }
+  .pc-chip b { color: var(--bone); }
+
+  .session-bar {
+    display: none;
+    position: sticky;
+    top: 0;
+    z-index: 20;
+    background: rgba(11, 13, 15, 0.92);
+    backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--soot);
+    margin: 0 -18px;
+    padding: 10px 18px;
+  }
+  .session-bar.show { display: block; }
+  .tabs {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-bottom: 8px;
+  }
+  .tab {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    padding: 7px 12px;
+    border-radius: 6px;
+    border: 1px solid var(--soot);
+    background: var(--ash);
+    color: var(--bone-dim);
+    cursor: pointer;
+  }
+  .tab:hover { border-color: var(--smoke); color: var(--bone); }
+  .tab.active { border-color: var(--ice); color: var(--ice); background: var(--ash-lit); }
+
+  .clock-bar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    font-size: 12.5px;
+  }
+  .clock-bar .bell-label {
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--gold);
+  }
+  .clock-bar .bell-effect { color: var(--bone-dim); flex: 1; min-width: 180px; }
+  .clock-bar .btn-advance { background: var(--gold); color: var(--void); border-color: var(--gold); font-weight: 600; }
+
+  .view { display: none; margin-top: 18px; }
+  .view.active { display: block; }
+
+  .card {
+    background: var(--ash);
+    border: 1px solid var(--soot);
+    border-radius: 10px;
+    padding: 16px 18px;
+    margin-bottom: 12px;
+  }
+  .card h2, .card h3 {
+    font-family: var(--serif);
+    font-weight: 600;
+    margin: 0 0 10px;
+    font-size: 18px;
+  }
+  .card h3 { font-size: 15px; color: var(--ice); }
+  .card p, .card li { font-size: 14px; color: #c3beb2; }
+  .card ul { margin: 8px 0; padding-left: 1.2em; }
+
+  .boxed {
+    font-family: var(--serif);
+    font-size: 16px;
+    line-height: 1.65;
+    background: var(--void);
+    border-left: 3px solid var(--ice);
+    border-radius: 0 8px 8px 0;
+    padding: 16px 18px;
+    color: #e8e4da;
+    margin-bottom: 14px;
+  }
+
+  .section-tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 1.5px;
+    text-transform: uppercase;
+    color: var(--bone-dim);
+    margin: 16px 0 6px;
+  }
+  .section-tag.trap { color: var(--rust); }
+  .section-tag.dm { color: var(--gold); }
+
+  .room-picker {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 16px;
+  }
+  .room-btn {
+    font-family: var(--mono);
+    font-size: 12px;
+    padding: 8px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--soot);
+    background: var(--ash);
+    color: var(--bone-dim);
+    cursor: pointer;
+    position: relative;
+  }
+  .room-btn:hover { border-color: var(--smoke); color: var(--bone); }
+  .room-btn.current { border-color: var(--ice); color: var(--ice); background: var(--ash-lit); }
+  .room-btn.visited::after {
+    content: '✓';
+    position: absolute;
+    top: -4px;
+    right: -4px;
+    font-size: 9px;
+    color: var(--fern);
+    background: var(--void);
+    border-radius: 50%;
+    width: 14px;
+    height: 14px;
+    display: grid;
+    place-items: center;
+  }
+
+  .beat-badge {
+    display: inline-block;
+    font-family: var(--mono);
+    font-size: 10px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--ice);
+    border: 1px solid var(--soot);
+    border-radius: 4px;
+    padding: 3px 8px;
+    margin-bottom: 12px;
+  }
+
+  .faq-item { border-top: 1px solid var(--soot); }
+  .faq-item:first-child { border-top: none; }
+  .faq-q {
+    padding: 12px 0;
+    cursor: pointer;
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--bone);
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .faq-q::after { content: '+'; color: var(--bone-dim); }
+  .faq-item.open .faq-q::after { content: '−'; }
+  .faq-a {
+    display: none;
+    padding: 0 0 12px;
+    font-size: 13.5px;
+    color: var(--bone-dim);
+    font-style: italic;
+  }
+  .faq-item.open .faq-a { display: block; }
+
+  .secrets-seal {
+    border: 1px dashed var(--rust);
+    border-radius: 8px;
+    padding: 14px;
+    cursor: pointer;
+    text-align: center;
+    color: var(--bone-dim);
+    font-size: 13px;
+    margin-top: 8px;
+  }
+  .secrets-seal:hover { border-color: var(--rust); color: var(--bone); }
+  .secrets-body { display: none; margin-top: 10px; font-size: 13.5px; color: #c3beb2; }
+  .secrets-body.show { display: block; }
+
+  .dm-toggle {
+    margin-top: 12px;
+    border: 1px dashed var(--gold);
+    border-radius: 8px;
+    overflow: hidden;
+  }
+  .dm-toggle-head {
+    padding: 10px 14px;
+    cursor: pointer;
+    font-family: var(--mono);
+    font-size: 11px;
+    letter-spacing: 1px;
+    text-transform: uppercase;
+    color: var(--gold);
+    background: rgba(201, 149, 74, 0.06);
+  }
+  .dm-toggle-body { display: none; padding: 12px 14px; font-size: 13.5px; color: #c3beb2; }
+  .dm-toggle.open .dm-toggle-body { display: block; }
+  .dm-hint { font-size: 12.5px; color: var(--bone-dim); font-style: italic; margin-top: 8px; }
+
+  .stat-card { margin-bottom: 14px; }
+  .stat-name {
+    font-family: var(--serif);
+    font-size: 17px;
+    color: var(--ice);
+    margin: 0 0 6px;
+  }
+  .stat-base { font-size: 12px; color: var(--bone-dim); margin-bottom: 8px; }
+  .stat-body { font-size: 13px; line-height: 1.6; color: #c3beb2; white-space: pre-wrap; }
+  .stat-card.highlight { border-color: var(--ice); box-shadow: 0 0 0 2px var(--ice-glow); }
+
+  .monster-link {
+    color: var(--ice);
+    cursor: pointer;
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+  .monster-link:hover { color: #fff; }
+
+  .copy-btn {
+    font-size: 12px;
+    font-weight: 600;
+    border: none;
+    border-radius: 6px;
+    padding: 7px 14px;
+    cursor: pointer;
+    background: var(--fern);
+    color: var(--void);
+    margin-top: 10px;
+  }
+  .copy-btn:hover { filter: brightness(1.1); }
+  .copy-btn.done { background: var(--soot); color: var(--bone); }
+
+  .kv { margin: 4px 0; font-size: 13.5px; }
+  .kv b { color: var(--bone); font-weight: 600; }
+
+  .reset-row { margin-top: 12px; text-align: right; }
+
+  footer.foot {
+    margin-top: 32px;
+    padding-top: 18px;
+    border-top: 1px solid var(--soot);
+    font-size: 12px;
+    color: var(--bone-dim);
+    text-align: center;
+  }
+  footer.foot a { color: var(--ice); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header class="mast">
+    <p class="eyebrow">Module Reader</p>
+    <h1 class="title" id="advTitle"><span class="empty">No adventure loaded</span></h1>
+    <p class="lede" id="advLede">Load run-data.json to run the session. Optionally add module.md for DM Notes and Difficulty Dials — either order works.</p>
+  </header>
+
+  <div class="loaders" id="loaders">
+    <div class="loader" id="loaderRunData">
+      <p class="lab">Run-data <b>required</b></p>
+      <p class="status" id="statusRunData">Drop a .json file here</p>
+      <div class="btns">
+        <button class="btn primary" id="pickRunData">Choose file</button>
+        <button class="btn" id="pasteRunData">Paste</button>
+        <input type="file" id="fileRunData" accept=".json,application/json" hidden>
+      </div>
+      <textarea class="paste" id="pasteAreaRunData" placeholder="Paste run-data JSON..."></textarea>
+    </div>
+    <div class="loader optional" id="loaderModule">
+      <p class="lab">Module <span style="color:var(--ice)">optional</span></p>
+      <p class="status" id="statusModule">Adds DM Notes &amp; dials</p>
+      <div class="btns">
+        <button class="btn" id="pickModule">Choose file</button>
+        <button class="btn" id="pasteModule">Paste</button>
+        <button class="btn" id="skipModule" hidden>Continue without module</button>
+        <input type="file" id="fileModule" accept=".md,text/markdown,text/plain" hidden>
+      </div>
+      <textarea class="paste" id="pasteAreaModule" placeholder="Paste module markdown..."></textarea>
+    </div>
+  </div>
+
+  <div class="party-strip" id="partyStrip"></div>
+
+  <div class="session-bar" id="sessionBar">
+    <div class="tabs" id="tabs">
+      <button class="tab active" data-tab="prep">Prep</button>
+      <button class="tab" data-tab="areas">Areas</button>
+      <button class="tab" data-tab="stats">Combat prep</button>
+      <button class="tab" data-tab="ref">Ref</button>
+    </div>
+    <div class="clock-bar" id="clockBar">
+      <span class="bell-label" id="clockLabel">Red Bell: 0</span>
+      <span class="bell-effect" id="clockEffect"></span>
+      <button class="btn small btn-advance" id="clockAdvance">+1 Bell</button>
+      <button class="btn small" id="sessionReset">Reset session</button>
+    </div>
+  </div>
+
+  <div class="view active" id="viewPrep"></div>
+  <div class="view" id="viewAreas"></div>
+  <div class="view" id="viewStats"></div>
+  <div class="view" id="viewRef"></div>
+
+  <footer class="foot" id="foot">
+    Module Reader from <a href="https://adventure-forge.pages.dev/module-reader" target="_blank" rel="noopener">AdventureForge</a>
+  </footer>
+</div>
+
+<script src="./pages/module-reader.js" type="module"></script>
+</body>
+</html>
