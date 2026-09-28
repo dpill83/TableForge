@@ -3,7 +3,7 @@
 run-data.json supplies the structure (rooms, connectsTo, monsters); module.md supplies the
 authored prose, split on its `##`/`###` headings. Sections are matched by convention:
 
-- `### Area N: Name` under `## Areas` belongs to room N.
+- `### Area N: Name` belongs to room N under any descriptive parent heading.
 - `## Area N: Name` and all of its `###` subsections also belong to room N.
 - `### Name (CR x)` under `## Stat blocks` is the stat block for monster `Name`.
 - `Player Briefing` and `Approach...` sections are sent only before the party reaches the site.
@@ -63,7 +63,7 @@ def classify(section):
     parent = (section['parent'] or '').lower()
     title = section['title']
     area = AREA_HEADING.match(title)
-    if area and (section['level'] == 2 or parent == 'areas'):
+    if area:
         return 'area', int(area.group(1))
     parent_area = AREA_HEADING.match(section['parent'] or '')
     if section['level'] == 3 and parent_area:
@@ -100,6 +100,9 @@ class Adventure:
             number = room.get('roomNumber')
             if isinstance(number, int):
                 self.rooms[number] = room
+        for section in self.sections:
+            if section['kind'] == 'area' and section['key'] not in self.rooms:
+                section['kind'], section['key'] = 'core', None
         self.area_sections = {s['key']: s for s in self.sections if s['kind'] == 'area' and s['key'] in self.rooms}
         self.focused = bool(self.rooms) and set(self.rooms) <= set(self.area_sections)
         self.stat_sections = {s['key']: s for s in self.sections if s['kind'] == 'stat'}

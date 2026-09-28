@@ -643,7 +643,7 @@ Sections are matched by convention until the manifest can declare them:
 
 | `module.md` heading | Matched to |
 |---|---|
-| `### Area N: Name` under `## Areas` | `run-data.json` `rooms[].roomNumber` N |
+| `### Area N: Name` under any level-two heading, or `## Area N: Name` | `run-data.json` `rooms[].roomNumber` N |
 | `### Name (CR x)` under `## Stat blocks` | a monster named `Name` (a leading count such as `2 Name` is ignored) |
 | `Player Briefing…`, `Approach…` | approach only |
 

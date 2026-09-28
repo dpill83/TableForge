@@ -110,6 +110,26 @@ HALL TEXT
         self.assertIn('HALL TEXT', focused)
         self.assertEqual(report['locationLabel'], 'Area 1: Gate')
 
+    def test_area_headings_under_descriptive_groups_are_focused(self):
+        module = """# Voyage
+## Ship flow and keyed areas
+### Area 1 — Main Deck
+DECK SECRET
+## Standalone location rooms and travel
+### Area 3 — Kingsbay Docks
+DOCK SECRET
+### Area 99 — Unlisted Appendix
+UNLISTED REFERENCE
+"""
+        rooms = [{'roomNumber': 1, 'connectsTo': []}, {'roomNumber': 3, 'connectsTo': []}]
+        adventure = module_context.Adventure(module, {'rooms': rooms})
+        self.assertTrue(adventure.focused)
+        focused, report = adventure.assemble(1)
+        self.assertIn('DECK SECRET', focused)
+        self.assertNotIn('DOCK SECRET', focused)
+        self.assertIn('UNLISTED REFERENCE', focused)
+        self.assertIn('Area 3 — Kingsbay Docks', report['excluded'])
+
 
 if __name__ == '__main__':
     unittest.main()
