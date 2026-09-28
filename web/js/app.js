@@ -955,6 +955,24 @@
     }
   };
   document.querySelectorAll('.ref-open').forEach(b=>b.onclick=()=>noteCategories[b.dataset.ref]?openNotes(b.dataset.ref):b.dataset.ref==='map'?openMaps():modal(`<h3>${esc(b.textContent)}</h3><p>Player-safe reference entries will appear here after discovery tracking is built.</p><div class="actions"><button class="btn" data-close>Close</button></div>`));
+  const toolFrames=[
+    {id:'castViewer',url:'https://adventure-forge.pages.dev/cast-viewer',button:'showCastViewer'},
+    {id:'moduleViewer',url:'https://adventure-forge.pages.dev/module-validator',button:'showModuleViewer'},
+    {id:'sceneViewer',url:'https://adventure-forge.pages.dev/scene-viewer',button:'showSceneViewer'}
+  ];
+  const showTool=buttonId=>{
+    const open=toolFrames.find(tool=>tool.button===buttonId)||null;
+    $('mainChat').classList.toggle('showing-tool',!!open);
+    $('showTable').classList.toggle('active',!open);
+    for(const tool of toolFrames){
+      const on=tool===open;
+      $(tool.id).classList.toggle('hidden',!on);
+      $(tool.button).classList.toggle('active',on);
+      if(on&&!$(tool.id).getAttribute('src'))$(tool.id).src=tool.url;
+    }
+  };
+  $('showTable').onclick=()=>showTool(null);
+  for(const tool of toolFrames) $(tool.button).onclick=()=>showTool(tool.button);
   const toggle=(id,css,key,other,symbols)=>{state[key]=!state[key];$(other).classList.toggle('collapsed',state[key]);$(id).textContent=state[key]?symbols[1]:symbols[0];if(css)$('workarea').classList.toggle(css,state[key]);};
   $('toggleLeft').onclick=()=>toggle('toggleLeft','left-collapsed','left','leftSidebar',['‹','›']);
   $('toggleRight').onclick=()=>toggle('toggleRight','right-collapsed','right','rightSidebar',['›','‹']);

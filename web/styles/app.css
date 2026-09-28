@@ -350,7 +350,7 @@ textarea{padding:10px;resize:none}
 .nav-item{
   width:100%;display:flex;align-items:center;gap:9px;
   padding:8px 9px;border:0;border-radius:8px;background:transparent;color:#cfd4da;
-  text-align:left;cursor:pointer
+  text-align:left;cursor:pointer;font:inherit;text-decoration:none
 }
 .nav-item:hover,.nav-item.active{background:#1c2128;color:var(--text)}
 .nav-symbol{width:18px;color:#8d95a1;text-align:center}
@@ -361,6 +361,13 @@ textarea{padding:10px;resize:none}
     #0d1014;
 }
 .main-chat{position:relative}
+.main-chat.showing-tool .feed,
+.main-chat.showing-tool .jump-latest,
+.main-chat.showing-tool .typing-indicator{visibility:hidden}
+.tool-frame{
+  position:absolute;inset:0;z-index:3;width:100%;height:100%;
+  border:0;background:#0d1014
+}
 .feed{overflow:auto;padding:22px clamp(16px,4vw,52px) 34px}
 .jump-latest{
   position:absolute;left:50%;bottom:38px;transform:translateX(-50%);z-index:2;

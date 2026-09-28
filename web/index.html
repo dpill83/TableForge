@@ -191,7 +191,7 @@
       <button class="divider-handle right-handle" id="toggleRight" title="Collapse right sidebar" aria-label="Collapse right sidebar">›</button>
       <aside id="leftSidebar" class="sidebar left">
         <div class="sidebar-inner">
-          <button class="nav-item active"><span class="nav-symbol">#</span>table</button>
+          <button class="nav-item active" id="showTable" type="button"><span class="nav-symbol">#</span>table</button>
 
           <div class="section-title">Reference</div>
           <button class="nav-item ref-open" data-ref="npcs"><span class="nav-symbol">◉</span>NPCs</button>
@@ -199,20 +199,24 @@
           <button class="nav-item ref-open" data-ref="notes"><span class="nav-symbol">≡</span>World Notes</button>
 
           <div class="section-title">Tools</div>
-          <button class="nav-item ref-open" data-ref="cast"><span class="nav-symbol">♙</span>Cast Viewer</button>
-          <button class="nav-item ref-open" data-ref="module"><span class="nav-symbol">▤</span>Module Viewer</button>
+          <button class="nav-item" id="showCastViewer" type="button"><span class="nav-symbol">♙</span>Cast Viewer</button>
+          <button class="nav-item" id="showModuleViewer" type="button"><span class="nav-symbol">▤</span>Module Viewer</button>
+          <button class="nav-item" id="showSceneViewer" type="button"><span class="nav-symbol">▣</span>Scene Viewer</button>
           <button class="nav-item ref-open" data-ref="map"><span class="nav-symbol">◇</span>Map</button>
 
           <button class="nav-item" style="margin-top:12px;color:var(--muted)"><span class="nav-symbol">＋</span>Add</button>
         </div>
       </aside>
 
-      <main class="main-chat">
+      <main id="mainChat" class="main-chat">
         <div id="feed" class="feed">
           <div id="feedInner" class="feed-inner"></div>
         </div>
         <button id="jumpLatest" class="jump-latest hidden" type="button">New messages · Jump to latest ↓</button>
         <div id="typingIndicator" class="typing-indicator" aria-live="polite"></div>
+        <iframe id="castViewer" class="tool-frame hidden" title="Cast Viewer" referrerpolicy="no-referrer"></iframe>
+        <iframe id="moduleViewer" class="tool-frame hidden" title="Module Viewer" referrerpolicy="no-referrer"></iframe>
+        <iframe id="sceneViewer" class="tool-frame hidden" title="Scene Viewer" referrerpolicy="no-referrer"></iframe>
       </main>
 
       <aside id="rightSidebar" class="sidebar right">
