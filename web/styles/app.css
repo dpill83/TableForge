@@ -692,6 +692,8 @@ textarea{padding:10px;resize:none}
   border-color:#70e5b7;
   color:#dcfff2;
 }
+.ready-btn-large .auto-ready-indicator{display:none;font-size:9px;letter-spacing:.06em;padding:2px 4px;border-radius:4px;background:#263a66;color:#dce4ff}
+.ready-btn-large.auto-ready .auto-ready-indicator{display:inline-block}
 .ready-check{font-size:18px;line-height:1}
 .status-strong{color:#d6dbe0}
 
@@ -717,6 +719,8 @@ textarea{padding:10px;resize:none}
 .context-option{display:flex;gap:10px;align-items:flex-start;padding:10px;border:1px solid var(--border);border-radius:9px;background:#101318;margin:7px 0}
 .context-option input{width:auto;height:auto;margin-top:3px}
 .context-option strong{display:block;font-size:13px}.context-option span{font-size:12px;color:var(--muted)}
+.notification-setting .context-option{margin:0;border:0;padding:0;background:transparent}
+.notification-setting #notificationStatus{margin-top:8px;font-size:12px}
 .pilot-chat-log{max-height:250px;overflow:auto;border:1px solid var(--border);border-radius:9px;background:#0f1216;padding:10px;margin:10px 0}
 .pilot-line{margin:0 0 10px;font-size:13px;line-height:1.45}
 .pilot-line strong{color:#d5bd98}

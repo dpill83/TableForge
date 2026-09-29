@@ -95,6 +95,13 @@
         <div><div class="muted" style="font-size:12px">Model</div><strong id="runtimeModel">local mock runtime</strong></div>
       </div>
       <div class="muted" style="margin-top:14px;font-size:13px">Set TABLEFORGE_OPENAI_API_KEY on the server to use OpenAI. TABLEFORGE_MODEL defaults to gpt-4o-mini. The key stays on the host.</div>
+      <div class="binding notification-setting" style="margin-top:16px">
+        <label class="context-option" for="aiMessageNotifications">
+          <input id="aiMessageNotifications" type="checkbox">
+          <span><strong>AI-DM message notifications</strong><span>Play a sound and show a browser notification when a new AI-DM message arrives while TableForge is in a background tab.</span></span>
+        </label>
+        <div id="notificationStatus" class="muted" role="status" aria-live="polite">Notifications are off.</div>
+      </div>
       <div class="binding" id="globalUsage" style="margin-top:16px">AI usage is loading…</div>
       <div class="backup-panel">
         <div class="row"><div><strong>Backups</strong><div class="muted" style="font-size:12px">Saves, transcripts, portraits, illustrations, and party notes. Cartridges are kept separately and are not copied.</div></div><button class="btn small" id="createBackup" type="button">Back up now</button></div>
@@ -278,6 +285,7 @@
         <button class="ready-btn-large" id="readyBtn" type="button">
           <span class="ready-check">✓</span>
           <span class="ready-label">Ready</span>
+          <span class="auto-ready-indicator" aria-hidden="true">AUTO</span>
         </button>
       </div>
     </footer>

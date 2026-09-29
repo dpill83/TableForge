@@ -4,6 +4,58 @@
   const avatar = (player, className, fallback) => `<div class="${className}">${esc(fallback ?? player?.character?.[0] ?? '?')}${player?.portraitUrl?`<img src="${esc(player.portraitUrl)}" alt="">`:''}</div>`;
   const screens = [...document.querySelectorAll('.screen')];
   const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, composer:false, draft:null, pendingImage:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0};
+  const autoReadyKey=()=>state.save&&state.identity?`tableforge-auto-ready:${state.save.save.id}:${state.identity}`:null;
+  const autoReadyEnabled=()=>{const key=autoReadyKey();try{return !!key&&localStorage.getItem(key)==='true';}catch{return false;}};
+  const setAutoReady=enabled=>{const key=autoReadyKey();if(!key)return;try{if(enabled)localStorage.setItem(key,'true');else localStorage.removeItem(key);}catch(error){console.error(error);}};
+  const aiNotificationKey='tableforge-ai-dm-notifications';
+  const aiNotificationsEnabled=()=>{try{return localStorage.getItem(aiNotificationKey)==='true';}catch{return false;}};
+  const setAINotificationsEnabled=enabled=>{try{if(enabled)localStorage.setItem(aiNotificationKey,'true');else localStorage.removeItem(aiNotificationKey);return true;}catch(error){console.error(error);return false;}};
+  let notificationAudio=null;
+  const prepareNotificationAudio=()=>{
+    const Audio=window.AudioContext||window.webkitAudioContext;
+    if(!Audio)return false;
+    try{
+      if(!notificationAudio)notificationAudio=new Audio();
+      if(notificationAudio.state==='suspended')notificationAudio.resume().catch(error=>console.warn('Notification sound is unavailable.',error));
+      return true;
+    }catch(error){console.warn('Notification sound is unavailable.',error);return false;}
+  };
+  const playAINotificationSound=()=>{
+    if(!notificationAudio||notificationAudio.state!=='running')return;
+    try{
+      const oscillator=notificationAudio.createOscillator(),gain=notificationAudio.createGain(),now=notificationAudio.currentTime;
+      oscillator.type='sine';oscillator.frequency.setValueAtTime(880,now);oscillator.frequency.setValueAtTime(660,now+0.11);
+      gain.gain.setValueAtTime(0.0001,now);gain.gain.exponentialRampToValueAtTime(0.12,now+0.015);gain.gain.exponentialRampToValueAtTime(0.0001,now+0.24);
+      oscillator.connect(gain);gain.connect(notificationAudio.destination);oscillator.start(now);oscillator.stop(now+0.25);
+    }catch(error){console.warn('Notification sound could not play.',error);}
+  };
+  const unlockNotificationAudio=()=>{if(aiNotificationsEnabled())prepareNotificationAudio();};
+  document.addEventListener('pointerdown',unlockNotificationAudio,{once:true});
+  document.addEventListener('keydown',unlockNotificationAudio,{once:true});
+  const notificationStatus=()=>{
+    if(!('Notification' in window))return 'Browser notifications are unavailable in this browser or connection.';
+    if(Notification.permission==='denied')return 'Notifications are blocked in browser settings. Allow them there before turning this on.';
+    return aiNotificationsEnabled()?'Notifications are on for this browser.':'Notifications are off.';
+  };
+  const renderAINotificationOption=()=>{
+    const checkbox=$('aiMessageNotifications'),status=$('notificationStatus');
+    if(!checkbox||!status)return;
+    if(!('Notification' in window)||Notification.permission!=='granted')setAINotificationsEnabled(false);
+    checkbox.checked=aiNotificationsEnabled();status.textContent=notificationStatus();
+  };
+  const announceAIMessage=message=>{
+    if(!aiNotificationsEnabled()||!document.hidden)return;
+    if(!('Notification' in window)||Notification.permission!=='granted'){
+      setAINotificationsEnabled(false);
+      if(notificationAudio?.state==='running')notificationAudio.suspend().catch(error=>console.warn(error));
+      renderAINotificationOption();return;
+    }
+    playAINotificationSound();
+    try{
+      const notification=new Notification('TableForge · AI-DM replied',{body:'A new AI-DM message is waiting in your table.',tag:`tableforge-ai-${state.save?.save.id||'table'}-${message.id}`});
+      notification.onclick=()=>{window.focus();notification.close();};
+    }catch(error){console.warn('Browser notification could not be shown.',error);}
+  };
   $('appVersion').textContent = 'v2.0';
   const request = async (path, body) => {
     const controller=new AbortController();
@@ -110,7 +162,7 @@
   const show = async id => {
     screens.forEach(el => el.classList.toggle('active', el.id === id));
     if(id === 'load') await refreshSaves();
-    if(id === 'options') {await showRuntime();await showUsage();await showBackups();}
+    if(id === 'options') {renderAINotificationOption();await showRuntime();await showUsage();await showBackups();}
     if(id === 'play') scrollFeedToLatest();
   };
   document.querySelectorAll('[data-go]').forEach(btn => btn.onclick = () => show(btn.dataset.go).catch(notify));
@@ -338,7 +390,7 @@
     $('illustrateScene').disabled=!state.identity||!s.messages.some(m=>m.kind==='ai');
     // Rebuild the feed only when its content changes, so Ready/typing updates keep the reading position.
     const feed=$('feed'),feedKey=JSON.stringify([s.save.id,s.messages.map(m=>[m.id,m.body.length,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl])]);
-    const feedChanged=feedKey!==state.feedKey,previousIds=new Set(state.feedKey?[...$('feedInner').children].map(el=>el.id):[]);
+    const feedChanged=feedKey!==state.feedKey,sameSave=state.feedSaveId===s.save.id,previousIds=new Set(state.feedKey?[...$('feedInner').children].map(el=>el.id):[]);
     const followLatest=state.followLatest!==false;
     if(feedChanged){
     state.feedKey=feedKey;
@@ -397,6 +449,8 @@
     }
     applySearch();
     const added=s.messages.filter(m=>!previousIds.has('message-'+m.id));
+    if(sameSave&&document.hidden&&aiNotificationsEnabled())added.filter(m=>m.kind==='ai').forEach(announceAIMessage);
+    state.feedSaveId=s.save.id;
     if(followLatest||!previousIds.size||added.some(m=>m.player_id&&m.player_id===state.identity&&m.kind!=='ai')) scrollFeedToLatest();
     else{feed.scrollTop=top;if(added.length)$('jumpLatest').classList.remove('hidden');}
     }
@@ -408,6 +462,9 @@
     if($('attachmentBtn').disabled)$('attachmentMenu').classList.add('hidden');
     $('readyBtn').querySelector('.ready-label').textContent=current?.ready?'Unready':'Ready';
     $('readyBtn').classList.toggle('ready',!!current?.ready);
+    $('readyBtn').classList.toggle('auto-ready',autoReadyEnabled());
+    $('readyBtn').title=autoReadyEnabled()?'Auto-ready on · click to turn off':'Double-click to turn on auto-ready';
+    $('readyBtn').setAttribute('aria-label',`${current?.ready?'Unready':'Ready'}${autoReadyEnabled()?', auto-ready on':''}`);
     $('combatToggle').classList.toggle('hidden',s.save.mode==='combat');
     $('resumeCombat').classList.toggle('hidden',s.save.mode!=='combat');
     $('combatToggle').disabled=state.generating||state.updating;
@@ -523,7 +580,14 @@
          [document.body,field,$('sendBtn')].includes(document.activeElement)) field.focus();
     }
   };
+  $('readyBtn').ondblclick=event=>{
+    event.preventDefault();
+    if(!state.save||!state.identity)return;
+    setAutoReady(true);
+    render();
+  };
   $('readyBtn').onclick=async()=>{
+    if(autoReadyEnabled()){setAutoReady(false);render();}
     const current=state.save.players.find(p=>p.id===state.identity);
     if(!current) return;
     if(await update('ready',{playerId:state.identity,ready:!current.ready}) &&
@@ -707,6 +771,39 @@
       modal(`<h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge v2.0</p>${usage?`<p>AI usage this session: ${esc(usageLine(usage.session))}<br>Playthrough: ${esc(usageLine(usage.save))}<br>Estimates use <a href="${esc(usage.pricingUrl)}" target="_blank" rel="noopener">standard text rates</a> from ${esc(usage.pricingAsOf)}. Earlier activity is unavailable.</p>`:''}<div class="actions"><button class="btn" data-close>Close</button></div>`);
     } catch(error) { notify(error); }
   };
+  $('aiMessageNotifications').onchange=async event=>{
+    const checkbox=event.currentTarget;
+    if(!checkbox.checked){
+      setAINotificationsEnabled(false);
+      if(notificationAudio?.state==='running')notificationAudio.suspend().catch(error=>console.warn(error));
+      renderAINotificationOption();return;
+    }
+    prepareNotificationAudio();
+      if(!('Notification' in window)){
+        checkbox.checked=false;renderAINotificationOption();return;
+      }
+    if(Notification.permission==='denied'){
+      checkbox.checked=false;renderAINotificationOption();return;
+    }
+    try{
+      const permission=Notification.permission==='granted'?'granted':await Notification.requestPermission();
+      if(permission!=='granted'){
+        checkbox.checked=false;renderAINotificationOption();return;
+      }
+      if(!setAINotificationsEnabled(true)){
+        checkbox.checked=false;$('notificationStatus').textContent='Browser storage is unavailable, so this setting could not be saved.';return;
+      }
+      renderAINotificationOption();
+    }catch(error){
+      console.warn('Notification permission could not be requested.',error);
+      checkbox.checked=false;$('notificationStatus').textContent='Browser notification permission could not be requested. Check your browser settings.';
+    }
+  };
+  window.addEventListener('storage',event=>{
+    if(event.key!==aiNotificationKey)return;
+    renderAINotificationOption();
+    if(!aiNotificationsEnabled()&&notificationAudio?.state==='running')notificationAudio.suspend().catch(error=>console.warn(error));
+  });
   $('pilotToggle').onclick=()=>{
     state.pilot=!state.pilot;
     $('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');
@@ -1098,7 +1195,7 @@
   // Simple polling synchronizes browsers while WebSocket transport is pending.
   let refreshingTable=false;
   setInterval(async()=>{
-    if(refreshingTable||document.hidden||!state.save||!$('play').classList.contains('active'))return;
+    if(refreshingTable||(document.hidden&&!aiNotificationsEnabled())||!state.save||!$('play').classList.contains('active'))return;
     const saveId=state.save.save.id;refreshingTable=true;
     try{
       const next=await request('saves/'+saveId);
