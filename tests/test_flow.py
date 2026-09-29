@@ -71,6 +71,7 @@ class FlowTest(unittest.TestCase):
         self.old_data = server.DATA
         server.DATA = self.path
         server.GENERATING.clear()
+        server.AI_REQUEST_LOGS.clear()
         server.initialize()
         self.env = patch.dict(os.environ, {'TABLEFORGE_OPENAI_API_KEY': '', 'TABLEFORGE_AIDM_MODEL': '', 'TABLEFORGE_MODEL': ''})
         self.env.start()
@@ -85,6 +86,7 @@ class FlowTest(unittest.TestCase):
         self.thread.join()
         self.env.stop()
         server.GENERATING.clear()
+        server.AI_REQUEST_LOGS.clear()
         server.DATA = self.old_data
         self.temp.cleanup()
 
@@ -874,6 +876,71 @@ Flyman block.
         self.assertIn('# Test adventure', fake.context['module'])
         self.assertTrue(any(m['body'] == 'I look ahead.' for m in fake.context['messages']))
         self.assertTrue(any(m['body'] == 'Would Shenka flee?' for m in fake.context['pilot']))
+
+    def test_pilot_request_log_is_live_temporary_and_session_scoped(self):
+        save_id = self.ready_save()
+        state = self.api(f'/api/saves/{save_id}')
+        first = state['players'][0]['id']
+        log_path = f'/api/saves/{save_id}/request-log?playerId={first}&pilot=true'
+
+        class SlowMockProvider(ai.MockProvider):
+            def __init__(self):
+                self.started = threading.Event()
+                self.release = threading.Event()
+
+            def generate(self, context, on_request=None):
+                result = super().generate(context, on_request)
+                self.started.set()
+                if not self.release.wait(timeout=5):
+                    raise ValueError('timed out waiting to finish generation')
+                return result
+
+        provider = SlowMockProvider()
+        with patch.object(ai, 'current_provider', return_value=provider):
+            outcomes = []
+            worker = threading.Thread(target=lambda: outcomes.append(
+                self.api(f'/api/saves/{save_id}/advance', {'beat': 1})))
+            worker.start()
+            self.assertTrue(provider.started.wait(2))
+            live = self.api(log_path)['entries']
+            self.assertEqual(live[0]['status'], 'sending')
+            self.assertNotIn('requestLog', self.api(f'/api/saves/{save_id}')['activity'])
+            provider.release.set()
+            worker.join(5)
+            advanced = outcomes[0]
+            asked = self.api(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'What is nearby?'})
+
+        entries = self.api(log_path)['entries']
+        self.assertEqual([entry['purpose'] for entry in entries], ['advance', 'ask'])
+        self.assertTrue(all(entry['status'] == 'complete' for entry in entries))
+        advance_payload = json.loads(entries[0]['payload'])
+        ask_payload = json.loads(entries[1]['payload'])
+        self.assertEqual(advance_payload['model'], 'local mock runtime')
+        self.assertTrue(any(m['role'] == 'user' for m in advance_payload['messages']))
+        self.assertIn('What is nearby?', ask_payload['messages'][-1]['content'])
+        self.assertNotIn('requestLog', advanced)
+        self.assertNotIn('requestLog', asked['activity'])
+        self.assertNotIn('requestLog', self.api(f'/api/saves/{save_id}'))
+        self.assertIn('Pilot Mode', self.api_error(
+            f'/api/saves/{save_id}/request-log?playerId={first}&pilot=false')['error'])
+
+        self.api(f'/api/saves/{save_id}/end-session', {'playerId': first})
+        self.assertEqual(self.api(log_path)['entries'], [])
+        self.api(f'/api/saves/{save_id}/start-session', {'playerId': first})
+        self.assertEqual(self.api(log_path)['entries'], [])
+
+    def test_openai_capture_matches_sent_json_body(self):
+        response = io.BytesIO(json.dumps({'choices': [{'message': {'content': 'Done.'}}]}).encode())
+        captured = []
+        context = {'purpose': 'summary', 'previousSummary': '',
+                   'messages': [{'name': 'A', 'body': 'B'}]}
+        provider = ai.OpenAIProvider('secret-key', 'test-model')
+        with patch('ai.urllib.request.urlopen', return_value=response) as open_url:
+            provider.generate(context, on_request=captured.append)
+        sent = open_url.call_args.args[0].data.decode('utf-8')
+        self.assertEqual(captured, [sent])
+        self.assertEqual(json.loads(sent)['model'], 'test-model')
+        self.assertNotIn('secret-key', sent)
 
     def test_ask_provider_error_keeps_question(self):
         save_id = self.ready_save()

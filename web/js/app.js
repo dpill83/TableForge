@@ -713,7 +713,7 @@
     $('pilotPanel').classList.toggle('hidden',!state.pilot);
     refreshContextFlag();
     if(!state.pilot){
-      if($('sceneImageDialog')||$('moduleViewerLoading')||$('moduleViewerMessage')||$('moduleValidatorDialog'))$('modalRoot').replaceChildren();
+      if($('sceneImageDialog')||$('moduleViewerLoading')||$('moduleViewerMessage')||$('moduleValidatorDialog')||$('aiRequestLogDialog'))$('modalRoot').replaceChildren();
       const showingReader=$('mainChat').classList.contains('showing-tool')&&
         (!$('castViewer').classList.contains('hidden')||!$('sceneViewer').classList.contains('hidden')||!$('moduleViewer').classList.contains('hidden'));
       if(showingReader)showTool(null);
@@ -941,6 +941,33 @@
     };
   };
   $('reviewContext').onclick=openContextReview;
+  $('aiRequestLog').onclick=()=>{
+    if(!state.pilot||!state.save||!state.identity)return;
+    modal('<div id="aiRequestLogDialog"><h3>AI Request Log</h3><p class="muted">Temporary requests from this play session. The request body contains the full context sent to the provider.</p><div id="aiRequestLogEntries" class="pilot-chat-log" role="log" aria-label="AI request log"></div><div class="actions"><button class="btn" data-close>Close</button></div></div>','wide');
+    const dialog=$('aiRequestLogDialog'),list=$('aiRequestLogEntries');
+    const saveId=state.save.save.id;
+    let loading=false,rendered='';
+    const refresh=async()=>{
+      if(!dialog?.isConnected||!state.pilot||loading)return;
+      loading=true;
+      try{
+        const result=await request(`saves/${saveId}/request-log?playerId=${encodeURIComponent(state.identity)}&pilot=true`);
+        if(!dialog.isConnected)return;
+        const entries=result.entries||[];
+        const key=JSON.stringify(entries);
+        if(key!==rendered){
+          const atBottom=list.scrollHeight-list.scrollTop-list.clientHeight<32;
+          list.innerHTML=entries.length?entries.map(entry=>`<details class="context-message" open><summary><strong>${esc(entry.purpose==='ask'?'Pilot Ask':'Table advance')}</strong> · ${esc(entry.provider==='mock'?'Mock provider':entry.provider)} · ${esc(entry.model)} · ${esc(entry.status)} · ${esc(when(entry.startedAt))}</summary><pre>${esc(entry.payload)}</pre>${entry.error?`<p class="binding-issue" role="alert">${esc(entry.error)}</p>`:''}</details>`).join(''):'<p class="muted">No AI request has been captured in this play session yet.</p>';
+          if(atBottom)list.scrollTop=list.scrollHeight;
+          rendered=key;
+        }
+      }catch(error){if(dialog.isConnected)list.innerHTML=`<p class="binding-issue" role="alert">${esc(error.message)}</p>`;}
+      finally{loading=false;}
+    };
+    refresh();
+    const poll=()=>{if(dialog.isConnected&&state.pilot){refresh().finally(()=>setTimeout(poll,900));}};
+    setTimeout(poll,900);
+  };
   const openMaps=async()=>{
     if(!state.save||!state.identity)return;
     const pilot=state.pilot;

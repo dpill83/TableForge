@@ -36,6 +36,8 @@ GENERATING = {}
 # save_id -> {player_id: monotonic expiry}; presence only, never saved.
 TYPING = {}
 TYPING_SECONDS = 6
+# save_id -> transient request entries for the current session; never serialized.
+AI_REQUEST_LOGS = {}
 MAX_REQUEST = 32 * 1024 * 1024
 MAX_PORTRAIT_BYTES = 5 * 1024 * 1024
 MAX_CHAT_IMAGE_BYTES = 20 * 1024 * 1024
@@ -505,6 +507,7 @@ def active_session(conn, save_id):
 def start_session(conn, save_id):
     if active_session(conn, save_id):
         return
+    AI_REQUEST_LOGS.pop(save_id, None)
     number = conn.execute('SELECT COALESCE(MAX(number),0)+1 FROM sessions WHERE save_id=?', (save_id,)).fetchone()[0]
     participants = [row['id'] for row in conn.execute('SELECT id FROM players WHERE save_id=? ORDER BY rowid', (save_id,))]
     conn.execute('INSERT INTO sessions (id,save_id,number,started_at,participants) VALUES (?,?,?,?,?)',
@@ -588,6 +591,18 @@ def typing_players(save_id):
 
 def activity(save_id):
     return {'aiDm': GENERATING.get(save_id), 'typing': typing_players(save_id)}
+
+
+def request_log(conn, save_id, player_id, pilot):
+    state = snapshot(conn, save_id)
+    require_player(state, player_id)
+    if pilot is not True:
+        raise ValueError('Enable Pilot Mode to view AI request details')
+    session = active_session(conn, save_id)
+    if not session:
+        return {'entries': []}
+    entries = AI_REQUEST_LOGS.get(save_id, [])
+    return {'entries': [dict(entry) for entry in entries if entry['sessionId'] == session['id']]}
 
 
 def begin_advance(conn, save_id, payload):
@@ -887,6 +902,11 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'context':
                 with LOCK, db() as conn:
                     return self.respond(context_preview(conn, parts[2]))
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'request-log':
+                query = parse_qs(urlparse(self.path).query)
+                with LOCK, db() as conn:
+                    return self.respond(request_log(conn, parts[2], query.get('playerId', [None])[0],
+                                                    query.get('pilot', ['false'])[0] == 'true'))
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'artifacts':
                 query = parse_qs(urlparse(self.path).query)
                 with LOCK, db() as conn:
@@ -1127,6 +1147,7 @@ class Handler(BaseHTTPRequestHandler):
                     conn.execute('UPDATE sessions SET ended_at=?,ended_by=? WHERE id=?',
                                  (stamp, payload['playerId'], session['id']))
                     conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (stamp, save_id))
+                    AI_REQUEST_LOGS.pop(save_id, None)
                     return self.respond(snapshot(conn, save_id))
                 if action == 'location':
                     player = require_player(state, payload.get('playerId'))
@@ -1360,13 +1381,41 @@ class Handler(BaseHTTPRequestHandler):
     def run_generation(self, save_id, begin, publish, payload):
         with LOCK, db() as conn:
             context = begin(conn, save_id, payload)
+            session = active_session(conn, save_id)
+            request_entry = None
         try:
-            generated = ai.current_provider().generate(context)
+            provider = ai.current_provider()
+            runtime = ai.runtime_status()
+
+            def capture_request(body):
+                nonlocal request_entry
+                with LOCK:
+                    request_entry = {
+                        'id': str(uuid.uuid4()), 'sessionId': session['id'] if session else None,
+                        'purpose': context.get('purpose', 'advance'), 'provider': runtime['provider'],
+                        'model': json.loads(body).get('model', runtime['model']),
+                        'payload': body, 'status': 'sending',
+                        'startedAt': utc(), 'error': None,
+                    }
+                    AI_REQUEST_LOGS.setdefault(save_id, []).append(request_entry)
+
+            capture_enabled = context.get('purpose') in ('advance', 'ask')
+            if capture_enabled and isinstance(provider, (ai.OpenAIProvider, ai.MockProvider)):
+                generated = provider.generate(context, on_request=capture_request)
+            else:
+                generated = provider.generate(context)
             text = str(generated or '').strip()
             if not text:
                 raise ValueError('The AI-DM returned an empty response')
+            if request_entry:
+                with LOCK:
+                    request_entry['status'] = 'complete'
+                    request_entry['finishedAt'] = utc()
         except Exception as error:
             with LOCK:
+                if request_entry:
+                    request_entry['status'] = 'failed'
+                    request_entry['error'] = str(error)
                 GENERATING.pop(save_id, None)
             if isinstance(error, ValueError):
                 raise

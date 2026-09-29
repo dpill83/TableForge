@@ -335,7 +335,9 @@ def summary_chat_messages(context):
 
 
 class MockProvider:
-    def generate(self, context):
+    def generate(self, context, on_request=None):
+        if on_request:
+            on_request(json.dumps({'model': runtime_status()['model'], 'messages': chat_messages(context)}))
         if context.get('purpose') == 'summary':
             previous = context['previousSummary'] + ' ' if context['previousSummary'] else ''
             return f"Mock summary: {previous}{len(context['messages'])} more messages of play happened."
@@ -357,8 +359,11 @@ class OpenAIProvider:
         self.key = key
         self.model = model
 
-    def generate(self, context):
-        payload = json.dumps({'model': self.model, 'messages': chat_messages(context)}).encode()
+    def generate(self, context, on_request=None):
+        payload_text = json.dumps({'model': self.model, 'messages': chat_messages(context)})
+        if on_request:
+            on_request(payload_text)
+        payload = payload_text.encode()
         request = urllib.request.Request(
             OPENAI_URL,
             data=payload,
