@@ -38,10 +38,9 @@
     return aiNotificationsEnabled()?'Notifications are on for this browser.':'Notifications are off.';
   };
   const renderAINotificationOption=()=>{
-    const checkbox=$('aiMessageNotifications'),status=$('notificationStatus');
-    if(!checkbox||!status)return;
     if(!('Notification' in window)||Notification.permission!=='granted')setAINotificationsEnabled(false);
-    checkbox.checked=aiNotificationsEnabled();status.textContent=notificationStatus();
+    document.querySelectorAll('[data-ai-notification-toggle]').forEach(checkbox=>{checkbox.checked=aiNotificationsEnabled();});
+    document.querySelectorAll('[data-ai-notification-status]').forEach(status=>{status.textContent=notificationStatus();});
   };
   const announceAIMessage=message=>{
     if(!aiNotificationsEnabled()||!document.hidden)return;
@@ -768,11 +767,14 @@
     try {
       const info = await showRuntime();
       const usage=state.save?.usage;
-      modal(`<h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge v2.0</p>${usage?`<p>AI usage this session: ${esc(usageLine(usage.session))}<br>Playthrough: ${esc(usageLine(usage.save))}<br>Estimates use <a href="${esc(usage.pricingUrl)}" target="_blank" rel="noopener">standard text rates</a> from ${esc(usage.pricingAsOf)}. Earlier activity is unavailable.</p>`:''}<div class="actions"><button class="btn" data-close>Close</button></div>`);
+      modal(`<h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge v2.0</p><div class="binding notification-setting"><label class="context-option" for="aiMessageNotifications"><input id="aiMessageNotifications" data-ai-notification-toggle type="checkbox"><span><strong>AI-DM message notifications</strong><span>Play a sound and show a browser notification when a new AI-DM message arrives while TableForge is in a background tab.</span></span></label><div data-ai-notification-status class="muted" role="status" aria-live="polite">Notifications are off.</div></div>${usage?`<p>AI usage this session: ${esc(usageLine(usage.session))}<br>Playthrough: ${esc(usageLine(usage.save))}<br>Estimates use <a href="${esc(usage.pricingUrl)}" target="_blank" rel="noopener">standard text rates</a> from ${esc(usage.pricingAsOf)}. Earlier activity is unavailable.</p>`:''}<div class="actions"><button class="btn" data-close>Close</button></div>`);
+      renderAINotificationOption();
     } catch(error) { notify(error); }
   };
-  $('aiMessageNotifications').onchange=async event=>{
-    const checkbox=event.currentTarget;
+  document.addEventListener('change',async event=>{
+    const checkbox=event.target.closest?.('[data-ai-notification-toggle]');
+    if(!checkbox)return;
+    const status=checkbox.closest('.notification-setting')?.querySelector('[data-ai-notification-status]');
     if(!checkbox.checked){
       setAINotificationsEnabled(false);
       if(notificationAudio?.state==='running')notificationAudio.suspend().catch(error=>console.warn(error));
@@ -791,14 +793,14 @@
         checkbox.checked=false;renderAINotificationOption();return;
       }
       if(!setAINotificationsEnabled(true)){
-        checkbox.checked=false;$('notificationStatus').textContent='Browser storage is unavailable, so this setting could not be saved.';return;
+        checkbox.checked=false;if(status)status.textContent='Browser storage is unavailable, so this setting could not be saved.';return;
       }
       renderAINotificationOption();
     }catch(error){
       console.warn('Notification permission could not be requested.',error);
-      checkbox.checked=false;$('notificationStatus').textContent='Browser notification permission could not be requested. Check your browser settings.';
+      checkbox.checked=false;if(status)status.textContent='Browser notification permission could not be requested. Check your browser settings.';
     }
-  };
+  });
   window.addEventListener('storage',event=>{
     if(event.key!==aiNotificationKey)return;
     renderAINotificationOption();
