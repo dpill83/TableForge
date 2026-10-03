@@ -2,6 +2,7 @@
 import http.client
 import json
 import logging
+import math
 import os
 import re
 import urllib.error
@@ -39,12 +40,16 @@ LOGGER = logging.getLogger(__name__)
 class GeneratedText(str):
     """AI text with provider-reported usage; mock providers may return plain strings."""
 
-    def __new__(cls, text, *, usage=None, model=None, service_tier=None, routing=None):
+    def __new__(cls, text, *, usage=None, model=None, service_tier=None, routing=None,
+                configured_model=None, requested_model=None, reported_model=None):
         result = super().__new__(cls, text)
         result.usage = usage
         result.model = model
         result.service_tier = service_tier
         result.routing = routing
+        result.configured_model = configured_model
+        result.requested_model = requested_model
+        result.reported_model = reported_model
         return result
 
 
@@ -395,6 +400,29 @@ class MockProvider:
         return text
 
 
+def routing_state(enabled):
+    """The legacy fallback aliases always describe TableForge, never the router."""
+    return {'enabled': enabled, 'tier': None, 'model': None, 'reason': None, 'scores': None,
+            'routerContacted': False,
+            'routerInternalFallbackUsed': None if enabled else False,
+            'routerInternalFallbackReason': None,
+            'tableforgeRouterFallbackUsed': False, 'tableforgeRouterFallbackReason': None,
+            'fallback': False, 'fallbackReason': None}
+
+
+def router_internal_fallback(data, reason):
+    """Read router-owned flags; recognize only the known reason-only Laya reply."""
+    used = next((data[key] for key in ('router_internal_fallback_used', 'routerInternalFallbackUsed',
+                                     'fallback_used', 'fallbackUsed', 'fallback')
+                 if type(data.get(key)) is bool), None)
+    if used is None and reason and reason.casefold() == 'laya unavailable, using safe fallback':
+        used = True
+    detail = next((data[key] for key in ('router_internal_fallback_reason', 'routerInternalFallbackReason',
+                                       'fallback_reason', 'fallbackReason')
+                   if isinstance(data.get(key), str) and data[key].strip()), reason)
+    return used, ' '.join(detail.split())[:240] if used is True and detail else None
+
+
 class OpenAIProvider:
     def __init__(self, key, model, router_url=None):
         self.key = key
@@ -403,9 +431,10 @@ class OpenAIProvider:
                            if router_url is None else router_url).strip()
 
     def select_model(self, context):
+        routing = routing_state(bool(self.router_url))
         if not self.router_url:
-            return self.model, None
-        routing = {'tier': None, 'model': self.model, 'reason': None, 'fallback': True}
+            return self.model, routing
+        routing.update(fallback=True, tableforgeRouterFallbackUsed=True)
         try:
             request = urllib.request.Request(
                 self.router_url,
@@ -414,6 +443,7 @@ class OpenAIProvider:
                 method='POST',
             )
             with urllib.request.urlopen(request, timeout=ROUTER_TIMEOUT) as response:
+                routing['routerContacted'] = True
                 body = response.read(ROUTER_RESPONSE_CAP + 1)
             if len(body) > ROUTER_RESPONSE_CAP:
                 raise ValueError('Router response too large')
@@ -422,19 +452,48 @@ class OpenAIProvider:
             if (not isinstance(model, str) or len(model) > 200
                     or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]*', model.strip())):
                 raise ValueError('Router returned no valid model')
-            routing.update(model=model.strip(), fallback=False,
+            routing.update(model=model.strip(), fallback=False, tableforgeRouterFallbackUsed=False,
                            tier=data.get('tier') if data.get('tier') in ('cheap', 'standard', 'heavy') else None,
                            reason=' '.join(data['reason'].split())[:240]
                            if isinstance(data.get('reason'), str) else None)
-        except (OSError, ValueError, RecursionError, http.client.HTTPException):
+            internal_used, internal_reason = router_internal_fallback(data, routing['reason'])
+            routing.update(routerInternalFallbackUsed=internal_used,
+                           routerInternalFallbackReason=internal_reason)
+            scores = data.get('scores')
+            if isinstance(scores, dict):
+                routing['scores'] = {tier: value for tier, value in scores.items()
+                                     if tier in ('cheap', 'standard', 'heavy')
+                                     and type(value) in (int, float) and 0 <= value <= 1
+                                     and math.isfinite(value)} or None
+        except (OSError, ValueError, RecursionError, http.client.HTTPException) as error:
             # Never log exception bodies: a router may echo the private request.
-            routing['reason'] = 'Router unavailable or invalid response'
+            if isinstance(error, urllib.error.HTTPError):
+                routing['routerContacted'] = True
+                reason = f'Router HTTP error ({error.code})'
+            elif isinstance(error, TimeoutError) or (isinstance(error, urllib.error.URLError)
+                                                     and isinstance(error.reason, TimeoutError)):
+                reason = 'Router timed out'
+            elif isinstance(error, ConnectionRefusedError) or (isinstance(error, urllib.error.URLError)
+                                                              and isinstance(error.reason, ConnectionRefusedError)):
+                reason = 'Router connection refused'
+            elif isinstance(error, (ValueError, RecursionError)):
+                reason = 'Router invalid URL or malformed response'
+            else:
+                reason = 'Router unavailable or invalid response'
+            routing['fallbackReason'] = reason
+            routing['tableforgeRouterFallbackReason'] = reason
         LOGGER.log(logging.WARNING if routing['fallback'] else logging.INFO,
-                   'TableForge routing: %s', json.dumps(routing))
-        return routing['model'], routing
+                   'TableForge routing: purpose=%s tier=%s model=%s router_contacted=%s '
+                   'router_internal_fallback=%s tableforge_router_fallback=%s error=%s',
+                   context.get('purpose', 'advance'), routing['tier'], routing['model'],
+                   routing['routerContacted'], routing['routerInternalFallbackUsed'],
+                   routing['tableforgeRouterFallbackUsed'], routing['tableforgeRouterFallbackReason'])
+        return self.model if routing['fallback'] else routing['model'], routing
 
-    def generate(self, context, on_request=None):
+    def generate(self, context, on_request=None, on_metadata=None):
         model, routing = self.select_model(context)
+        if on_metadata:
+            on_metadata({'configuredModel': self.model, 'requestedModel': model, 'routing': routing})
         payload_text = json.dumps({'model': model, 'messages': chat_messages(context)})
         if on_request:
             on_request(payload_text)
@@ -459,4 +518,6 @@ class OpenAIProvider:
         if not text:
             raise ValueError('OpenAI returned an empty response')
         return GeneratedText(text, usage=data.get('usage'), model=data.get('model') or model,
-                             service_tier=data.get('service_tier'), routing=routing)
+                             service_tier=data.get('service_tier'), routing=routing,
+                             configured_model=self.model, requested_model=model,
+                             reported_model=data.get('model'))

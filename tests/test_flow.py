@@ -877,7 +877,7 @@ Flyman block.
         self.assertTrue(any(m['body'] == 'I look ahead.' for m in fake.context['messages']))
         self.assertTrue(any(m['body'] == 'Would Shenka flee?' for m in fake.context['pilot']))
 
-    def test_pilot_request_log_is_live_temporary_and_session_scoped(self):
+    def test_pilot_request_log_is_live_with_temporary_payload_and_saved_metadata(self):
         save_id = self.ready_save()
         state = self.api(f'/api/saves/{save_id}')
         first = state['players'][0]['id']
@@ -925,9 +925,11 @@ Flyman block.
             f'/api/saves/{save_id}/request-log?playerId={first}&pilot=false')['error'])
 
         self.api(f'/api/saves/{save_id}/end-session', {'playerId': first})
-        self.assertEqual(self.api(log_path)['entries'], [])
+        ended = self.api(log_path)['entries']
+        self.assertEqual(len(ended), 2)
+        self.assertTrue(all(entry['payload'] is None for entry in ended))
         self.api(f'/api/saves/{save_id}/start-session', {'playerId': first})
-        self.assertEqual(self.api(log_path)['entries'], [])
+        self.assertEqual(self.api(log_path)['entries'], ended)
 
     def test_openai_capture_matches_sent_json_body(self):
         response = io.BytesIO(json.dumps({'choices': [{'message': {'content': 'Done.'}}]}).encode())
@@ -969,6 +971,230 @@ Flyman block.
         self.assertEqual(row['model'], 'gpt-6-astra-snapshot')
         self.assertEqual(row['total_tokens'], 120)
         self.assertIsNotNone(row['estimated_cost_usd'])
+
+    def logged_openai(self, save_id, route, *, reported='gpt-6-luna-snapshot', purpose='advance',
+                      failure=False, service_tier='default', publish_failure=False):
+        """Keep real localhost HTTP calls; stub only router and OpenAI boundaries."""
+        real_urlopen = urllib.request.urlopen
+        sent = []
+        def opened(request, *args, **kwargs):
+            url = request.full_url if isinstance(request, urllib.request.Request) else request
+            if url == 'http://router/route':
+                if isinstance(route, Exception):
+                    raise route
+                return io.BytesIO(route if isinstance(route, bytes) else json.dumps(route).encode())
+            if url == ai.OPENAI_URL:
+                sent.append(json.loads(request.data))
+                if failure:
+                    raise urllib.error.URLError('PRIVATE PROVIDER ERROR secret-key')
+                completion = {'choices': [{'message': {'content': 'Narration.'}}],
+                              'usage': {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120},
+                              'service_tier': service_tier}
+                if reported is not None:
+                    completion['model'] = reported
+                return io.BytesIO(json.dumps(completion).encode())
+            return real_urlopen(request, *args, **kwargs)
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        provider = ai.OpenAIProvider('secret-key', 'gpt-6-luna',
+                                     '' if route is None else 'http://router/route')
+        path = {'advance': 'advance', 'ask': 'ask', 'summary': 'summary-draft'}[purpose]
+        payload = {'playerId': first, 'override': True, 'text': 'What happens?'}
+        with patch.object(ai, 'current_provider', return_value=provider), \
+                patch('ai.urllib.request.urlopen', side_effect=opened):
+            result = (self.api_error if failure or publish_failure else self.api)(f'/api/saves/{save_id}/{path}', payload)
+        entry = self.api(f'/api/saves/{save_id}/request-log?playerId={first}&pilot=true')['entries'][-1]
+        return entry, sent, result
+
+    def test_request_log_routes_persist_all_models_scores_and_usage_after_restart(self):
+        save_id = self.ready_save('# Private module')
+        for tier, model in [('cheap', 'gpt-6-luna'), ('standard', 'gpt-6-sol'), ('heavy', 'gpt-6-astra')]:
+            with self.subTest(tier=tier):
+                route = {'tier': tier, 'model': model, 'reason': 'Confidence threshold cleared',
+                         'router_internal_fallback_used': False,
+                         'scores': {'cheap': 0.49, 'standard': 0.42, 'heavy': 0.09}}
+                entry, sent, result = self.logged_openai(save_id, route, reported=model + '-snapshot')
+                self.assertEqual(entry['configuredModel'], 'gpt-6-luna')
+                self.assertEqual(entry['routing']['model'], model)
+                self.assertEqual(entry['routing']['scores'], route['scores'])
+                self.assertTrue(entry['routing']['routerContacted'])
+                self.assertFalse(entry['routing']['routerInternalFallbackUsed'])
+                self.assertFalse(entry['routing']['tableforgeRouterFallbackUsed'])
+                self.assertEqual(entry['requestedModel'], sent[0]['model'])
+                self.assertEqual(entry['reportedModel'], model + '-snapshot')
+                self.assertEqual(entry['serviceTier'], 'default')
+                self.assertEqual(entry['provider'], 'openai')
+                self.assertEqual(entry['status'], 'complete')
+                self.assertEqual((entry['inputTokens'], entry['outputTokens'], entry['totalTokens']), (100, 20, 120))
+                self.assertIsNotNone(entry['estimatedCostUsd'])
+                self.assertNotIn('requestLog', result)
+                with server.db() as conn:
+                    row = conn.execute('SELECT * FROM ai_requests WHERE id=?', (entry['id'],)).fetchone()
+                    self.assertEqual(json.loads(row['routing']), entry['routing'])
+                    self.assertNotIn('Private module', json.dumps(dict(row)))
+                    self.assertNotIn('secret-key', json.dumps(dict(row)))
+                server.AI_REQUEST_LOGS.clear()
+                server.initialize()
+                first = result['players'][0]['id']
+                restored = self.api(f'/api/saves/{save_id}/request-log?playerId={first}&pilot=true')['entries'][-1]
+                self.assertIsNone(restored.pop('payload'))
+                entry.pop('payload')
+                self.assertEqual(restored, entry)
+
+    def test_request_log_disabled_and_missing_reported_model_remain_distinct(self):
+        save_id = self.ready_save()
+        entry, sent, _ = self.logged_openai(save_id, None, reported=None)
+        self.assertEqual(entry['requestedModel'], 'gpt-6-luna')
+        self.assertIsNone(entry['reportedModel'])
+        self.assertIsNone(entry['routing']['model'])
+        self.assertFalse(entry['routing']['enabled'])
+        self.assertFalse(entry['routing']['fallback'])
+        self.assertIsNotNone(entry['estimatedCostUsd'])
+        self.assertEqual(len(sent), 1)
+
+    def test_request_log_router_fallback_succeeds_and_retains_safe_reason(self):
+        save_id = self.ready_save()
+        for route in [TimeoutError('PRIVATE REQUEST'), urllib.error.URLError('PRIVATE REQUEST'),
+                      b'not JSON', {'model': None}]:
+            with self.subTest(route=route), self.assertLogs('ai', level='WARNING') as logs:
+                entry, sent, _ = self.logged_openai(save_id, route)
+                self.assertTrue(entry['routing']['enabled'])
+                self.assertTrue(entry['routing']['fallback'])
+                self.assertTrue(entry['routing']['tableforgeRouterFallbackUsed'])
+                self.assertEqual(entry['routing']['routerContacted'], not isinstance(route, Exception))
+                self.assertIsNone(entry['routing']['routerInternalFallbackUsed'])
+                self.assertIsNone(entry['routing']['model'])
+                self.assertTrue(entry['routing']['fallbackReason'])
+                self.assertEqual(entry['requestedModel'], 'gpt-6-luna')
+                self.assertEqual(entry['status'], 'complete')
+                self.assertIsNone(entry['error'])
+                self.assertNotIn('PRIVATE REQUEST', json.dumps(entry))
+                self.assertNotIn('PRIVATE REQUEST', ''.join(logs.output))
+
+    def test_request_log_provider_failure_preserves_route_without_usage(self):
+        save_id = self.ready_save()
+        entry, sent, _ = self.logged_openai(save_id, {'tier': 'heavy', 'model': 'gpt-6-astra'}, failure=True)
+        self.assertEqual(entry['status'], 'failed')
+        self.assertFalse(entry['routing']['fallback'])
+        self.assertEqual(entry['requestedModel'], 'gpt-6-astra')
+        self.assertIsNone(entry['reportedModel'])
+        self.assertIsNone(entry['totalTokens'])
+        self.assertIsNotNone(entry['finishedAt'])
+        self.assertNotIn('PRIVATE PROVIDER ERROR', json.dumps(entry))
+        server.AI_REQUEST_LOGS.clear()
+        server.initialize()
+        with server.db() as conn:
+            self.assertEqual(conn.execute('SELECT status FROM ai_requests').fetchone()[0], 'failed')
+            self.assertEqual(conn.execute('SELECT COUNT(*) FROM ai_usage').fetchone()[0], 0)
+
+    def test_request_log_persists_internal_fallback_across_restart(self):
+        save_id = self.ready_save()
+        reason = 'Laya unavailable, using safe fallback'
+        for flags in ({}, {'router_internal_fallback_used': True}):
+            entry, sent, result = self.logged_openai(save_id, {
+                'tier': 'standard', 'model': 'gpt-6.1-sol', 'reason': reason, **flags})
+            self.assertTrue(entry['routing']['routerContacted'])
+            self.assertTrue(entry['routing']['routerInternalFallbackUsed'])
+            self.assertEqual(entry['routing']['routerInternalFallbackReason'], reason)
+            self.assertFalse(entry['routing']['tableforgeRouterFallbackUsed'])
+            self.assertIsNone(entry['routing']['tableforgeRouterFallbackReason'])
+            self.assertEqual(entry['requestedModel'], 'gpt-6.1-sol')
+            self.assertEqual(entry['status'], 'complete')
+            server.AI_REQUEST_LOGS.clear()
+            server.initialize()
+            first = result['players'][0]['id']
+            restored = self.api(f'/api/saves/{save_id}/request-log?playerId={first}&pilot=true')['entries'][-1]
+            self.assertEqual(restored['routing'], entry['routing'])
+            with server.db() as conn:
+                self.assertEqual(json.loads(conn.execute('SELECT routing FROM ai_requests WHERE id=?',
+                                                        (entry['id'],)).fetchone()[0]), entry['routing'])
+
+    def test_request_log_legacy_fallback_does_not_reconstruct_internal_history(self):
+        save_id = self.ready_save()
+        for fallback in (False, True):
+            entry, _, result = self.logged_openai(save_id, None)
+            old = {'enabled': True, 'fallback': fallback, 'fallbackReason': 'Router unavailable' if fallback else None,
+                   'reason': 'Laya unavailable, using safe fallback', 'model': 'gpt-6.1-sol'}
+            with server.db() as conn:
+                conn.execute('UPDATE ai_requests SET routing=? WHERE id=?', (json.dumps(old), entry['id']))
+            server.AI_REQUEST_LOGS.clear()
+            server.initialize()
+            first = result['players'][0]['id']
+            restored = self.api(f'/api/saves/{save_id}/request-log?playerId={first}&pilot=true')['entries'][-1]
+            self.assertIsNone(restored['routing']['routerContacted'])
+            self.assertIsNone(restored['routing']['routerInternalFallbackUsed'])
+            self.assertIs(restored['routing']['tableforgeRouterFallbackUsed'], fallback)
+            with server.db() as conn:
+                self.assertEqual(json.loads(conn.execute('SELECT routing FROM ai_requests WHERE id=?',
+                                                        (entry['id'],)).fetchone()[0]), old)
+
+    def test_request_log_ask_and_summary_include_metadata_without_summary_payload(self):
+        save_id = self.ready_save()
+        route = {'tier': 'standard', 'model': 'gpt-6-sol'}
+        entry, _, _ = self.logged_openai(save_id, route, purpose='ask')
+        self.assertEqual(entry['purpose'], 'ask')
+        self.assertIsNotNone(entry['payload'])
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        self.play_long_history(save_id, first)
+        entry, _, _ = self.logged_openai(save_id, route, purpose='summary')
+        self.assertEqual(entry['purpose'], 'summary')
+        self.assertIsNone(entry['payload'])
+        self.assertEqual(entry['routing']['tier'], 'standard')
+        self.assertEqual(entry['totalTokens'], 120)
+
+    def test_request_log_retains_reported_model_and_usage_when_publishing_fails(self):
+        save_id = self.ready_save()
+        with patch.object(server, 'publish_advance', side_effect=ValueError('PRIVATE saving error')):
+            entry, _, _ = self.logged_openai(save_id, {'model': 'gpt-6-sol'},
+                                             reported='gpt-6-sol-snapshot', publish_failure=True)
+        self.assertEqual(entry['status'], 'failed')
+        self.assertEqual(entry['reportedModel'], 'gpt-6-sol-snapshot')
+        self.assertEqual(entry['totalTokens'], 120)
+        self.assertIsNotNone(entry['estimatedCostUsd'])
+        self.assertEqual(entry['error'], 'AI response received; saving failed')
+        self.assertEqual(self.api(f'/api/saves/{save_id}')['save']['beat'], 1)
+
+    def test_request_log_unknown_pricing_and_service_tier_keep_usage(self):
+        save_id = self.ready_save()
+        for model, tier in [('unknown-model', 'default'), ('gpt-6-luna', 'priority')]:
+            with self.subTest(model=model, tier=tier):
+                entry, _, _ = self.logged_openai(save_id, {'model': model}, reported=model, service_tier=tier)
+                self.assertEqual(entry['totalTokens'], 120)
+                self.assertIsNone(entry['estimatedCostUsd'])
+                self.assertEqual(entry['serviceTier'], tier)
+                self.assertEqual(entry['status'], 'complete')
+
+    def test_request_log_migration_keeps_legacy_usage_without_inventing_route(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        with server.db() as conn:
+            session = server.active_session(conn, save_id)
+            conn.execute('DROP INDEX ai_usage_request')
+            conn.execute('ALTER TABLE ai_usage DROP COLUMN request_id')
+            conn.execute('DROP TABLE ai_requests')
+            conn.execute('''INSERT INTO ai_usage
+                (save_id,session_id,purpose,model,input_tokens,output_tokens,total_tokens,created_at)
+                VALUES (?,?,?,?,?,?,?,?)''', (save_id, session['id'], 'advance', 'legacy-model', 12, 3, 15, server.utc()))
+        server.initialize()
+        server.initialize()
+        entry = self.api(f'/api/saves/{save_id}/request-log?playerId={first}&pilot=true')['entries'][0]
+        self.assertTrue(entry['legacy'])
+        self.assertEqual(entry['model'], 'legacy-model')
+        self.assertEqual(entry['totalTokens'], 15)
+        for key in ('routing', 'configuredModel', 'requestedModel', 'reportedModel', 'payload'):
+            self.assertIsNone(entry[key])
+        self.assertEqual(self.api('/api/usage')['usage']['requests'], 1)
+
+    def test_request_log_restart_marks_pending_request_interrupted(self):
+        save_id = self.ready_save()
+        entry, _, _ = self.logged_openai(save_id, None)
+        with server.db() as conn:
+            conn.execute("UPDATE ai_requests SET status='sending',finished_at=NULL WHERE id=?", (entry['id'],))
+        server.AI_REQUEST_LOGS.clear()
+        server.initialize()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        entry = self.api(f'/api/saves/{save_id}/request-log?playerId={first}&pilot=true')['entries'][0]
+        self.assertEqual(entry['status'], 'interrupted')
+        self.assertIsNotNone(entry['finishedAt'])
 
     def test_ask_provider_error_keeps_question(self):
         save_id = self.ready_save()

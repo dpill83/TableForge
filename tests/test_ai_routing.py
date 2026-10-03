@@ -56,12 +56,21 @@ class RoutingTest(unittest.TestCase):
                 self.assertEqual(captured, [request.data.decode()])
                 self.assertEqual(result.model, 'configured-model')
                 self.assertEqual(result.usage, self.usage)
-                self.assertIsNone(result.routing)
+                self.assertFalse(result.routing['enabled'])
+                self.assertFalse(result.routing['fallback'])
+                self.assertFalse(result.routing['routerContacted'])
+                self.assertFalse(result.routing['routerInternalFallbackUsed'])
+                self.assertFalse(result.routing['tableforgeRouterFallbackUsed'])
+                self.assertIsNone(result.routing['model'])
+                self.assertEqual(result.configured_model, 'configured-model')
+                self.assertEqual(result.requested_model, 'configured-model')
+                self.assertIsNone(result.reported_model)
 
     def test_cheap_standard_heavy_routes_capture_and_meter_selected_model(self):
         for tier, model in [('cheap', 'gpt-6-luna'), ('standard', 'gpt-6-sol'), ('heavy', 'gpt-6-astra')]:
             with self.subTest(tier=tier):
-                route = {'tier': tier, 'model': model, 'reason': 'Task classification', 'scores': {tier: 0.9}}
+                route = {'tier': tier, 'model': model, 'reason': 'Task classification', 'scores': {tier: 0.9},
+                         'router_internal_fallback_used': False}
                 captured = []
                 provider = ai.OpenAIProvider('secret-key', 'configured-model', 'http://router/route')
                 with patch('ai.urllib.request.urlopen', side_effect=[response(route), self.completion()]) as opened:
@@ -84,8 +93,9 @@ class RoutingTest(unittest.TestCase):
                     self.assertNotIn(secret, ''.join(logs.output))
                 self.assertEqual(json.loads(second.args[0].data)['model'], model)
                 self.assertEqual(captured, [second.args[0].data.decode()])
-                self.assertEqual(result.routing, {'tier': tier, 'model': model,
-                                                 'reason': 'Task classification', 'fallback': False})
+                self.assertEqual(result.routing, {**ai.routing_state(True), 'tier': tier, 'model': model,
+                                                 'reason': 'Task classification', 'scores': {tier: 0.9},
+                                                 'routerContacted': True, 'routerInternalFallbackUsed': False})
                 self.assertEqual(result.model, model)
                 self.assertEqual(result.usage, self.usage)
                 self.assertEqual(result.service_tier, 'default')
@@ -100,6 +110,9 @@ class RoutingTest(unittest.TestCase):
             result = ai.OpenAIProvider('key', 'fallback', 'http://router').generate(self.context)
         self.assertEqual(result.model, 'gpt-6-sol-snapshot')
         self.assertEqual(result.routing['model'], 'gpt-6-sol')
+        self.assertEqual(result.requested_model, 'gpt-6-sol')
+        self.assertEqual(result.reported_model, 'gpt-6-sol-snapshot')
+        self.assertEqual(result.configured_model, 'fallback')
 
     def test_router_failures_fall_back_without_leaking_error_body(self):
         failures = [urllib.error.URLError('PRIVATE REQUEST'), TimeoutError('PRIVATE REQUEST'),
@@ -112,6 +125,12 @@ class RoutingTest(unittest.TestCase):
                         result = ai.OpenAIProvider('key', 'configured-model', 'http://router').generate(self.context)
                 self.assertEqual(result.model, 'configured-model')
                 self.assertTrue(result.routing['fallback'])
+                self.assertTrue(result.routing['tableforgeRouterFallbackUsed'])
+                self.assertEqual(result.routing['routerContacted'], isinstance(failure, urllib.error.HTTPError))
+                self.assertIsNone(result.routing['routerInternalFallbackUsed'])
+                self.assertIsNone(result.routing['model'])
+                self.assertTrue(result.routing['fallbackReason'])
+                self.assertNotIn('PRIVATE REQUEST', json.dumps(result.routing))
                 self.assertEqual(json.loads(opened.call_args.args[0].data)['model'], 'configured-model')
                 self.assertNotIn('PRIVATE REQUEST', ''.join(logs.output))
 
@@ -127,6 +146,9 @@ class RoutingTest(unittest.TestCase):
                         result = ai.OpenAIProvider('key', 'fallback', 'http://router').generate(self.context)
                 self.assertEqual(result.model, 'fallback')
                 self.assertTrue(result.routing['fallback'])
+                self.assertTrue(result.routing['routerContacted'])
+                self.assertTrue(result.routing['tableforgeRouterFallbackUsed'])
+                self.assertIsNone(result.routing['routerInternalFallbackUsed'])
 
     def test_configured_fallback_precedence_and_router_env(self):
         for aidm, legacy, expected in [('custom', 'old', 'custom'), ('', 'old', 'old'), ('', '', 'gpt-4o-mini')]:
@@ -201,3 +223,92 @@ class RoutingTest(unittest.TestCase):
                 second = provider.generate(self.context)
         self.assertEqual(first.model, 'gpt-6-astra')
         self.assertEqual(second.model, 'fallback')
+
+    def test_metadata_callback_precedes_provider_request_and_survives_failure(self):
+        metadata = []
+        route = {'tier': 'cheap', 'model': 'gpt-6-luna', 'reason': 'cheap choice'}
+        def opened(request, **kwargs):
+            if request.full_url == 'http://router':
+                return response(route)
+            self.assertEqual(metadata[0]['requestedModel'], 'gpt-6-luna')
+            raise urllib.error.URLError('provider unavailable')
+        with patch('ai.urllib.request.urlopen', side_effect=opened):
+            with self.assertRaisesRegex(ValueError, 'OpenAI request failed'):
+                ai.OpenAIProvider('key', 'default', 'http://router').generate(
+                    self.context, on_metadata=metadata.append)
+        self.assertEqual(metadata[0]['configuredModel'], 'default')
+        self.assertEqual(metadata[0]['routing']['tier'], 'cheap')
+
+    def test_optional_scores_are_bounded_numeric_metadata_and_reason_is_not_logged(self):
+        scores = {'cheap': 0.49, 'standard': 0.42, 'heavy': 0.09, 'private': 'SECRET'}
+        for supplied, expected in [(scores, {key: scores[key] for key in ('cheap', 'standard', 'heavy')}),
+                                   ({'cheap': True, 'standard': '0.4', 'heavy': float('nan')}, None),
+                                   ({'cheap': -0.1, 'standard': 2, 'heavy': 10 ** 400}, None),
+                                   (['bad'], None)]:
+            with self.subTest(scores=supplied):
+                with patch('ai.urllib.request.urlopen', side_effect=[
+                        response({'model': 'gpt-6-luna', 'reason': 'PRIVATE REQUEST', 'scores': supplied}),
+                        self.completion()]):
+                    with self.assertLogs('ai', level='INFO') as logs:
+                        result = ai.OpenAIProvider('key', 'default', 'http://router').generate(self.context)
+                self.assertEqual(result.routing['scores'], expected)
+                self.assertNotIn('PRIVATE REQUEST', ''.join(logs.output))
+                self.assertFalse(result.routing['fallback'])
+
+    def test_router_internal_fallback_uses_returned_model_and_keeps_tableforge_fallback_false(self):
+        reason = 'Laya unavailable, using safe fallback'
+        for flags in [{}, {'router_internal_fallback_used': True}, {'routerInternalFallbackUsed': True},
+                      {'fallback': True}, {'fallback_used': True}, {'fallbackUsed': True}]:
+            with self.subTest(flags=flags):
+                route = {'tier': 'standard', 'model': 'gpt-6.1-sol', 'reason': reason, **flags}
+                with patch('ai.urllib.request.urlopen', side_effect=[response(route), self.completion()]) as opened:
+                    with self.assertLogs('ai', level='INFO') as logs:
+                        result = ai.OpenAIProvider('key', 'gpt-6-luna', 'http://router').generate(self.context)
+                self.assertTrue(result.routing['routerContacted'])
+                self.assertTrue(result.routing['routerInternalFallbackUsed'])
+                self.assertEqual(result.routing['routerInternalFallbackReason'], reason)
+                self.assertFalse(result.routing['tableforgeRouterFallbackUsed'])
+                self.assertIsNone(result.routing['tableforgeRouterFallbackReason'])
+                self.assertFalse(result.routing['fallback'])
+                self.assertEqual(json.loads(opened.call_args.args[0].data)['model'], 'gpt-6.1-sol')
+                self.assertNotIn(reason, ''.join(logs.output))
+
+    def test_internal_fallback_flags_are_explicit_and_unrecognized_reasons_stay_unknown(self):
+        for flags, reason, expected, detail in [
+                ({'router_internal_fallback_used': False}, 'Laya unavailable, using safe fallback', False, None),
+                ({}, 'No fallback was needed', None, None),
+                ({'fallback': 'false'}, 'Task classification', None, None),
+                ({'fallback': True, 'fallback_reason': 'Laya timeout'}, 'Safe decision', True, 'Laya timeout')]:
+            with self.subTest(flags=flags, reason=reason):
+                with patch('ai.urllib.request.urlopen', side_effect=[
+                        response({'model': 'gpt-6.1-sol', 'reason': reason, **flags}), self.completion()]):
+                    result = ai.OpenAIProvider('key', 'default', 'http://router').generate(self.context)
+                self.assertIs(result.routing['routerInternalFallbackUsed'], expected)
+                self.assertEqual(result.routing['routerInternalFallbackReason'], detail)
+                self.assertFalse(result.routing['tableforgeRouterFallbackUsed'])
+
+    def test_connection_refused_uses_safe_tableforge_reason(self):
+        error = urllib.error.URLError(ConnectionRefusedError('PRIVATE REQUEST'))
+        with patch('ai.urllib.request.urlopen', side_effect=[error, self.completion()]):
+            with self.assertLogs('ai', level='WARNING') as logs:
+                result = ai.OpenAIProvider('key', 'default', 'http://router').generate(self.context)
+        self.assertFalse(result.routing['routerContacted'])
+        self.assertTrue(result.routing['tableforgeRouterFallbackUsed'])
+        self.assertEqual(result.routing['tableforgeRouterFallbackReason'], 'Router connection refused')
+        self.assertIsNone(result.routing['routerInternalFallbackUsed'])
+        self.assertNotIn('PRIVATE REQUEST', ''.join(logs.output))
+
+    def test_legacy_metadata_only_maps_the_known_tableforge_field(self):
+        for fallback in (False, True):
+            old = {'enabled': True, 'fallback': fallback, 'fallbackReason': 'legacy reason',
+                   'reason': 'Laya unavailable, using safe fallback'}
+            original = dict(old)
+            result = metering.routing_metadata(old)
+            self.assertIsNone(result['routerContacted'])
+            self.assertIsNone(result['routerInternalFallbackUsed'])
+            self.assertIsNone(result['routerInternalFallbackReason'])
+            self.assertIs(result['tableforgeRouterFallbackUsed'], fallback)
+            self.assertEqual(result['tableforgeRouterFallbackReason'], 'legacy reason')
+            self.assertEqual(old, original)
+        self.assertIsNone(metering.routing_metadata(None))
+        self.assertIsNone(metering.routing_metadata({})['tableforgeRouterFallbackUsed'])

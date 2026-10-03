@@ -1084,7 +1084,7 @@
   $('reviewContext').onclick=openContextReview;
   $('aiRequestLog').onclick=()=>{
     if(!state.pilot||!state.save||!state.identity)return;
-    modal('<div id="aiRequestLogDialog"><h3>AI Request Log</h3><p class="muted">Temporary requests from this play session. The request body contains the full context sent to the provider.</p><div id="aiRequestLogEntries" class="pilot-chat-log" role="log" aria-label="AI request log"></div><div class="actions"><button class="btn" data-close>Close</button></div></div>','wide');
+    modal('<div id="aiRequestLogDialog"><h3>AI Request Log</h3><p class="muted">Saved request metadata across this playthrough’s sessions. Expand a request to compare routing, provider models, and usage. Temporary payload captures contain the full context sent to the provider.</p><div id="aiRequestLogEntries" class="pilot-chat-log" role="log" aria-label="AI request log"></div><div class="actions"><button class="btn" data-close>Close</button></div></div>','wide');
     const dialog=$('aiRequestLogDialog'),list=$('aiRequestLogEntries');
     const saveId=state.save.save.id;
     let loading=false,rendered='';
@@ -1098,7 +1098,14 @@
         const key=JSON.stringify(entries);
         if(key!==rendered){
           const atBottom=list.scrollHeight-list.scrollTop-list.clientHeight<32;
-          list.innerHTML=entries.length?entries.map(entry=>`<details class="context-message" open><summary><strong>${esc(entry.purpose==='ask'?'Pilot Ask':'Table advance')}</strong> · ${esc(entry.provider==='mock'?'Mock provider':entry.provider)} · ${esc(entry.model)} · ${esc(entry.status)} · ${esc(when(entry.startedAt))}</summary><pre>${esc(entry.payload)}</pre>${entry.error?`<p class="binding-issue" role="alert">${esc(entry.error)}</p>`:''}</details>`).join(''):'<p class="muted">No AI request has been captured in this play session yet.</p>';
+          const expanded=new Set([...list.querySelectorAll('.ai-request[open]')].map(item=>item.dataset.requestId));
+          const payloads=new Set([...list.querySelectorAll('.ai-request .request-payload[open]')].map(item=>item.closest('.ai-request').dataset.requestId));
+          list.innerHTML=entries.length?entries.map(entry=>TableForgeRequestLog.render(entry,when)).join(''):'<p class="muted">No AI requests recorded for this playthrough yet.</p>';
+          list.querySelectorAll('.ai-request').forEach(item=>{
+            item.open=expanded.has(item.dataset.requestId);
+            const payload=item.querySelector('.request-payload');
+            if(payload)payload.open=payloads.has(item.dataset.requestId);
+          });
           if(atBottom)list.scrollTop=list.scrollHeight;
           rendered=key;
         }

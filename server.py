@@ -36,7 +36,7 @@ GENERATING = {}
 # save_id -> {player_id: monotonic expiry}; presence only, never saved.
 TYPING = {}
 TYPING_SECONDS = 6
-# save_id -> transient request entries for the current session; never serialized.
+# save_id -> temporary full payload captures; audit metadata is persisted separately.
 AI_REQUEST_LOGS = {}
 MAX_REQUEST = 32 * 1024 * 1024
 MAX_PORTRAIT_BYTES = 5 * 1024 * 1024
@@ -189,6 +189,16 @@ def initialize():
                 FOREIGN KEY(save_id) REFERENCES saves(id),
                 FOREIGN KEY(session_id) REFERENCES sessions(id)
             );
+            CREATE TABLE IF NOT EXISTS ai_requests (
+                id TEXT PRIMARY KEY, save_id TEXT NOT NULL, session_id TEXT NOT NULL,
+                purpose TEXT NOT NULL, provider TEXT NOT NULL,
+                configured_model TEXT, requested_model TEXT, reported_model TEXT,
+                routing TEXT, status TEXT NOT NULL,
+                started_at TEXT NOT NULL, finished_at TEXT, error TEXT,
+                FOREIGN KEY(save_id) REFERENCES saves(id),
+                FOREIGN KEY(session_id) REFERENCES sessions(id)
+            );
+            CREATE INDEX IF NOT EXISTS ai_requests_save ON ai_requests(save_id, started_at);
             CREATE TABLE IF NOT EXISTS party_notes (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, save_id TEXT NOT NULL,
                 category TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL DEFAULT '',
@@ -206,6 +216,14 @@ def initialize():
                 sha256 TEXT PRIMARY KEY, snapshot TEXT NOT NULL
             );
         """)
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(ai_usage)')}
+        if 'request_id' not in columns:
+            conn.execute('ALTER TABLE ai_usage ADD COLUMN request_id TEXT REFERENCES ai_requests(id)')
+        conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS ai_usage_request ON ai_usage(request_id) '
+                     'WHERE request_id IS NOT NULL')
+        # A restarted host must not claim an interrupted provider request is still sending.
+        conn.execute("UPDATE ai_requests SET status='interrupted',finished_at=?,error=? WHERE status='sending'",
+                     (utc(), 'Host restarted before request completion was recorded',))
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(saves)')}
         if 'narration_prompt_id' not in columns:
             conn.execute('ALTER TABLE saves ADD COLUMN narration_prompt_id TEXT REFERENCES narration_prompts(sha256)')
@@ -598,11 +616,37 @@ def request_log(conn, save_id, player_id, pilot):
     require_player(state, player_id)
     if pilot is not True:
         raise ValueError('Enable Pilot Mode to view AI request details')
-    session = active_session(conn, save_id)
-    if not session:
-        return {'entries': []}
-    entries = AI_REQUEST_LOGS.get(save_id, [])
-    return {'entries': [dict(entry) for entry in entries if entry['sessionId'] == session['id']]}
+    captures = {entry['id']: entry for entry in AI_REQUEST_LOGS.get(save_id, [])}
+    entries = []
+    rows = conn.execute('''SELECT r.*,s.number AS session_number,
+        u.input_tokens,u.output_tokens,u.total_tokens,u.estimated_cost_usd,u.service_tier
+        FROM ai_requests r JOIN sessions s ON s.id=r.session_id
+        LEFT JOIN ai_usage u ON u.request_id=r.id WHERE r.save_id=? ORDER BY r.rowid''', (save_id,))
+    for row in rows:
+        entry = {
+            'id': row['id'], 'sessionId': row['session_id'], 'sessionNumber': row['session_number'],
+            'purpose': row['purpose'], 'provider': row['provider'],
+            'configuredModel': row['configured_model'], 'requestedModel': row['requested_model'],
+            'reportedModel': row['reported_model'], 'model': row['requested_model'],
+            'routing': metering.routing_metadata(json.loads(row['routing'])) if row['routing'] else None,
+            'status': row['status'], 'startedAt': row['started_at'], 'finishedAt': row['finished_at'],
+            'error': row['error'], **metering.request_usage(row),
+        }
+        capture = captures.get(row['id'], {})
+        entry['payload'] = capture.get('payload')
+        entries.append(entry)
+    # Earlier usage rows only know the model used for metering. Do not invent a route
+    # or treat that model as proof of what OpenAI was asked for or reported.
+    for row in conn.execute('''SELECT u.*,s.number AS session_number FROM ai_usage u
+            JOIN sessions s ON s.id=u.session_id WHERE u.save_id=? AND u.request_id IS NULL''', (save_id,)):
+        entries.append({
+            'id': f'usage-{row["id"]}', 'sessionId': row['session_id'], 'sessionNumber': row['session_number'],
+            'purpose': row['purpose'], 'provider': 'openai', 'model': row['model'],
+            'configuredModel': None, 'requestedModel': None, 'reportedModel': None,
+            'routing': None, 'legacy': True, 'status': 'complete', 'startedAt': row['created_at'],
+            'finishedAt': None, 'error': None, 'payload': None, **metering.request_usage(row),
+        })
+    return {'entries': sorted(entries, key=lambda entry: entry['startedAt'])}
 
 
 def begin_advance(conn, save_id, payload):
@@ -1382,40 +1426,56 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK, db() as conn:
             context = begin(conn, save_id, payload)
             session = active_session(conn, save_id)
-            request_entry = None
+            request_entry = {'id': str(uuid.uuid4()), 'sessionId': session['id'],
+                             'purpose': context.get('purpose', 'advance'), 'startedAt': utc(),
+                             'status': 'sending', 'error': None}
         try:
             provider = ai.current_provider()
             runtime = ai.runtime_status()
+            provider_name = ('openai' if isinstance(provider, ai.OpenAIProvider) else runtime['provider'])
+            configured_model = getattr(provider, 'model', runtime['model'])
+            with LOCK, db() as conn:
+                conn.execute('''INSERT INTO ai_requests
+                    (id,save_id,session_id,purpose,provider,configured_model,status,started_at)
+                    VALUES (?,?,?,?,?,?,?,?)''',
+                    (request_entry['id'], save_id, session['id'], request_entry['purpose'],
+                     provider_name, configured_model, 'sending', request_entry['startedAt']))
+
+            def capture_metadata(metadata):
+                with LOCK, db() as conn:
+                    conn.execute('''UPDATE ai_requests SET configured_model=?,requested_model=?,routing=?
+                        WHERE id=?''', (metadata['configuredModel'], metadata['requestedModel'],
+                                        json.dumps(metadata['routing']), request_entry['id']))
 
             def capture_request(body):
-                nonlocal request_entry
-                with LOCK:
-                    request_entry = {
-                        'id': str(uuid.uuid4()), 'sessionId': session['id'] if session else None,
-                        'purpose': context.get('purpose', 'advance'), 'provider': runtime['provider'],
-                        'model': json.loads(body).get('model', runtime['model']),
-                        'payload': body, 'status': 'sending',
-                        'startedAt': utc(), 'error': None,
-                    }
-                    AI_REQUEST_LOGS.setdefault(save_id, []).append(request_entry)
+                with LOCK, db() as conn:
+                    model = json.loads(body).get('model', runtime['model'])
+                    request_entry.update(provider=provider_name, model=model)
+                    conn.execute('UPDATE ai_requests SET requested_model=? WHERE id=?',
+                                 (model, request_entry['id']))
+                    if context.get('purpose') in ('advance', 'ask'):
+                        request_entry['payload'] = body
+                        AI_REQUEST_LOGS.setdefault(save_id, []).append(request_entry)
 
-            capture_enabled = context.get('purpose') in ('advance', 'ask')
-            if capture_enabled and isinstance(provider, (ai.OpenAIProvider, ai.MockProvider)):
+            if isinstance(provider, ai.OpenAIProvider):
+                generated = provider.generate(context, on_request=capture_request, on_metadata=capture_metadata)
+            elif isinstance(provider, ai.MockProvider):
+                capture_metadata({'configuredModel': configured_model, 'requestedModel': configured_model,
+                                  'routing': ai.routing_state(False)})
                 generated = provider.generate(context, on_request=capture_request)
             else:
                 generated = provider.generate(context)
             text = str(generated or '').strip()
             if not text:
                 raise ValueError('The AI-DM returned an empty response')
-            if request_entry:
-                with LOCK:
-                    request_entry['status'] = 'complete'
-                    request_entry['finishedAt'] = utc()
         except Exception as error:
-            with LOCK:
-                if request_entry:
-                    request_entry['status'] = 'failed'
-                    request_entry['error'] = str(error)
+            with LOCK, db() as conn:
+                request_entry['status'] = 'failed'
+                request_entry['error'] = str(error)
+                # Preserve the intentional transient error capture, but no arbitrary
+                # exception bodies (which may contain private context) in durable logs.
+                conn.execute("UPDATE ai_requests SET status='failed',finished_at=?,error=? WHERE id=?",
+                             (utc(), 'AI provider request failed', request_entry['id']))
                 GENERATING.pop(save_id, None)
             if isinstance(error, ValueError):
                 raise
@@ -1431,10 +1491,28 @@ class Handler(BaseHTTPRequestHandler):
                                                  generated.service_tier)
                         conn.execute('''INSERT INTO ai_usage
                             (save_id,session_id,purpose,model,input_tokens,cached_tokens,cache_write_tokens,
-                             output_tokens,total_tokens,estimated_cost_usd,service_tier,created_at)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
-                            (save_id, session['id'], context['purpose'], *values, utc()))
+                             output_tokens,total_tokens,estimated_cost_usd,service_tier,created_at,request_id)
+                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                            (save_id, session['id'], context['purpose'], *values, utc(), request_entry['id']))
+                        conn.execute('''UPDATE ai_requests SET configured_model=COALESCE(?,configured_model),
+                            requested_model=COALESCE(?,requested_model),reported_model=?,routing=COALESCE(?,routing)
+                            WHERE id=?''', (generated.configured_model, generated.requested_model,
+                                           generated.reported_model,
+                                           json.dumps(generated.routing) if generated.routing is not None else None,
+                                           request_entry['id']))
+                    conn.execute("UPDATE ai_requests SET status='complete',finished_at=? WHERE id=?",
+                                 (utc(), request_entry['id']))
+                # Provider usage is billable even if saving the narration later fails.
+                # Commit the audit before publishing so it remains useful in that case.
+                with db() as conn:
                     result = publish(conn, save_id, text)
+                    request_entry['status'] = 'complete'
+                    request_entry['finishedAt'] = utc()
+            except Exception:
+                with db() as conn:
+                    conn.execute("UPDATE ai_requests SET status='failed',finished_at=?,error=? WHERE id=?",
+                                 (utc(), 'AI response received; saving failed', request_entry['id']))
+                raise
             finally:
                 GENERATING.pop(save_id, None)
             result['activity'] = activity(save_id)
@@ -1449,6 +1527,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('Wait for the scene illustration to finish before restoring a backup')
             result = backups.restore(DATA, name)
             TYPING.clear()
+            AI_REQUEST_LOGS.clear()
             # Bring an older backup's schema up to date, then prove the live database matches it.
             initialize()
             live = backups.inspect(DATA, DATA / backups.DATABASE)

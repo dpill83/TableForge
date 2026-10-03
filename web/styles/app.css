@@ -807,3 +807,14 @@ textarea{padding:10px;resize:none}
 a.btn{text-decoration:none;display:inline-flex;align-items:center}
 .backup-folder{font-size:12px;word-break:break-all}
 .backup-saves{margin:0 0 12px;padding-left:18px;line-height:1.6}
+
+/* AI Request Log */
+#aiRequestLogEntries{max-height:65vh}
+.request-meta{display:block;margin-top:5px;font-size:12px;overflow-wrap:anywhere}
+.route-badge{display:inline-block;padding:1px 7px;border-radius:999px;border:1px solid currentColor;font-size:12px}
+.route-cheap{color:#8ad8b0}.route-standard{color:#8fb5d8}.route-heavy{color:#d6afff}
+.route-fallback,.request-fallback{color:var(--warn)}
+.request-details{padding:0 10px 10px;font-size:13px}
+.request-details dl{display:grid;grid-template-columns:minmax(100px,1fr) minmax(0,2fr);gap:6px 12px}
+.request-details dt{color:var(--muted)}.request-details dd{margin:0;overflow-wrap:anywhere}
+.ai-request>summary{overflow-wrap:anywhere}

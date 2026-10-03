@@ -51,6 +51,28 @@ def record(model, usage, service_tier=None):
             total_tokens, cost, service_tier)
 
 
+def request_usage(row):
+    """Request-log API fields from persisted metering, including unavailable values."""
+    return {field: row[column] for field, column in (
+        ('inputTokens', 'input_tokens'), ('outputTokens', 'output_tokens'),
+        ('totalTokens', 'total_tokens'), ('estimatedCostUsd', 'estimated_cost_usd'),
+        ('serviceTier', 'service_tier'))}
+
+
+def routing_metadata(routing):
+    """Serialize old audit records without reconstructing router-internal history."""
+    if not isinstance(routing, dict):
+        return None
+    result = dict(routing)
+    for field in ('routerContacted', 'routerInternalFallbackUsed', 'routerInternalFallbackReason'):
+        result.setdefault(field, None)
+    # This runtime's original fallback field describes only TableForge's fallback.
+    result.setdefault('tableforgeRouterFallbackUsed',
+                      routing.get('fallback') if type(routing.get('fallback')) is bool else None)
+    result.setdefault('tableforgeRouterFallbackReason', routing.get('fallbackReason'))
+    return result
+
+
 def summary(conn, where='', params=()):
     rows = conn.execute('SELECT input_tokens,cached_tokens,output_tokens,total_tokens,estimated_cost_usd '
                         'FROM ai_usage ' + where, params).fetchall()
