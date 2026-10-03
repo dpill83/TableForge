@@ -35,13 +35,21 @@ Create a `.env` file alongside `server.py` (copy `.env.example` if needed), then
 TABLEFORGE_OPENAI_API_KEY=your-api-key-here
 ```
 
-TableForge loads this file at startup, including when launched from another working directory. Restart the server after editing it. The same key is used for narration and scene images. Optional settings are `TABLEFORGE_AIDM_MODEL`, `TABLEFORGE_IMAGE_MODEL`, and `TABLEFORGE_DATA`; examples are in `.env.example`.
+TableForge loads this file at startup, including when launched from another working directory. Restart the server after editing it. The same key is used for narration and scene images. Optional settings are `TABLEFORGE_AIDM_MODEL`, `TABLEFORGE_ROUTER_URL`, `TABLEFORGE_IMAGE_MODEL`, and `TABLEFORGE_DATA`; examples are in `.env.example`.
 
 Variables already set in the launching terminal take precedence over `.env`, including empty values. To use the file instead of a previously entered PowerShell key, remove the terminal override with `Remove-Item Env:TABLEFORGE_OPENAI_API_KEY -ErrorAction SilentlyContinue`, or launch from a new terminal.
 
 `TABLEFORGE_MODEL` is still accepted as a legacy fallback. If both model settings are nonempty, `TABLEFORGE_AIDM_MODEL` wins. Browse the [OpenAI model catalog](https://developers.openai.com/api/docs/models) for narration models and the [image model guide](https://developers.openai.com/api/docs/guides/image-prompting) for image models. Copy the API model ID into the appropriate setting and restart TableForge. Narration currently uses Chat Completions, so choose a text-output model that supports that endpoint; images use the Image API.
 
 The `.env` file is plain text, excluded from Git, and outside the browser-served `web/` directory. Keep it private. The loader supports `KEY=value`, optional quotes, and comments; values are literal, so Windows paths work without escaping backslashes. Do not paste PowerShell assignment commands into `.env`.
+
+### Optional LAN model routing
+
+Set `TABLEFORGE_ROUTER_URL=http://10.0.0.22:8001/route` in `.env` and restart to route OpenAI text requests. An unset or blank value preserves the configured model and existing behavior. The router receives `POST {"prompt":"..."}` containing a task description capped at 2,400 characters: purpose (`advance`, `ask`, or `summary`), bounded recent player/Pilot requests, and brief relevant reply/combat context. It receives no cartridge, full transcript, API key, or generation prompt. These snippets can contain private Pilot information, so use a trusted router.
+
+The returned `model` selects the Chat Completions model for that request. A failed request, 4-second socket timeout, malformed/oversized response, or missing/invalid model falls back to `TABLEFORGE_AIDM_MODEL` (then legacy `TABLEFORGE_MODEL`, then the existing default). No retries are made. Mock narration and image generation are unaffected. Routing metadata is attached to `GeneratedText.routing` (`tier`, `model`, `reason`, `fallback`); the `ai` logger emits decisions at INFO and fallbacks at WARNING without logging the request or exception body. Enable INFO logging in the host's Python logging configuration to see successful decisions.
+
+Request capture uses the selected model, and metering uses OpenAI's reported model, falling back to the selected model if absent. The router must return accessible text models supporting Chat Completions; an invalid/unavailable OpenAI model is a generation error, not a router transport failure. GPT-6 Astra supports this endpoint. OpenAI [recommends Responses for new projects](https://developers.openai.com/api/docs/guides/migrate-to-responses), but this existing text-only provider does not require an API migration for routing. Responses can be evaluated separately if tool use or a Responses-only model is added.
 
 For local network testing, launch with `python3 server.py --host 0.0.0.0` and use the host computer's LAN address. This initial server has no login or access control, so only expose it on a trusted network.
 

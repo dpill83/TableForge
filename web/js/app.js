@@ -4,7 +4,7 @@
   const avatar = (player, className, fallback) => `<div class="${className}">${esc(fallback ?? player?.character?.[0] ?? '?')}${player?.portraitUrl?`<img src="${esc(player.portraitUrl)}" alt="">`:''}</div>`;
   const screens = [...document.querySelectorAll('.screen')];
   const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, composer:false, draft:null, pendingImage:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0};
-  const autoReadyKey=()=>state.save&&state.identity?`tableforge-auto-ready:${state.save.save.id}:${state.identity}`:null;
+  const autoReadyKey=()=>state.save&&state.identity?`tableforge-auto-ready:v2:${state.save.save.id}:${state.identity}`:null;
   const autoReadyEnabled=()=>{const key=autoReadyKey();try{return !!key&&localStorage.getItem(key)==='true';}catch{return false;}};
   const setAutoReady=enabled=>{const key=autoReadyKey();if(!key)return;try{if(enabled)localStorage.setItem(key,'true');else localStorage.removeItem(key);}catch(error){console.error(error);}};
   const aiNotificationKey='tableforge-ai-dm-notifications';
@@ -462,7 +462,7 @@
     $('readyBtn').querySelector('.ready-label').textContent=current?.ready?'Unready':'Ready';
     $('readyBtn').classList.toggle('ready',!!current?.ready);
     $('readyBtn').classList.toggle('auto-ready',autoReadyEnabled());
-    $('readyBtn').title=autoReadyEnabled()?'Auto-ready on · click to turn off':'Double-click to turn on auto-ready';
+    $('readyBtn').title=autoReadyEnabled()?'Auto-ready on · click to turn off':'Press and hold to turn on auto-ready';
     $('readyBtn').setAttribute('aria-label',`${current?.ready?'Unready':'Ready'}${autoReadyEnabled()?', auto-ready on':''}`);
     $('combatToggle').classList.toggle('hidden',s.save.mode==='combat');
     $('resumeCombat').classList.toggle('hidden',s.save.mode!=='combat');
@@ -579,13 +579,55 @@
          [document.body,field,$('sendBtn')].includes(document.activeElement)) field.focus();
     }
   };
-  $('readyBtn').ondblclick=event=>{
-    event.preventDefault();
-    if(!state.save||!state.identity)return;
-    setAutoReady(true);
-    render();
+  const readyButton=$('readyBtn'),autoReadyHoldMs=800;
+  let readyHoldStarted=0,readyHoldPointer=null,readyHoldFrame=0,readyHoldActivated=false,suppressReadyClick=false;
+  const clearReadyHold=()=>{
+    if(readyHoldFrame)cancelAnimationFrame(readyHoldFrame);
+    readyHoldFrame=0;readyHoldStarted=0;readyHoldPointer=null;
+    readyButton.classList.remove('holding-auto-ready');
+    readyButton.style.removeProperty('--hold-progress');
   };
+  const updateReadyHold=now=>{
+    if(!readyHoldStarted)return;
+    const progress=Math.min(1,(now-readyHoldStarted)/autoReadyHoldMs);
+    readyButton.style.setProperty('--hold-progress',progress);
+    if(progress>=1){
+      readyHoldActivated=true;
+      setAutoReady(true);
+      if(readyHoldFrame)cancelAnimationFrame(readyHoldFrame);
+      readyHoldFrame=0;readyHoldStarted=0;
+      readyButton.classList.remove('holding-auto-ready');
+      readyButton.style.removeProperty('--hold-progress');
+      render();
+      return;
+    }
+    readyHoldFrame=requestAnimationFrame(updateReadyHold);
+  };
+  readyButton.addEventListener('pointerdown',event=>{
+    if(event.button!==0||readyButton.disabled||autoReadyEnabled())return;
+    readyHoldPointer=event.pointerId;
+    readyHoldStarted=performance.now();
+    readyHoldActivated=false;
+    readyButton.classList.add('holding-auto-ready');
+    readyButton.style.setProperty('--hold-progress',0);
+    readyButton.setPointerCapture(event.pointerId);
+    readyHoldFrame=requestAnimationFrame(updateReadyHold);
+  });
+  readyButton.addEventListener('pointerup',event=>{
+    if(event.pointerId!==readyHoldPointer)return;
+    if(readyHoldActivated)suppressReadyClick=true;
+    readyHoldPointer=null;
+    clearReadyHold();
+  });
+  readyButton.addEventListener('pointercancel',()=>{
+    readyHoldPointer=null;
+    clearReadyHold();
+  });
+  readyButton.addEventListener('lostpointercapture',()=>{
+    if(readyHoldStarted)clearReadyHold();
+  });
   $('readyBtn').onclick=async()=>{
+    if(suppressReadyClick){suppressReadyClick=false;return;}
     if(autoReadyEnabled()){setAutoReady(false);render();}
     const current=state.save.players.find(p=>p.id===state.identity);
     if(!current) return;

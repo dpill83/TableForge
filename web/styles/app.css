@@ -671,6 +671,8 @@ textarea{padding:10px;resize:none}
   fill:currentColor;
 }
 .ready-btn-large{
+  position:relative;
+  isolation:isolate;
   height:48px;
   border:2px solid #3ad99e;
   border-radius:10px;
@@ -682,6 +684,42 @@ textarea{padding:10px;resize:none}
   gap:8px;
   cursor:pointer;
   font-weight:700;
+  touch-action:none;
+}
+.ready-btn-large::after{
+  content:"";
+  position:absolute;
+  z-index:0;
+  inset:-4px;
+  border-radius:14px;
+  padding:3px;
+  pointer-events:none;
+  background:conic-gradient(from -90deg,#b6a6ff calc(var(--hold-progress,0) * 1turn),transparent 0);
+  -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
+  -webkit-mask-composite:xor;
+  mask-composite:exclude;
+  opacity:0;
+}
+.ready-btn-large.holding-auto-ready::after{opacity:1}
+.ready-btn-large>*{position:relative;z-index:1}
+.ready-btn-large.holding-auto-ready{user-select:none;-webkit-user-select:none}
+.ready-btn-large.auto-ready::after{display:none}
+.ready-btn-large.holding-auto-ready .auto-ready-indicator{display:inline-block;color:#dce4ff;background:#454078}
+.ready-btn-large.holding-auto-ready::before{
+  content:"Hold to enable auto-ready";
+  position:absolute;
+  left:50%;
+  bottom:calc(100% + 10px);
+  transform:translateX(-50%);
+  z-index:2;
+  white-space:nowrap;
+  padding:5px 8px;
+  border:1px solid #595277;
+  border-radius:6px;
+  background:#171521;
+  color:#e7e2ff;
+  font-size:11px;
+  font-weight:500;
 }
 .ready-btn-large:hover,.ready-btn-large:focus-visible{
   background:#14241e;

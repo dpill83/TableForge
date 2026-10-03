@@ -73,7 +73,7 @@ class FlowTest(unittest.TestCase):
         server.GENERATING.clear()
         server.AI_REQUEST_LOGS.clear()
         server.initialize()
-        self.env = patch.dict(os.environ, {'TABLEFORGE_OPENAI_API_KEY': '', 'TABLEFORGE_AIDM_MODEL': '', 'TABLEFORGE_MODEL': ''})
+        self.env = patch.dict(os.environ, {'TABLEFORGE_OPENAI_API_KEY': '', 'TABLEFORGE_AIDM_MODEL': '', 'TABLEFORGE_MODEL': '', 'TABLEFORGE_ROUTER_URL': ''})
         self.env.start()
         self.http = ThreadingHTTPServer(('127.0.0.1', 0), server.Handler)
         self.thread = threading.Thread(target=self.http.serve_forever, daemon=True)
@@ -932,7 +932,7 @@ Flyman block.
     def test_openai_capture_matches_sent_json_body(self):
         response = io.BytesIO(json.dumps({'choices': [{'message': {'content': 'Done.'}}]}).encode())
         captured = []
-        context = {'purpose': 'summary', 'previousSummary': '',
+        context = {'purpose': 'summary', 'title': 'Test', 'previousSummary': '',
                    'messages': [{'name': 'A', 'body': 'B'}]}
         provider = ai.OpenAIProvider('secret-key', 'test-model')
         with patch('ai.urllib.request.urlopen', return_value=response) as open_url:
@@ -941,6 +941,34 @@ Flyman block.
         self.assertEqual(captured, [sent])
         self.assertEqual(json.loads(sent)['model'], 'test-model')
         self.assertNotIn('secret-key', sent)
+
+    def test_routed_model_is_captured_and_persisted_for_metering(self):
+        save_id = self.ready_save()
+        real_urlopen = urllib.request.urlopen
+
+        def routed_urlopen(request, *args, **kwargs):
+            if isinstance(request, urllib.request.Request) and request.full_url == 'http://router/route':
+                return io.BytesIO(json.dumps({'tier': 'heavy', 'model': 'gpt-6-astra',
+                                              'reason': 'Complex task'}).encode())
+            if isinstance(request, urllib.request.Request) and request.full_url == ai.OPENAI_URL:
+                return io.BytesIO(json.dumps({'model': 'gpt-6-astra-snapshot',
+                    'choices': [{'message': {'content': 'The door opens.'}}],
+                    'usage': {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120}}).encode())
+            return real_urlopen(request, *args, **kwargs)
+
+        provider = ai.OpenAIProvider('secret-key', 'gpt-6-luna', 'http://router/route')
+        with patch.object(ai, 'current_provider', return_value=provider), \
+                patch('ai.urllib.request.urlopen', side_effect=routed_urlopen):
+            self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
+        entry = server.AI_REQUEST_LOGS[save_id][-1]
+        self.assertEqual(entry['model'], 'gpt-6-astra')
+        self.assertEqual(json.loads(entry['payload'])['model'], 'gpt-6-astra')
+        self.assertNotIn('secret-key', entry['payload'])
+        with server.db() as conn:
+            row = conn.execute('SELECT * FROM ai_usage WHERE save_id=?', (save_id,)).fetchone()
+        self.assertEqual(row['model'], 'gpt-6-astra-snapshot')
+        self.assertEqual(row['total_tokens'], 120)
+        self.assertIsNotNone(row['estimated_cost_usd'])
 
     def test_ask_provider_error_keeps_question(self):
         save_id = self.ready_save()

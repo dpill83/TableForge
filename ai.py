@@ -1,5 +1,7 @@
 """AI-DM providers and context assembly for table advancement."""
+import http.client
 import json
+import logging
 import os
 import re
 import urllib.error
@@ -28,16 +30,21 @@ SUMMARY_INPUT_CAP = 120_000
 COMBAT_OUTCOME_LIMIT = 5
 OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
 OPENAI_TIMEOUT = 60
+ROUTER_TIMEOUT = 4
+ROUTER_PROMPT_CAP = 2400
+ROUTER_RESPONSE_CAP = 16_384
+LOGGER = logging.getLogger(__name__)
 
 
 class GeneratedText(str):
     """AI text with provider-reported usage; mock providers may return plain strings."""
 
-    def __new__(cls, text, *, usage=None, model=None, service_tier=None):
+    def __new__(cls, text, *, usage=None, model=None, service_tier=None, routing=None):
         result = super().__new__(cls, text)
         result.usage = usage
         result.model = model
         result.service_tier = service_tier
+        result.routing = routing
         return result
 
 
@@ -334,6 +341,40 @@ def summary_chat_messages(context):
     ]
 
 
+def routing_description(context):
+    """Classify the task from bounded requests, never from the cartridge or full context."""
+    purpose = context.get('purpose', 'advance')
+    tasks = {
+        'advance': 'Continue RPG narration, resolve player contributions, and give the party its next move.',
+        'ask': 'Answer the Pilot operational question about rules, tactics, or adventure state; do not advance play.',
+        'summary': 'Update the cumulative campaign summary from earlier play, retaining facts and open threads.',
+    }
+    task = tasks.get(purpose, tasks['advance'])
+    if purpose == 'advance' and context.get('opening'):
+        task = 'Begin the RPG adventure with its opening narration, honoring player contributions.'
+    source = context.get('pilot') if purpose == 'ask' else context.get('messages')
+    source = context_messages(source or [])
+    _, current = split_beat(source)
+    requests = [item for item in current if item['kind'] != 'ai']
+    if purpose == 'summary' or not requests:
+        requests = [item for item in source if item['kind'] != 'ai'][-1:]
+    parts = [f'Purpose: {purpose}', 'Task: ' + task]
+    remaining = 1500
+    # Newest first so an older long contribution cannot crowd out the actual request.
+    for item in reversed(requests[-6:]):
+        line = f"{item.get('name') or 'User'}: {item['body']}"[:min(500, remaining)]
+        if not line:
+            break
+        parts.append('Recent request (newest first): ' + line)
+        remaining -= len(line)
+    previous = next((item for item in reversed(source) if item['kind'] == 'ai'), None)
+    if previous and purpose != 'summary':
+        parts.append('Recent AI reply for follow-up context: ' + previous['body'][:350])
+    if purpose == 'advance' and context.get('combatOutcomes'):
+        parts.append('Recent recorded combat outcome: ' + context['combatOutcomes'][-1]['body'][:300])
+    return '\n'.join(parts)[:ROUTER_PROMPT_CAP]
+
+
 class MockProvider:
     def generate(self, context, on_request=None):
         if on_request:
@@ -355,12 +396,46 @@ class MockProvider:
 
 
 class OpenAIProvider:
-    def __init__(self, key, model):
+    def __init__(self, key, model, router_url=None):
         self.key = key
         self.model = model
+        self.router_url = (os.environ.get('TABLEFORGE_ROUTER_URL', '')
+                           if router_url is None else router_url).strip()
+
+    def select_model(self, context):
+        if not self.router_url:
+            return self.model, None
+        routing = {'tier': None, 'model': self.model, 'reason': None, 'fallback': True}
+        try:
+            request = urllib.request.Request(
+                self.router_url,
+                data=json.dumps({'prompt': routing_description(context)}).encode('utf-8'),
+                headers={'Content-Type': 'application/json'},
+                method='POST',
+            )
+            with urllib.request.urlopen(request, timeout=ROUTER_TIMEOUT) as response:
+                body = response.read(ROUTER_RESPONSE_CAP + 1)
+            if len(body) > ROUTER_RESPONSE_CAP:
+                raise ValueError('Router response too large')
+            data = json.loads(body.decode('utf-8'))
+            model = data.get('model') if isinstance(data, dict) else None
+            if (not isinstance(model, str) or len(model) > 200
+                    or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]*', model.strip())):
+                raise ValueError('Router returned no valid model')
+            routing.update(model=model.strip(), fallback=False,
+                           tier=data.get('tier') if data.get('tier') in ('cheap', 'standard', 'heavy') else None,
+                           reason=' '.join(data['reason'].split())[:240]
+                           if isinstance(data.get('reason'), str) else None)
+        except (OSError, ValueError, RecursionError, http.client.HTTPException):
+            # Never log exception bodies: a router may echo the private request.
+            routing['reason'] = 'Router unavailable or invalid response'
+        LOGGER.log(logging.WARNING if routing['fallback'] else logging.INFO,
+                   'TableForge routing: %s', json.dumps(routing))
+        return routing['model'], routing
 
     def generate(self, context, on_request=None):
-        payload_text = json.dumps({'model': self.model, 'messages': chat_messages(context)})
+        model, routing = self.select_model(context)
+        payload_text = json.dumps({'model': model, 'messages': chat_messages(context)})
         if on_request:
             on_request(payload_text)
         payload = payload_text.encode()
@@ -383,5 +458,5 @@ class OpenAIProvider:
         text = str((choices[0].get('message') or {}).get('content') or '').strip()
         if not text:
             raise ValueError('OpenAI returned an empty response')
-        return GeneratedText(text, usage=data.get('usage'), model=data.get('model') or self.model,
-                             service_tier=data.get('service_tier'))
+        return GeneratedText(text, usage=data.get('usage'), model=data.get('model') or model,
+                             service_tier=data.get('service_tier'), routing=routing)
