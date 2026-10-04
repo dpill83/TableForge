@@ -23,6 +23,7 @@ import backups
 import metering
 import scene_images
 import module_context
+import narration_choices
 import runtime_prompts
 from local_config import load_env
 
@@ -246,6 +247,8 @@ def initialize():
         if 'request_id' not in columns:
             # Client-minted per contribution so a retried send can never post twice.
             conn.execute('ALTER TABLE messages ADD COLUMN request_id TEXT')
+        if 'choices_json' not in columns:
+            conn.execute('ALTER TABLE messages ADD COLUMN choices_json TEXT')
         conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS messages_request ON messages(save_id, request_id) '
                      'WHERE request_id IS NOT NULL')
         scene_images.initialize(conn)
@@ -566,12 +569,15 @@ def snapshot(conn, save_id):
     for player in players:
         player['portraitUrl'] = (f'/api/saves/{save_id}/players/{player["id"]}/portrait?v={quote(portraits[player["id"]], safe="")}'
                                  if player['id'] in portraits else None)
+    messages = [dict(row) for row in conn.execute('SELECT * FROM messages WHERE save_id=? ORDER BY id', (save_id,))]
+    for message in messages:
+        message['choices'] = json.loads(message.pop('choices_json') or 'null')
     return {
         'save': dict(save),
         'cartridge': {'id': cartridge['id'], 'title': save['adventure_title'] or cartridge['title'],
                       'resources': resources, 'available': (DATA / 'cartridges' / (cartridge['id'] + '.zip')).is_file()},
         'players': players,
-        'messages': [dict(row) for row in conn.execute('SELECT * FROM messages WHERE save_id=? ORDER BY id', (save_id,))],
+        'messages': messages,
         'pilot': [dict(row) for row in conn.execute('SELECT * FROM pilot_messages WHERE save_id=? ORDER BY id', (save_id,))],
         'sessions': sessions,
         'events': [dict(row) for row in conn.execute('SELECT * FROM session_events WHERE save_id=? ORDER BY id', (save_id,))],
@@ -837,18 +843,20 @@ def set_location(conn, state, location, player_id, source):
 
 def publish_advance(conn, save_id, text, override=None):
     session = active_session(conn, save_id)
+    state = snapshot(conn, save_id)
+    text, choices = narration_choices.extract(text, state['players'], state['save']['beat'] + 1)
     text, marked, location = module_context.take_marker(text)
     if not text:
         raise ValueError('The AI-DM returned an empty response')
     if marked:
-        state = snapshot(conn, save_id)
         adventure = adventure_for(state)
         if adventure.focused and adventure.valid(location):
             set_location(conn, state, location, None, 'ai-dm')
+    text = narration_choices.public_body(text, choices, state['players'])
     stamp = utc()
     message_id = conn.execute(
-        'INSERT INTO messages (save_id,session_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?)',
-        (save_id, session['id'], 'ai', 'AI-DM', text, stamp),
+        'INSERT INTO messages (save_id,session_id,kind,name,body,created_at,choices_json) VALUES (?,?,?,?,?,?,?)',
+        (save_id, session['id'], 'ai', 'AI-DM', text, stamp, json.dumps(choices) if choices else None),
     ).lastrowid
     if override:
         conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',

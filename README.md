@@ -89,6 +89,21 @@ Image requests and estimated costs appear separately from text usage in the side
 
 An unsent message is kept in this browser (per save and player) and comes back when you rejoin the table. If the AI-DM advanced while it was away, it returns held for review, the same as a draft that goes stale while you type. Each send carries a request ID, so retrying after a lost reply never posts the contribution twice. A **Ready Override** records which player used it, the beat, and who was not Ready; the table sees this on the AI-DM reply it produced.
 
+### AI-DM action choices
+
+When the AI-DM offers concrete alternatives, its message lists lettered actions
+and shows compact **A / B / C** buttons beside the overlapping-pages Copy icon.
+Your client shows buttons for your character and any party-wide choices; the
+whole table can read every option in the narration. Clicking a letter appends
+the full action to your composer, preserving existing text and attachments.
+Edit it if desired, then **Send**. Choosing a button does not change Ready.
+Old choices become inactive when the table advances. A stale draft must be
+reviewed before adding a current choice.
+
+Choices are optional suggestions. Free-text replies remain available. Existing
+saves receive the output-format instruction on future narration requests without
+replacing their saved Stage 3 instructions or changing historical messages.
+
 ### Party knowledge
 
 **NPCs**, **Locations**, and **World Notes** in the left sidebar show only what Pilots have written down as known to the party. Nothing is read from the cartridge, and these notes are not sent to the AI-DM. In Pilot Mode, add, edit, or remove entries; removed entries stay in the save history.

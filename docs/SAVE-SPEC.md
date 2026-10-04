@@ -404,6 +404,19 @@ These exchanges may later be selectively included in AI context.
 
 ## 14. AI-DM Messages
 
+The current SQLite runtime stores optional action-choice metadata alongside each
+published AI-DM message in nullable `messages.choices_json`. Save API responses
+expose it as `message.choices`, either null or `{beat, groups}`. Each group contains
+`playerId` (a saved player ID or null for party-wide) and `options` with `letter`
+and full plain-text `text` fields. The beat identifies the response window opened
+by this narration. Normal transcript bodies contain the public labeled choices;
+raw generation footers are removed before saving.
+
+Metadata is saved atomically with narration and survives whole-database backups.
+Older messages acquire null metadata through the additive schema migration and
+retain their original text. Choice clicks edit only the local draft; Send records
+the final edited contribution through the existing player-message path.
+
 AI-DM outputs should be saved before or when published.
 
 Recommended distinctions:

@@ -361,9 +361,30 @@
   };
   // Presence comes from the server so every browser sees the AI-DM and other players typing.
   const aiDmBusy=purpose=>(purpose==='advance'&&state.generating)||(purpose==='ask'&&state.asking)||state.save?.activity?.aiDm===purpose;
+  const refreshChoiceButtons=()=>{
+    for(const button of $('feedInner').querySelectorAll('.choice-button')){
+      const message=state.save?.messages.find(item=>item.id===Number(button.dataset.messageId));
+      button.disabled=!TableForgeMessageActions.canChoose(state,message,draftStale());
+    }
+  };
+  const addChoiceToDraft=(messageId,playerId,letter)=>{
+    const message=state.save?.messages.find(item=>item.id===messageId);
+    if(!TableForgeMessageActions.canChoose(state,message,draftStale()))return;
+    const group=TableForgeMessageActions.groupsFor(message.choices,state.identity).find(item=>item.playerId===playerId);
+    const option=group?.options.find(item=>item.letter===letter);
+    if(!option)return;
+    const composer=$('composer'),text=TableForgeMessageActions.appendText(composer.value,option.text);
+    if(text.length>20000){notify(Error('This choice would exceed the 20,000-character message limit.'));return;}
+    composer.value=text;
+    if(state.composer)$('toggleComposer').click();
+    composer.dispatchEvent(new Event('input',{bubbles:true}));
+    composer.focus();
+    composer.setSelectionRange(text.length,text.length);
+  };
   let dotCount=1;
   const dots=()=>`<span class="typing-dots">${'.'.repeat(dotCount)}</span>`;
   const renderActivity=()=>{
+    refreshChoiceButtons();
     const s=state.save,el=$('typingIndicator');if(!s||!el)return;
     const names=s.players.filter(p=>p.id!==state.identity&&s.activity?.typing?.includes(p.id)).map(p=>p.character);
     const who=aiDmBusy('advance')?'AI-DM':names.length>2?'Several players':names.join(' and ');
@@ -388,7 +409,7 @@
     if(s.imageUsage) $('usageSummary').insertAdjacentHTML('beforeend',`<div class="image-usage"><strong>Scene images (separate)</strong><div>Session: ${esc(imageUsageLine(s.imageUsage.session))}</div><div>Playthrough: ${esc(imageUsageLine(s.imageUsage.save))}</div></div>`);
     $('illustrateScene').disabled=!state.identity||!s.messages.some(m=>m.kind==='ai');
     // Rebuild the feed only when its content changes, so Ready/typing updates keep the reading position.
-    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,s.messages.map(m=>[m.id,m.body.length,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl])]);
+    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,s.messages.map(m=>[m.id,m.body.length,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl])]);
     const feedChanged=feedKey!==state.feedKey,sameSave=state.feedSaveId===s.save.id,previousIds=new Set(state.feedKey?[...$('feedInner').children].map(el=>el.id):[]);
     const followLatest=state.followLatest!==false;
     if(feedChanged){
@@ -403,10 +424,26 @@
     const character=id=>s.players.find(p=>p.id===id)?.character||'A player';
     for(const m of s.messages){
       const row=document.createElement('div');row.className='message '+(m.kind==='ai'?'ai':'player');
-      row.innerHTML=`${avatar(s.players.find(p=>p.id===m.player_id),'avatar',m.kind==='ai'?'AI':m.name[0])}<div><div class="message-head"><strong>${esc(m.name)}</strong><span class="time">${new Date(m.created_at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</span></div><div class="message-body"></div><div class="message-actions"><button class="copy-message">Copy</button></div></div>`;
+      row.innerHTML=`${avatar(s.players.find(p=>p.id===m.player_id),'avatar',m.kind==='ai'?'AI':m.name[0])}<div><div class="message-head"><strong>${esc(m.name)}</strong><span class="time">${new Date(m.created_at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</span></div><div class="message-body"></div><div class="message-actions"><button class="copy-message" type="button" title="Copy message" aria-label="Copy message">${TableForgeMessageActions.copyIcon}</button></div></div>`;
       row.querySelector('.message-body').innerHTML=TableForgeMarkdown.render(m.body);
       row.querySelector('.message-body').classList.add('markdown-body');
       row.id='message-'+m.id;
+      const choices=m.kind==='ai'?TableForgeMessageActions.groupsFor(m.choices,state.identity):[];
+      for(const group of choices){
+        const controls=document.createElement('span');controls.className='choice-group';
+        const label=group.playerId===null?'Party':character(group.playerId);
+        controls.setAttribute('role','group');controls.setAttribute('aria-label',`${label} choices`);
+        if(choices.length>1){const heading=document.createElement('span');heading.className='choice-audience';heading.textContent=label;controls.append(heading);}
+        for(const option of group.options){
+          const button=document.createElement('button');button.type='button';button.className='choice-button';
+          button.textContent=option.letter;button.title=option.text;
+          button.setAttribute('aria-label',`${label} choice ${option.letter}: ${option.text}`);
+          button.dataset.messageId=m.id;
+          button.onclick=()=>addChoiceToDraft(m.id,group.playerId,option.letter);
+          controls.append(button);
+        }
+        row.querySelector('.message-actions').append(controls);
+      }
       const override=overrides.get(m.id);
       if(override){
         const note=document.createElement('div');note.className='override-note';
@@ -441,8 +478,14 @@
       }
       row.querySelector('.copy-message').onclick=async event=>{
         const button=event.currentTarget;
-        button.textContent=await copyText(m.body)?'Copied':'Copy failed';
-        setTimeout(()=>button.textContent='Copy',1200);
+        if(button.disabled)return;
+        button.disabled=true;
+        const copied=await copyText(m.body),label=copied?'Copied':'Copy failed';
+        button.innerHTML=copied?TableForgeMessageActions.checkIcon:TableForgeMessageActions.errorIcon;
+        button.classList.toggle('copied',copied);button.classList.toggle('copy-failed',!copied);
+        button.title=label;button.setAttribute('aria-label',label);
+        if(!copied)notify(Error('Copy failed. Select the message text to copy it.'));
+        setTimeout(()=>{button.innerHTML=TableForgeMessageActions.copyIcon;button.title='Copy message';button.setAttribute('aria-label','Copy message');button.classList.remove('copied','copy-failed');button.disabled=false;},1200);
       };
       row.dataset.searchText=(m.name+' '+m.body).toLowerCase();$('feedInner').append(row);
     }
@@ -521,6 +564,7 @@
     const stale=draftStale();
     $('draftNotice').classList.toggle('hidden',!stale);
     $('composerWrap').classList.toggle('draft-stale',stale);
+    refreshChoiceButtons();
   };
   $('keepDraft').onclick=()=>{state.draft=null;syncDraft();$('composer').focus();};  const advanceTable = async (extra={}) => {
     if(state.generating || state.updating || state.asking) return;

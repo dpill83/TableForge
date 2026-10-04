@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 import module_context
+import narration_choices
 import runtime_prompts
 
 ASK_PROMPT = (
@@ -223,6 +224,8 @@ def build_context(state, data_dir, purpose='advance'):
     prompt = runtime_prompts.load_saved(data_dir, state['save']['id'])
     context['narrationPrompt'] = prompt
     report['narrationPrompt'] = runtime_prompts.metadata(prompt)
+    context['choiceInstructions'] = narration_choices.instructions()
+    context['choicePlayers'] = [{'playerId': p['id'], 'character': p['character']} for p in state['players']]
     if prompt['kind'] == 'stage3':
         context['opening'] = (state['save']['beat'] == 1 and not summary
                               and not any(m['kind'] == 'ai' for m in state['messages'])
@@ -268,6 +271,9 @@ def chat_messages(context):
     if context.get('purpose') == 'summary':
         return summary_chat_messages(context)
     system = context['narrationPrompt']['instructions'] + context.get('locationInstructions', '')
+    if context.get('choiceInstructions'):
+        system += '\n\n' + context['choiceInstructions']
+        system += '\n\nChoice audiences (playerId null means party-wide):\n' + json.dumps(context['choicePlayers'], ensure_ascii=False)
     system += f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
     system += optional_resource_text(context)
     system += summary_text(context)
