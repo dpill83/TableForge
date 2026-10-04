@@ -8,6 +8,7 @@ import struct
 import tempfile
 import threading
 import unittest
+import uuid
 import urllib.error
 import urllib.request
 import zipfile
@@ -784,10 +785,15 @@ Flyman block.
         self.assertEqual(combat['events'][-1]['kind'], 'combat_started')
         self.assertIn('Record a combat outcome', self.api_error(f'/api/saves/{save_id}/mode',
             {'mode': 'normal'})['error'])
+        for player in combat['players']:
+            self.api(f'/api/saves/{save_id}/ready', {'playerId': player['id'], 'ready': True,
+                                                  'handoffId': combat['combat']['id']})
+        payload = {'playerId': player_id, 'handoffId': combat['combat']['id'],
+                   'requestId': str(uuid.uuid4())}
         self.assertIn('Combat outcome', self.api_error(f'/api/saves/{save_id}/combat-outcome',
-            {'playerId': player_id, 'text': '  '})['error'])
+            {**payload, 'text': '  '})['error'])
         result = self.api(f'/api/saves/{save_id}/combat-outcome',
-                          {'playerId': player_id, 'text': 'The ogre fled; nobody died.'})
+                          {**payload, 'text': 'The ogre fled; nobody died.'})
         self.assertEqual(result['save']['mode'], 'normal')
         self.assertEqual(result['events'][-1]['player_id'], player_id)
         self.assertEqual(result['events'][-1]['body'], 'The ogre fled; nobody died.')

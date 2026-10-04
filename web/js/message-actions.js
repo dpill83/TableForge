@@ -8,6 +8,7 @@ const TableForgeMessageActions = (() => {
     const table=state.save,session=table?.sessions?.at(-1);
     return !!(table&&message?.kind==='ai'&&message.choices&&
       table.players.some(player=>player.id===state.identity)&&
+      table.save.mode!=='combat'&&(!table.combat||table.combat.phase==='complete')&&
       !state.generating&&!state.updating&&!table.activity?.aiDm&&!staleDraft&&
       session&&!session.ended_at&&message.session_id===session.id&&
       table.messages.findLast(item=>item.kind==='ai')?.id===message.id&&

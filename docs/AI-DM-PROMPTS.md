@@ -133,3 +133,10 @@ Run `python -m unittest discover -s tests -v` in TableForge. AdventureForge's fo
 export tests run with `node --test app/pages/test/tests.cartridge-stage3.node.mjs`.
 The old v2.1.1 source under TableForge's `tests/fixtures/` is test input only; runtime
 code never loads it. No provider call is needed to inspect or select instructions.
+
+
+## Combat runtime contract
+
+Public narration requests append server-owned combat instructions without altering the pinned Stage 3 snapshot. The AI-DM calls initiative, stops, and emits `[[TABLEFORGE_COMBAT:START]]` as the exact final line after other metadata. The server strips that signal and atomically enters Combat Mode with the published narration. Prose matching, quoted/code examples, Ask AI-DM, and summary responses cannot activate combat. Combat handoffs omit action choices.
+
+An accepted optional report or explicit skip requests aftermath immediately through the existing generation pipeline. Context review includes the same combat contract and accepted aftermath instructions. A skipped report requires using recorded facts and asking for necessary missing results, without inventing combat outcomes.

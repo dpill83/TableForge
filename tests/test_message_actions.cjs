@@ -38,6 +38,17 @@ test('shared illustrations do not expire the latest narration choices',()=>{
   assert.equal(canChoose(state,message),true);
 });
 
+test('combat and pending aftermath pause choice buttons',()=>{
+  for(const phase of ['fighting','outcome_pending','resuming','failed']){
+    const state=makeState();state.save.combat={phase};
+    assert.equal(canChoose(state,message),false);
+  }
+  const state=makeState();state.save.save.mode='combat';
+  assert.equal(canChoose(state,message),false);
+  state.save.save.mode='normal';state.save.combat={phase:'complete'};
+  assert.equal(canChoose(state,message),true);
+});
+
 test('appending preserves draft text and does not mutate the save or Ready',()=>{
   const state=makeState(),before=JSON.stringify(state);
   assert.equal(appendText('','I keep watch.'),'I keep watch.');

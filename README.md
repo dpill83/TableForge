@@ -65,7 +65,7 @@ Both fallback layers use the existing routing JSON column; no additional databas
 
 For local network testing, launch with `python3 server.py --host 0.0.0.0` and use the host computer's LAN address. This initial server has no login or access control, so only expose it on a trusted network.
 
-The current build provides real cartridge validation, SQLite saves, messages, Ready, Load Adventure, AI-DM advance (mock or OpenAI), and basic Pilot/Combat controls. In Pilot Mode, **Ask AI-DM** opens a saved operational conversation that does not appear in the public chat or change Ready. **End Session** records a checkpoint and closes the current session. Continue on an ended save starts the next session when a player joins; an open save resumes the same session after a restart. **Resume AI-DM** in Combat Mode asks for a short outcome note, saves it, and includes it in later AI context. If a cartridge is missing, Load Adventure offers **Locate ZIP** or **Locate Folder** and checks its contents against the original before restoring access. Other file attachments, spoiler-safe references and map rendering are still pending. The visual shell follows the approved Play Screen prototype; the older standalone prototypes remain in `prototypes/`.
+The current build provides real cartridge validation, SQLite saves, messages, Ready, Load Adventure, AI-DM advance (mock or OpenAI), and basic Pilot/Combat controls. In Pilot Mode, **Ask AI-DM** opens a saved operational conversation that does not appear in the public chat or change Ready. **End Session** records a checkpoint and closes the current session. Continue on an ended save starts the next session when a player joins; an open save resumes the same session after a restart. **Combat Mode** activates on an explicit AI-DM handoff signal or manual Pilot entry. The composer pauses and Ready becomes **Combat Finished**. When everyone finishes, everyone receives a dismissible optional outcome dialog; any player can send one report or skip it to request aftermath narration. Pilot **Resume AI-DM** can bypass waiting. Reports are saved and visible in shared history; failed aftermath offers **Retry aftermath**, including after a restart. If a cartridge is missing, Load Adventure offers **Locate ZIP** or **Locate Folder** and checks its contents against the original before restoring access. Other file attachments, spoiler-safe references and map rendering are still pending. The visual shell follows the approved Play Screen prototype; the older standalone prototypes remain in `prototypes/`.
 
 In Pilot Mode, **Module Viewer** opens AdventureForge's Module Reader inside TableForge and loads `run-data.json` and `module.md` from the current save's cartridge bindings. Reader progress is stored in the browser for that save.
 
@@ -346,10 +346,12 @@ TableForge is not intended to become a full VTT by default.
 
 During combat:
 
-- Ready may still be used
-- all Ready does **not** auto-advance
-- Pilot Mode may ask the AI-DM for rulings, tactics, or monster motivation
-- a Pilot explicitly resumes the AI-DM after combat
+- readiness resets and Ready becomes Combat Finished / Undo Finished
+- normal composer, Send, attachments, and auto-ready pause; drafts remain available for later review
+- all Finished offers everyone an optional outcome dialog; it does not generate narration by itself
+- any player may submit a report or skip it to resume narration once
+- Pilot Mode may ask the AI-DM questions in the separate operational conversation or override waiting
+- accepted reports appear in shared history, and failed aftermath can be retried
 
 The AI-DM then narrates the aftermath and normal play resumes.
 
