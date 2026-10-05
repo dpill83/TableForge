@@ -1,0 +1,3 @@
+/deploy/kilo/* text eol=lf
+/.github/workflows/*.yml text eol=lf
+/tests/test_kilo_deployment.py text eol=lf
