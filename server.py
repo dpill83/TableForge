@@ -19,6 +19,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 import ai
+import build_info
 import backups
 import metering
 import scene_images
@@ -911,6 +912,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.get_attachment(parts[2], parts[4])
             if path == '/api/runtime':
                 return self.respond(ai.runtime_status())
+            if path == '/api/version':
+                return self.respond(build_info.status())
             if path == '/api/backups':
                 return self.respond({'backups': backups.listing(DATA), 'folder': str(backups.directory(DATA).resolve())})
             if len(parts) == 3 and parts[:2] == ['api', 'backups']:
@@ -983,6 +986,8 @@ class Handler(BaseHTTPRequestHandler):
             if not file.is_relative_to(WEB) or not file.is_file():
                 return self.send_error(404)
             content = file.read_bytes()
+            if file == WEB / 'index.html':
+                content = content.replace(b'__TABLEFORGE_UI_BUILD__', build_info.ui_build().encode('ascii'))
             mime = {'.html':'text/html', '.css':'text/css', '.js':'text/javascript', '.svg':'image/svg+xml'}.get(file.suffix, 'application/octet-stream')
             self.send_response(200)
             self.send_header('Content-Type', mime + '; charset=utf-8')
