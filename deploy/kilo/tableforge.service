@@ -1,0 +1,38 @@
+[Unit]
+Description=TableForge shared adventure server
+After=network-online.target tableforge-firewall.service
+Wants=network-online.target
+Requires=tableforge-firewall.service
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=tableforge
+Group=tableforge
+WorkingDirectory=/opt/tableforge/repo
+EnvironmentFile=/etc/tableforge/tableforge.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONDONTWRITEBYTECODE=1
+UMask=0077
+ExecStartPre=/usr/bin/python3 /usr/local/libexec/tableforge/snapshot.py
+ExecStart=/opt/tableforge/venv/bin/python -B /opt/tableforge/repo/server.py --host 0.0.0.0 --port 8765
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=30
+KillMode=control-group
+StandardOutput=journal
+StandardError=journal
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/tableforge
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

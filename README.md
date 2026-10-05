@@ -4,6 +4,8 @@ TableForge is a shared runtime for playing AI-assisted tabletop RPG adventures c
 
 ## Run the first application build
 
+The title screen and play header show the application version and automatic server/UI build IDs. Hover over the indicator for full IDs. It checks every 30 seconds and when the window regains focus: **Restart server** means Python code or runtime prompts changed since startup; **Refresh page** means the loaded UI differs from the installed files. IDs exclude secrets and save data and are consistent across Windows/Linux line endings. This compares against files on the host, not the latest GitHub release. The public `/api/version` endpoint reports the same information. Bump `VERSION` in `build_info.py` for named releases; build IDs change automatically with code changes.
+
 Requires Python 3.10 or newer. From this repository:
 
 ```bash

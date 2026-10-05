@@ -58,7 +58,29 @@
       notification.onclick=()=>{window.focus();notification.close();};
     }catch(error){console.warn('Browser notification could not be shown.',error);}
   };
-  $('appVersion').textContent = 'v2.0';
+  const loadedUIBuild = document.querySelector('meta[name="tableforge-ui-build"]')?.content;
+  const checkBuild = async () => {
+    try {
+      const response = await fetch('/api/version', {cache:'no-store'});
+      if(!response.ok) throw Error('Version unavailable');
+      const info = await response.json();
+      const refreshRequired = loadedUIBuild !== info.uiBuild;
+      const action = info.restartRequired ? ' · Restart server' : refreshRequired ? ' · Refresh page' : '';
+      document.querySelectorAll('[data-build-info]').forEach(label => {
+        label.textContent = `v${info.version} · Server ${info.serverBuild.slice(0,8)} · UI ${(loadedUIBuild || 'unknown').slice(0,8)}${action}`;
+        label.classList.toggle('build-outdated', info.restartRequired || refreshRequired);
+        label.title = `Running server: ${info.serverBuild}\nInstalled server: ${info.installedServerBuild}\nLoaded UI: ${loadedUIBuild}\nInstalled UI: ${info.uiBuild}\n${info.restartRequired ? 'Restart the server, then refresh this page.' : refreshRequired ? 'Refresh this page to load the updated UI.' : 'Matches the files installed on this host.'}`;
+      });
+    } catch {
+      document.querySelectorAll('[data-build-info]').forEach(label => {
+        label.textContent = 'Version unavailable';
+        label.title = 'The server could not report its version. It may need an update or be offline.';
+      });
+    }
+  };
+  checkBuild();
+  setInterval(checkBuild, 30000);
+  window.addEventListener('focus', checkBuild);
   const request = async (path, body) => {
     const controller=new AbortController();
     const generating=body!==undefined&&/\/(images|advance|ask|summary-draft|combat-outcome|combat-retry)$/.test(path);

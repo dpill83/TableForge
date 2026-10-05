@@ -1,0 +1,31 @@
+name: Deploy main to KILO
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tableforge-kilo-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'dpill83/TableForge' && github.ref == 'refs/heads/main' && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: [kilo-tableforge-production]
+    timeout-minutes: 15
+    steps:
+      - name: Verify main and deploy
+        shell: bash
+        env:
+          DEPLOY_REF: ${{ github.ref }}
+          DEPLOY_REPOSITORY: ${{ github.repository }}
+          DEPLOY_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          test "$DEPLOY_REF" = refs/heads/main
+          test "$DEPLOY_REPOSITORY" = dpill83/TableForge
+          /usr/local/libexec/tableforge/deploy.py deploy "$DEPLOY_SHA"

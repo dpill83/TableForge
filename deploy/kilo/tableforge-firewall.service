@@ -1,0 +1,15 @@
+[Unit]
+Description=TableForge port-only LAN ingress restriction
+After=network-online.target ufw.service nftables.service piavpn.service
+Wants=network-online.target
+Before=tableforge.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/tableforge/firewall.sh
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
