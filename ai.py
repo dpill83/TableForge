@@ -9,6 +9,8 @@ import urllib.error
 import urllib.request
 
 import module_context
+import combat
+import narration_choices
 import runtime_prompts
 
 ASK_PROMPT = (
@@ -213,6 +215,9 @@ def build_context(state, data_dir, purpose='advance'):
         'transcript': transcript,
         'summaryAvailable': len(summary_range(state['messages'], summary)),
     }
+    handoff = state.get('combat')
+    if handoff and handoff['phase'] in ('resuming', 'failed'):
+        context['combatResume'] = {key: handoff[key] for key in ('id', 'outcome', 'skipped')}
     context['report'] = report
     if purpose == 'ask':
         pilot = state.get('pilot') or []
@@ -223,6 +228,8 @@ def build_context(state, data_dir, purpose='advance'):
     prompt = runtime_prompts.load_saved(data_dir, state['save']['id'])
     context['narrationPrompt'] = prompt
     report['narrationPrompt'] = runtime_prompts.metadata(prompt)
+    context['choiceInstructions'] = narration_choices.instructions()
+    context['choicePlayers'] = [{'playerId': p['id'], 'character': p['character']} for p in state['players']]
     if prompt['kind'] == 'stage3':
         context['opening'] = (state['save']['beat'] == 1 and not summary
                               and not any(m['kind'] == 'ai' for m in state['messages'])
@@ -268,6 +275,10 @@ def chat_messages(context):
     if context.get('purpose') == 'summary':
         return summary_chat_messages(context)
     system = context['narrationPrompt']['instructions'] + context.get('locationInstructions', '')
+    system += combat.INSTRUCTIONS
+    if context.get('choiceInstructions'):
+        system += '\n\n' + context['choiceInstructions']
+        system += '\n\nChoice audiences (playerId null means party-wide):\n' + json.dumps(context['choicePlayers'], ensure_ascii=False)
     system += f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
     system += optional_resource_text(context)
     system += summary_text(context)
@@ -284,6 +295,14 @@ def chat_messages(context):
     outcomes = context.get('combatOutcomes') or []
     if outcomes:
         system += '\n\nRecorded combat outcomes:\n' + '\n'.join('- ' + item['body'] for item in outcomes)
+    resume = context.get('combatResume')
+    if resume:
+        system += '\n\nCombat has ended. Narrate its aftermath without running combat turns.'
+        if resume['skipped']:
+            system += (' No outcome was supplied. Use only recorded facts; do not invent deaths, damage, '
+                       'victory, defeat, loot, or other combat results. Ask for necessary missing results.')
+        else:
+            system += '\nAccepted outcome for this combat:\n' + resume['outcome']
     messages = [{'role': 'system', 'content': system}]
     for item in context['messages']:
         if item['kind'] == 'ai':

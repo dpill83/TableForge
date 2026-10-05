@@ -479,11 +479,11 @@ Keep combat human-controlled while preserving AI-DM support.
 
 - [ ] detect or manually trigger combat handoff
 - [ ] pause normal Ready auto-advance
-- [ ] preserve player Ready indicators
+- [ ] Combat Finished / Undo Finished with reset states
 - [ ] keep Pilot Ask AI-DM available
 - [ ] allow rulings/tactics/monster-motivation questions
 - [ ] collect optional combat outcome
-- [ ] explicit Resume AI-DM
+- [ ] all Finished optional outcome dialog, with Pilot waiting override
 - [ ] resume normal Ready loop after narration
 
 ### Do not build by default

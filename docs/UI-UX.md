@@ -752,64 +752,21 @@ Do not use confirmation for normal all-Ready auto-advance.
 
 # 21. Combat Mode
 
-When initiative is called, TableForge enters Combat Mode.
+An explicit AI-DM handoff signal or manual Pilot entry activates Combat Mode. Humans run combat; TableForge does not track turns, HP, dice, or tactical mechanics.
 
-The UI should make this state obvious without transforming into a VTT.
+The main composer, Send, attachments, and normal Force Advance are disabled. Show “Combat is at the table. Enable Pilot Mode to ask AI-DM a question.” Preserve unsent drafts. Ask AI-DM remains a separate saved conversation visible to Pilot-enabled players.
 
-Example status:
-
-```text
-COMBAT MODE
-Auto-advance paused
-```
-
-## During combat
-
-Players continue using their normal external/table combat process.
-
-TableForge may show:
-
-- player Ready states
-- AI-DM operational access for Pilot users
-- combat status
-- Resume AI-DM control
-
-Do not add by default:
-
-- initiative tracker
-- HP tracker
-- battle map
-- automated monster turns
-- dice roller
-- character sheet
+Ready becomes Combat Finished / Undo Finished, initially Not Finished for everyone. Display individual states and a count such as “2 of 3 finished.” Suspend auto-ready without removing its normal-play preference.
 
 ---
 
 # 22. Resume AI-DM
 
-Combat never resumes automatically just because all players are Ready.
+All Finished opens one dismissible optional outcome dialog per client. Defer it when another dialog is open. Closing it leaves combat unchanged; Combat Outcome reopens it. Each player has a local report draft, not live collaborative editing.
 
-Pilot Mode must explicitly hand control back.
+Anyone may choose Send outcome & Resume AI-DM or Skip & Resume AI-DM. Undo Finished disables ordinary submission until everyone finishes again. Pilot Resume AI-DM opens the same dialog with an explicit waiting override.
 
-Example:
-
-```text
-[ Resume AI-DM ]
-```
-
-Before resume, TableForge may allow a short combat-outcome summary/context review.
-
-Possible information:
-
-- enemies defeated
-- enemies escaped
-- NPC deaths
-- party condition
-- important resources spent
-- loot
-- unusual outcomes
-
-The AI-DM then narrates the aftermath and normal Ready behavior returns.
+Only the first submission is accepted. Other clients close their outcome dialogs when acceptance arrives. Display the attributed report or skip in shared history. Keep the composer paused during aftermath generation and after failures; expose Retry aftermath to any player. Restore normal controls and reset readiness after publication. Require review of preserved drafts before sending.
 
 ---
 

@@ -395,7 +395,7 @@ Do not expand it to all players unless later playtesting justifies it.
 
 Combat intentionally changes the control model.
 
-When initiative is called, TableForge enters Combat Mode.
+When the AI-DM calls initiative, an explicit runtime signal activates Combat Mode. Pilot Mode may also enter it manually.
 
 Humans run combat.
 
@@ -405,12 +405,17 @@ Do not add initiative tracking, automated monster turns, character-sheet managem
 
 During combat:
 
-- players may still use Ready
-- all Ready must **not** auto-advance
-- AI-DM remains available to Pilot Mode for rulings, tactics, and monster motivation
-- Pilot explicitly resumes the AI-DM after combat
+- main composer, Send, and attachments are disabled; unsent drafts are preserved
+- readiness resets; Ready becomes Combat Finished, with an Undo Finished action
+- auto-ready is suspended and the UI shows how many players have finished
+- all Finished opens a dismissible optional combat-outcome dialog for everyone, without generating narration
+- anyone may send one outcome or skip it to resume aftermath narration
+- AI-DM questions remain in the separate Pilot-only operational conversation
+- Pilot Resume AI-DM may bypass waiting for every Finished state
+- accepted outcomes/skips and override initiators are saved; conflicting submissions cannot generate twice
+- failed aftermath narration preserves the report and offers retry, including after restart
 
-On resume, send the relevant combat outcome/context and let the AI-DM narrate the aftermath.
+On resume, send the relevant combat outcome/context and let the AI-DM narrate the aftermath. If the optional report is skipped, do not invent missing combat results. Restore ordinary contributions only after successful aftermath publication; preserved drafts require review for the new beat.
 
 ---
 

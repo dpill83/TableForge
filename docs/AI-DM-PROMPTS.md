@@ -105,9 +105,38 @@ To change console adaptations, add a new adapter version, update its version and
 UTF-8/LF-normalized digest in `runtime_prompts.py`, and test compatibility with the
 cartridge sources. A new adapter does not silently alter existing saves.
 
+## Action-choice output format
+
+Narration requests also include `prompts/tableforge-choices-v1.md`, a separate
+output-format contract, plus saved player IDs and character names. This adjunct
+does not replace or edit the saved Stage 3 snapshot. It applies to future narration
+in both current and legacy saves and is visible in the exact Pilot context preview.
+Ask AI-DM and summary requests do not include it.
+
+When concrete alternatives arise naturally, the AI-DM returns one fenced
+`tableforge-choices` JSON block containing `groups`, each with an explicit
+`playerId` (a supplied saved player ID, or null for party-wide) and ordered
+`options` strings. Options are complete first-person actions, not Markdown.
+The server strips the footer, validates groups, assigns letter labels, and appends
+the public option lists to the stored narration. Each client turns the appropriate
+groups into composer shortcuts. All option lists are public; targeting controls
+which buttons appear, not visibility or permissions.
+
+Unknown audiences, invalid groups, and malformed footers create no buttons for
+the rejected data. Narration remains usable without choices. Ordinary prose is
+never scanned to guess actions. No extra provider request or automatic retry is
+made to extract or repair options, and historical messages are not reprocessed.
+
 ## Verification
 
 Run `python -m unittest discover -s tests -v` in TableForge. AdventureForge's focused
 export tests run with `node --test app/pages/test/tests.cartridge-stage3.node.mjs`.
 The old v2.1.1 source under TableForge's `tests/fixtures/` is test input only; runtime
 code never loads it. No provider call is needed to inspect or select instructions.
+
+
+## Combat runtime contract
+
+Public narration requests append server-owned combat instructions without altering the pinned Stage 3 snapshot. The AI-DM calls initiative, stops, and emits `[[TABLEFORGE_COMBAT:START]]` as the exact final line after other metadata. The server strips that signal and atomically enters Combat Mode with the published narration. Prose matching, quoted/code examples, Ask AI-DM, and summary responses cannot activate combat. Combat handoffs omit action choices.
+
+An accepted optional report or explicit skip requests aftermath immediately through the existing generation pipeline. Context review includes the same combat contract and accepted aftermath instructions. A skipped report requires using recorded facts and asking for necessary missing results, without inventing combat outcomes.

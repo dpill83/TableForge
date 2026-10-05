@@ -969,9 +969,11 @@ mode = combat
 Effects:
 
 - disable normal all-Ready auto-advance
-- keep Ready indicators available
+- reset Ready indicators and present Combat Finished / Undo Finished
 - keep Pilot AI-DM questions available
-- expose Resume AI-DM to Pilot users
+- all Finished offers an optional outcome dialog to every player
+- expose Resume AI-DM waiting override to Pilot users
+- pause public contributions and auto-ready while preserving drafts
 
 TableForge does not need to model initiative or individual combat turns.
 
@@ -994,7 +996,7 @@ recent transcript
 → AI-DM
 ```
 
-The resulting AI-DM aftermath response reopens normal play.
+Persist the first accepted report or skip in a combat_handoffs record before generation. A submission uses the current handoff identity and a request identity to reject stale work and recognize retries. Keep the existing shared generation guard. Completion and aftermath publication are atomic; failures and interrupted requests remain retryable. The resulting AI-DM aftermath response reopens normal play.
 
 ---
 

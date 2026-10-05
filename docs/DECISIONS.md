@@ -365,15 +365,13 @@ The AI-DM remains available for rules, intent, and monster behavior questions.
 
 ---
 
-## D-024 — Combat Disables Ready Auto-Advance
+## D-024 — Combat Finished Opens an Optional Handoff
 
-**Decision:** During Combat Mode, all players becoming Ready does not automatically trigger the AI-DM.
+**Decision:** Combat resets readiness and pauses public contributions and auto-ready. Ready becomes Combat Finished / Undo Finished. All Finished opens an optional outcome dialog for everyone, without triggering AI generation.
 
-Combat ends only when a Pilot explicitly selects:
+Any player may send one report or skip it to request aftermath narration. Pilot Resume AI-DM may bypass waiting. The first accepted submission is saved with attribution; duplicate requests cannot generate twice. Failure preserves the report and exposes Retry aftermath. Normal play returns after successful publication.
 
-```text
-Resume AI-DM
-```
+This replaces the earlier Pilot-only combat-resume rule.
 
 ---
 

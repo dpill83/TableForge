@@ -249,6 +249,11 @@
     <footer id="composerWrap" class="composer-wrap">
       <button class="composer-handle" id="toggleComposer" title="Collapse composer" aria-label="Collapse composer">↓</button>
       <div id="tableStatus" class="sr-only" aria-live="polite">Waiting for table · 0 of 3 Ready</div>
+      <div id="combatStatus" class="draft-notice hidden" role="status">
+        <span id="combatExplanation"></span>
+        <button class="btn small" id="combatOutcomeOpen" type="button">Combat Outcome</button>
+        <button class="btn small warn hidden" id="combatRetry" type="button">Retry aftermath</button>
+      </div>
       <div id="attachmentTray" class="attachment-tray hidden"></div>
       <div id="draftNotice" class="draft-notice hidden" role="status">
         <span><strong>The story moved on while you were writing.</strong> Your message hasn't been sent — review it against the latest AI-DM reply.</span>
@@ -293,6 +298,7 @@
 
 <script src="/js/markdown.js" defer></script>
 <script src="/js/request-log.js" defer></script>
+<script src="/js/message-actions.js" defer></script>
 <script src="/js/app.js" defer></script>
 </body>
 </html>

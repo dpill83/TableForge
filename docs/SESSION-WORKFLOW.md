@@ -520,34 +520,17 @@ TableForge is not intended to become a full VTT or automated combat engine merel
 
 ---
 
-## 16. Ready During Combat
+## 16. Combat Finished
 
-Players may still have Ready controls during Combat Mode.
+Combat entry resets everyone to Not Finished. The main composer, Send, and attachments pause while preserving drafts. Ready becomes **Combat Finished**, meaning “combat is over; I am ready for the aftermath.” Players may undo this until a handoff is accepted. Auto-ready is suspended.
 
-Ready can indicate:
-
-> “I am finished with what I need to do before the AI-DM resumes.”
-
-However:
-
-> Combat Mode must not auto-advance merely because all players become Ready.
-
-Combat requires a deliberate supervisory handoff back to the AI-DM.
-
-This prevents accidental narration while the humans are still:
-
-- resolving HP
-- updating conditions
-- determining loot
-- discussing the outcome
-- finishing combat bookkeeping
-- deciding exactly what happened
+When all current players finish, a dismissible optional outcome dialog opens for everyone. Closing it does not resume play; a Combat Outcome button reopens it. Players keep separate local report drafts rather than editing a shared document. Undo Finished withdraws ordinary submission eligibility without losing drafts.
 
 ---
 
 ## 17. Resume AI-DM After Combat
 
-Anyone with Pilot Mode enabled may perform the explicit combat handoff.
+Any player may submit one optional report or choose Skip & Resume AI-DM once everyone finishes. Pilot Mode may open the same dialog and override waiting. The first accepted handoff is durable and attributed; it immediately requests aftermath narration once.
 
 Working concept:
 
@@ -577,7 +560,7 @@ The AI-DM then:
 3. narrates the aftermath
 4. resumes normal adventure play
 
-Normal Ready-based advancement becomes active again after combat.
+Normal Ready-based advancement becomes active again after successful aftermath publication. Readiness resets and preserved composer drafts require review for the new beat. If narration fails, retain the accepted outcome and offer Retry aftermath; restart recovery provides the same retry. A skipped report tells the AI-DM to use recorded facts and ask for necessary missing results, not invent combat outcomes.
 
 ---
 
@@ -687,13 +670,12 @@ COMBAT MODE
         ↓
 Humans run combat
         ↓
-Players may Ready
+Players mark Combat Finished
         ↓
-No automatic AI advance
+Everyone receives an optional outcome dialog
+(Pilot may override waiting)
         ↓
-Pilot Mode user explicitly chooses RESUME AI-DM
-        ↓
-Submit combat outcome/context
+One player submits or skips the report
         ↓
 AI-DM narrates aftermath
         ↓

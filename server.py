@@ -19,11 +19,13 @@ from pathlib import Path
 from urllib.parse import parse_qs, quote, urlparse
 
 import ai
+import combat
 import build_info
 import backups
 import metering
 import scene_images
 import module_context
+import narration_choices
 import runtime_prompts
 from local_config import load_env
 
@@ -247,6 +249,8 @@ def initialize():
         if 'request_id' not in columns:
             # Client-minted per contribution so a retried send can never post twice.
             conn.execute('ALTER TABLE messages ADD COLUMN request_id TEXT')
+        if 'choices_json' not in columns:
+            conn.execute('ALTER TABLE messages ADD COLUMN choices_json TEXT')
         conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS messages_request ON messages(save_id, request_id) '
                      'WHERE request_id IS NOT NULL')
         scene_images.initialize(conn)
@@ -267,6 +271,8 @@ def initialize():
             conn.execute('INSERT INTO sessions (id,save_id,number,started_at,participants) VALUES (?,?,?,?,?)',
                          (session_id, save['id'], 1, save['created_at'], json.dumps(participants)))
             conn.execute('UPDATE messages SET session_id=? WHERE save_id=? AND session_id IS NULL', (session_id, save['id']))
+
+        combat.initialize(conn, utc())
 
 
 def package_manifest(files):
@@ -533,6 +539,7 @@ def start_session(conn, save_id):
                  (str(uuid.uuid4()), save_id, number, utc(), json.dumps(participants)))
     if number > 1:
         conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
+        combat.sync_ready(conn, save_id)
     conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
 
 
@@ -567,12 +574,16 @@ def snapshot(conn, save_id):
     for player in players:
         player['portraitUrl'] = (f'/api/saves/{save_id}/players/{player["id"]}/portrait?v={quote(portraits[player["id"]], safe="")}'
                                  if player['id'] in portraits else None)
+    messages = [dict(row) for row in conn.execute('SELECT * FROM messages WHERE save_id=? ORDER BY id', (save_id,))]
+    for message in messages:
+        message['choices'] = json.loads(message.pop('choices_json') or 'null')
     return {
         'save': dict(save),
+        'combat': combat.current(conn, save_id),
         'cartridge': {'id': cartridge['id'], 'title': save['adventure_title'] or cartridge['title'],
                       'resources': resources, 'available': (DATA / 'cartridges' / (cartridge['id'] + '.zip')).is_file()},
         'players': players,
-        'messages': [dict(row) for row in conn.execute('SELECT * FROM messages WHERE save_id=? ORDER BY id', (save_id,))],
+        'messages': messages,
         'pilot': [dict(row) for row in conn.execute('SELECT * FROM pilot_messages WHERE save_id=? ORDER BY id', (save_id,))],
         'sessions': sessions,
         'events': [dict(row) for row in conn.execute('SELECT * FROM session_events WHERE save_id=? ORDER BY id', (save_id,))],
@@ -650,13 +661,20 @@ def request_log(conn, save_id, player_id, pilot):
     return {'entries': sorted(entries, key=lambda entry: entry['startedAt'])}
 
 
+def fail_combat_resume(conn, save_id, context):
+    handoff_id = (context.get('combatResume') or {}).get('id')
+    if handoff_id:
+        conn.execute("UPDATE combat_handoffs SET phase='failed' WHERE id=? AND phase='resuming'", (handoff_id,))
+        conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+
+
 def begin_advance(conn, save_id, payload):
     state = snapshot(conn, save_id)
     if not state['cartridge']['available']:
         raise ValueError('Locate the cartridge before advancing')
     if not active_session(conn, save_id):
         raise ValueError('Start the next session before advancing')
-    if state['save']['mode'] != 'normal':
+    if state['save']['mode'] != 'normal' or combat.pending(state.get('combat')):
         raise ValueError('Resume combat explicitly')
     if payload.get('override'):
         # An override is a Pilot decision; the table should always be able to see who made it.
@@ -838,18 +856,23 @@ def set_location(conn, state, location, player_id, source):
 
 def publish_advance(conn, save_id, text, override=None):
     session = active_session(conn, save_id)
+    state = snapshot(conn, save_id)
+    text, combat_started = combat.extract(text)
+    text, choices = narration_choices.extract(text, state['players'], state['save']['beat'] + 1)
+    if combat_started:
+        choices = None
     text, marked, location = module_context.take_marker(text)
     if not text:
         raise ValueError('The AI-DM returned an empty response')
     if marked:
-        state = snapshot(conn, save_id)
         adventure = adventure_for(state)
         if adventure.focused and adventure.valid(location):
             set_location(conn, state, location, None, 'ai-dm')
+    text = narration_choices.public_body(text, choices, state['players'])
     stamp = utc()
     message_id = conn.execute(
-        'INSERT INTO messages (save_id,session_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?)',
-        (save_id, session['id'], 'ai', 'AI-DM', text, stamp),
+        'INSERT INTO messages (save_id,session_id,kind,name,body,created_at,choices_json) VALUES (?,?,?,?,?,?,?)',
+        (save_id, session['id'], 'ai', 'AI-DM', text, stamp, json.dumps(choices) if choices else None),
     ).lastrowid
     if override:
         conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
@@ -858,6 +881,8 @@ def publish_advance(conn, save_id, text, override=None):
                                   'ready': override['ready'], 'waitingOn': override['waitingOn']}), stamp))
     conn.execute('UPDATE saves SET beat=beat+1, updated_at=? WHERE id=?', (utc(), save_id))
     conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
+    if combat_started:
+        combat.start(conn, save_id, session['id'], None, stamp)
     return snapshot(conn, save_id)
 
 
@@ -1009,6 +1034,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.resolve_image(parts[2], parts[4], parts[5], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'advance':
                 return self.handle_advance(parts[2], payload)
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] in ('combat-outcome', 'combat-retry'):
+                return self.handle_combat_resume(parts[2], payload, parts[3] == 'combat-retry')
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'ask':
                 return self.handle_ask(parts[2], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'summary-draft':
@@ -1213,19 +1240,11 @@ class Handler(BaseHTTPRequestHandler):
                 if action == 'summaries':
                     save_summary(conn, save_id, payload)
                     return self.respond(snapshot(conn, save_id))
-                if action == 'combat-outcome':
-                    if state['save']['mode'] != 'combat':
-                        raise ValueError('The table is not in Combat Mode')
-                    require_player(state, payload.get('playerId'))
-                    outcome = str(payload.get('text') or '').strip()
-                    if not outcome or len(outcome) > 20000:
-                        raise ValueError('Combat outcome must contain 1 to 20,000 characters')
-                    conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
-                                 (save_id, session['id'], payload['playerId'], 'combat_outcome', outcome, utc()))
-                    conn.execute("UPDATE saves SET mode='normal',updated_at=? WHERE id=?", (utc(), save_id))
-                    conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
-                    return self.respond(snapshot(conn, save_id))
+                if action in ('messages', 'ready') and state['save']['mode'] == 'normal' and combat.pending(state.get('combat')):
+                    raise ValueError('Wait for the combat aftermath or retry it')
                 if action == 'messages':
+                    if state['save']['mode'] == 'combat':
+                        raise ValueError('Combat is at the table; use Ask AI-DM in Pilot Mode')
                     player = require_player(state, payload.get('playerId'))
                     body = str(payload.get('text', '')).strip()
                     if len(body) > 20000:
@@ -1247,7 +1266,11 @@ class Handler(BaseHTTPRequestHandler):
                     TYPING.get(save_id, {}).pop(player['id'], None)
                 elif action == 'ready':
                     player = require_player(state, payload.get('playerId'))
+                    handoff = state.get('combat')
+                    if state['save']['mode'] == 'combat' and payload.get('handoffId') != handoff['id']:
+                        raise ValueError('Combat has changed; refresh before marking it finished')
                     conn.execute('UPDATE players SET ready=? WHERE id=?', (int(bool(payload.get('ready'))), player['id']))
+                    combat.sync_ready(conn, save_id)
                 elif action == 'mode':
                     mode = payload.get('mode')
                     if mode != 'combat' or state['save']['mode'] != 'normal':
@@ -1255,9 +1278,7 @@ class Handler(BaseHTTPRequestHandler):
                     player_id = payload.get('playerId')
                     if player_id is not None:
                         require_player(state, player_id)
-                    conn.execute("UPDATE saves SET mode='combat' WHERE id=?", (save_id,))
-                    conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
-                                 (save_id, session['id'], player_id, 'combat_started', '', utc()))
+                    combat.start(conn, save_id, session['id'], player_id, utc())
                 else:
                     return self.send_error(404)
                 conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
@@ -1430,6 +1451,8 @@ class Handler(BaseHTTPRequestHandler):
     def run_generation(self, save_id, begin, publish, payload):
         with LOCK, db() as conn:
             context = begin(conn, save_id, payload)
+            if context is None:
+                return self.respond(snapshot(conn, save_id))
             session = active_session(conn, save_id)
             request_entry = {'id': str(uuid.uuid4()), 'sessionId': session['id'],
                              'purpose': context.get('purpose', 'advance'), 'startedAt': utc(),
@@ -1481,6 +1504,7 @@ class Handler(BaseHTTPRequestHandler):
                 # exception bodies (which may contain private context) in durable logs.
                 conn.execute("UPDATE ai_requests SET status='failed',finished_at=?,error=? WHERE id=?",
                              (utc(), 'AI provider request failed', request_entry['id']))
+                fail_combat_resume(conn, save_id, context)
                 GENERATING.pop(save_id, None)
             if isinstance(error, ValueError):
                 raise
@@ -1517,6 +1541,7 @@ class Handler(BaseHTTPRequestHandler):
                 with db() as conn:
                     conn.execute("UPDATE ai_requests SET status='failed',finished_at=?,error=? WHERE id=?",
                                  (utc(), 'AI response received; saving failed', request_entry['id']))
+                    fail_combat_resume(conn, save_id, context)
                 raise
             finally:
                 GENERATING.pop(save_id, None)
@@ -1551,6 +1576,71 @@ class Handler(BaseHTTPRequestHandler):
 
         def publish(conn, save_id, text):
             return publish_advance(conn, save_id, text, override or None)
+
+        return self.run_generation(save_id, begin, publish, payload)
+
+    def handle_combat_resume(self, save_id, payload, retry=False):
+        handoff_id = {}
+
+        def begin(conn, save_id, payload):
+            state = snapshot(conn, save_id)
+            player = require_player(state, payload.get('playerId'))
+            handoff = state.get('combat')
+            if not handoff or payload.get('handoffId') != handoff['id']:
+                raise ValueError('This combat handoff is no longer current')
+            session = active_session(conn, save_id)
+            if not session or not state['cartridge']['available']:
+                raise ValueError('Start a session and locate the cartridge before resuming')
+            if retry:
+                if handoff['phase'] != 'failed':
+                    # Retries delivered after success or while running are harmless.
+                    return None
+            else:
+                try:
+                    request_id = str(uuid.UUID(str(payload.get('requestId'))))
+                except ValueError as error:
+                    raise ValueError('A valid combat request ID is required') from error
+                skipped = payload.get('skip') is True
+                outcome = '' if skipped else str(payload.get('text') or '').strip()
+                override = payload.get('override') is True
+                if override and payload.get('pilot') is not True:
+                    raise ValueError('Enable Pilot Mode to override combat readiness')
+                if not skipped and (not outcome or len(outcome) > 20000):
+                    raise ValueError('Combat outcome must contain 1 to 20,000 characters, or choose Skip')
+                if handoff['request_id']:
+                    if (handoff['request_id'] == request_id and
+                        (handoff['player_id'] != player['id'] or handoff['outcome'] != outcome or
+                         bool(handoff['skipped']) != skipped or bool(handoff['override']) != override)):
+                        raise ValueError('This request was already used for a different combat outcome')
+                    return None
+                if not override and not (state['players'] and all(p['ready'] for p in state['players'])):
+                    raise ValueError('Waiting for everyone to finish combat')
+                conn.execute("""UPDATE combat_handoffs SET outcome=?,skipped=?,player_id=?,
+                    request_id=?,override=? WHERE id=?""",
+                    (outcome, int(skipped), player['id'], request_id, int(override), handoff['id']))
+                conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
+                    (save_id, session['id'], player['id'], 'combat_skipped' if skipped else 'combat_outcome', outcome, utc()))
+                if override:
+                    conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
+                        (save_id, session['id'], player['id'], 'combat_override', handoff['id'], utc()))
+                conn.execute("UPDATE saves SET mode='normal',updated_at=? WHERE id=?", (utc(), save_id))
+                conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
+            if save_id in GENERATING:
+                raise ValueError('The AI-DM is already responding')
+            conn.execute("UPDATE combat_handoffs SET phase='resuming' WHERE id=?", (handoff['id'],))
+            conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+            context = ai.build_context(snapshot(conn, save_id), DATA)
+            handoff_id['id'] = handoff['id']
+            GENERATING[save_id] = 'advance'
+            return context
+
+        def publish(conn, save_id, text):
+            # Commit completion and narration together; a new handoff may start in this response.
+            conn.execute("UPDATE combat_handoffs SET phase='complete' WHERE id=?", (handoff_id['id'],))
+            result = publish_advance(conn, save_id, text)
+            message_id = result['messages'][-1]['id']
+            conn.execute('UPDATE combat_handoffs SET message_id=? WHERE id=?', (message_id, handoff_id['id']))
+            return snapshot(conn, save_id)
 
         return self.run_generation(save_id, begin, publish, payload)
 

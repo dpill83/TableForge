@@ -404,6 +404,19 @@ These exchanges may later be selectively included in AI context.
 
 ## 14. AI-DM Messages
 
+The current SQLite runtime stores optional action-choice metadata alongside each
+published AI-DM message in nullable `messages.choices_json`. Save API responses
+expose it as `message.choices`, either null or `{beat, groups}`. Each group contains
+`playerId` (a saved player ID or null for party-wide) and `options` with `letter`
+and full plain-text `text` fields. The beat identifies the response window opened
+by this narration. Normal transcript bodies contain the public labeled choices;
+raw generation footers are removed before saving.
+
+Metadata is saved atomically with narration and survives whole-database backups.
+Older messages acquire null metadata through the additive schema migration and
+retain their original text. Choice clicks edit only the local draft; Send records
+the final edited contribution through the existing player-message path.
+
 AI-DM outputs should be saved before or when published.
 
 Recommended distinctions:
@@ -689,7 +702,9 @@ Do not require players to manage these manually during ordinary play.
 
 TableForge does not need to store every combat turn.
 
-It should preserve meaningful outcomes reported back to the AI-DM.
+It preserves meaningful outcomes reported back to the AI-DM as append-only combat_outcome events; combat_skipped and combat_override events record intentional skips and Pilot overrides. These events appear in shared history without being duplicated as player contributions.
+
+SQLite combat_handoffs records associate each handoff with its save/session, phase (fighting, outcome_pending, resuming, failed, complete), accepted report or skip, submitting player, request identity, override flag, and resulting narration ID. Save snapshots expose the latest handoff as combat. The combat-outcome endpoint accepts handoffId, requestId, playerId, text or skip, and optional pilot/override flags. combat-retry accepts handoffId and playerId. Both use the existing generation pipeline. Ready requests in Combat Mode also carry handoffId, preventing delayed exploration or earlier-combat Ready requests from marking a new combat finished. Startup recovers interrupted narration to failed and migrates existing combat saves to fighting without changing transcript or events.
 
 Possible data:
 
