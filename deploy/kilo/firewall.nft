@@ -1,0 +1,10 @@
+# This table affects only TableForge's TCP port. All other traffic keeps the
+# decisions of KILO's existing firewall/VPN tables.
+table inet tableforge {
+    chain input {
+        type filter hook input priority -10; policy accept;
+        tcp dport 8765 iifname "lo" counter accept
+        tcp dport 8765 iifname "@LAN_INTERFACE@" ip saddr @LAN_SUBNET@ ip daddr @LAN_ADDRESS@ counter accept
+        tcp dport 8765 counter drop
+    }
+}

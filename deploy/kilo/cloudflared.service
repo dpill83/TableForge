@@ -1,0 +1,28 @@
+[Unit]
+Description=Cloudflare Tunnel for TableForge
+After=network-online.target tableforge.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tableforge-tunnel
+Group=tableforge-tunnel
+ExecStart=/usr/bin/cloudflared tunnel --no-autoupdate --metrics 127.0.0.1:20241 run --token-file /etc/cloudflared/tableforge.token
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

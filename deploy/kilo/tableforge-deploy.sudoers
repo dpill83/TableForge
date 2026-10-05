@@ -1,0 +1,2 @@
+# The runner may restart this service only. No wildcard or shell permissions.
+tableforge-deploy ALL=(root) NOPASSWD: /usr/bin/systemctl restart tableforge.service
