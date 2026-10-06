@@ -33,13 +33,14 @@ const TableForgeMarkdown = (() => {
     return html;
   };
 
-  // Split only unescaped pipes; keep escapes for the safe inline renderer.
+  // Split only unescaped pipes. Remove structural pipe escapes even in code
+  // spans, while keeping other escapes for the safe inline renderer.
   const tableCells = line => {
     const cells = [];
     let cell = '', hasPipe = false;
     for (let i = 0; i < line.length; i++) {
       if (line[i] === '\\' && i + 1 < line.length) {
-        cell += line[i] + line[++i];
+        cell += line[i + 1] === '|' ? line[++i] : line[i] + line[++i];
       } else if (line[i] === '|') {
         cells.push(cell.trim()); cell = ''; hasPipe = true;
       } else cell += line[i];
@@ -97,7 +98,7 @@ const TableForgeMarkdown = (() => {
         const cellHtml = (cell, index, tag) => `<${tag}${tag === 'th' ? ' scope="col"' : ''}${table.alignments[index] ? ` class="markdown-align-${table.alignments[index]}"` : ''}>${inline(cell)}</${tag}>`;
         const rows = [];
         i += 2;
-        while (i < lines.length && lines[i].trim() && !special(lines[i])) {
+        while (i < lines.length && lines[i].trim()) {
           const row = tableCells(lines[i]);
           if (!row.hasPipe) break;
           rows.push(`<tr>${table.cells.map((_, index) => cellHtml(row.cells[index] || '', index, 'td')).join('')}</tr>`);

@@ -65,3 +65,25 @@ test('table cells escape HTML and allow only safe links', () => {
   assert.doesNotMatch(html, /<img|href="javascript:/);
   assert.match(html, /href="https:\/\/example.com" target="_blank" rel="noopener noreferrer"/);
 });
+
+test('borderless table rows retain cells resembling Markdown blocks', () => {
+  for (const firstCell of ['- item', '* item', '+ item', '1. first', '1) first', '> note', '# label', '```literal']) {
+    const html = render(`Name | Value\n--- | ---\n${firstCell} | 10\nNext | 20\n# Afterward`);
+    const escaped = firstCell.replace('>', '&gt;');
+    assert.ok(html.includes(`<tbody><tr><td>${escaped}</td><td>10</td></tr><tr><td>Next</td><td>20</td></tr></tbody>`), firstCell);
+    assert.ok(html.endsWith('</div><h1>Afterward</h1>'));
+  }
+});
+
+test('table code cells remove structural pipe escapes and preserve other backslashes', () => {
+  for (const [source, expected] of [
+    [String.raw`x\|y`, 'x|y'],
+    [String.raw`\path\|<tag>`, String.raw`\path|&lt;tag&gt;`],
+    [String.raw`x\\\|y`, String.raw`x\\|y`],
+  ]) {
+    const html = render('| Code | Value |\n| --- | --- |\n| `' + source + '` | 10 |');
+    assert.ok(html.includes(`<td><code>${expected}</code></td><td>10</td>`), source);
+  }
+  assert.equal(render('`x\\|y`'), '<p><code>x\\|y</code></p>');
+  assert.equal(render('```\nx\\|y\n```'), '<pre><code>x\\|y</code></pre>');
+});
