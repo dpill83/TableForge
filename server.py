@@ -219,6 +219,14 @@ def initialize():
                 sha256 TEXT PRIMARY KEY, snapshot TEXT NOT NULL
             );
         """)
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(pilot_messages)')}
+        if 'thread_player_id' not in columns:
+            # NULL retains the old shared archive without guessing reply ownership.
+            conn.execute('ALTER TABLE pilot_messages ADD COLUMN thread_player_id TEXT REFERENCES players(id)')
+        conn.execute('CREATE INDEX IF NOT EXISTS pilot_thread ON pilot_messages(save_id,thread_player_id,id)')
+        columns = {row['name'] for row in conn.execute('PRAGMA table_info(ai_requests)')}
+        if 'player_id' not in columns:
+            conn.execute('ALTER TABLE ai_requests ADD COLUMN player_id TEXT REFERENCES players(id)')
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(ai_usage)')}
         if 'request_id' not in columns:
             conn.execute('ALTER TABLE ai_usage ADD COLUMN request_id TEXT REFERENCES ai_requests(id)')
@@ -550,7 +558,7 @@ def require_player(state, player_id):
     return player
 
 
-def snapshot(conn, save_id):
+def snapshot(conn, save_id, pilot_player_id=None):
     save = conn.execute('SELECT * FROM saves WHERE id=?', (save_id,)).fetchone()
     if not save:
         raise ValueError('Save not found')
@@ -584,7 +592,7 @@ def snapshot(conn, save_id):
                       'resources': resources, 'available': (DATA / 'cartridges' / (cartridge['id'] + '.zip')).is_file()},
         'players': players,
         'messages': messages,
-        'pilot': [dict(row) for row in conn.execute('SELECT * FROM pilot_messages WHERE save_id=? ORDER BY id', (save_id,))],
+        'pilot': private_ask_messages(conn, save_id, pilot_player_id) if pilot_player_id else [],
         'sessions': sessions,
         'events': [dict(row) for row in conn.execute('SELECT * FROM session_events WHERE save_id=? ORDER BY id', (save_id,))],
         'checkpoint': checkpoint,
@@ -623,6 +631,12 @@ def activity(save_id):
     return {'aiDm': GENERATING.get(save_id), 'typing': typing_players(save_id)}
 
 
+def private_ask_messages(conn, save_id, player_id):
+    return [dict(row) for row in conn.execute(
+        'SELECT * FROM pilot_messages WHERE save_id=? AND thread_player_id=? ORDER BY id',
+        (save_id, player_id))]
+
+
 def request_log(conn, save_id, player_id, pilot):
     state = snapshot(conn, save_id)
     require_player(state, player_id)
@@ -635,6 +649,8 @@ def request_log(conn, save_id, player_id, pilot):
         FROM ai_requests r JOIN sessions s ON s.id=r.session_id
         LEFT JOIN ai_usage u ON u.request_id=r.id WHERE r.save_id=? ORDER BY r.rowid''', (save_id,))
     for row in rows:
+        if row['purpose'] == 'ask' and row['player_id'] != player_id:
+            continue
         entry = {
             'id': row['id'], 'sessionId': row['session_id'], 'sessionNumber': row['session_number'],
             'purpose': row['purpose'], 'provider': row['provider'],
@@ -651,6 +667,8 @@ def request_log(conn, save_id, player_id, pilot):
     # or treat that model as proof of what OpenAI was asked for or reported.
     for row in conn.execute('''SELECT u.*,s.number AS session_number FROM ai_usage u
             JOIN sessions s ON s.id=u.session_id WHERE u.save_id=? AND u.request_id IS NULL''', (save_id,)):
+        if row['purpose'] == 'ask':
+            continue  # Legacy Ask usage has no reliable conversation owner.
         entries.append({
             'id': f'usage-{row["id"]}', 'sessionId': row['session_id'], 'sessionNumber': row['session_number'],
             'purpose': row['purpose'], 'provider': 'openai', 'model': row['model'],
@@ -705,17 +723,19 @@ def begin_ask(conn, save_id, payload):
     if not active_session(conn, save_id):
         raise ValueError('Start the next session before playing')
     player = require_player(state, payload.get('playerId'))
+    if payload.get('pilot') is not True:
+        raise ValueError('Enable Pilot Mode to ask the AI-DM')
     body = str(payload.get('text', '')).strip()
     if not body or len(body) > 20000:
         raise ValueError('Message must contain 1 to 20,000 characters')
     if save_id in GENERATING:
         raise ValueError('The AI-DM is already responding')
     conn.execute(
-        'INSERT INTO pilot_messages (save_id,player_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?)',
-        (save_id, player['id'], 'pilot', player['character'], body, utc()),
+        'INSERT INTO pilot_messages (save_id,player_id,thread_player_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?,?)',
+        (save_id, player['id'], player['id'], 'pilot', player['name'], body, utc()),
     )
     conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
-    context = ai.build_context(snapshot(conn, save_id), DATA, purpose='ask')
+    context = ai.build_context(snapshot(conn, save_id, player['id']), DATA, purpose='ask')
     GENERATING[save_id] = 'ask'
     return context
 
@@ -886,13 +906,13 @@ def publish_advance(conn, save_id, text, override=None):
     return snapshot(conn, save_id)
 
 
-def publish_ask(conn, save_id, text):
+def publish_ask(conn, save_id, text, player_id):
     conn.execute(
-        'INSERT INTO pilot_messages (save_id,kind,name,body,created_at) VALUES (?,?,?,?,?)',
-        (save_id, 'ai', 'AI-DM', text, utc()),
+        'INSERT INTO pilot_messages (save_id,thread_player_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?)',
+        (save_id, player_id, 'ai', 'AI-DM', text, utc()),
     )
     conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
-    return snapshot(conn, save_id)
+    return snapshot(conn, save_id, player_id)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -974,6 +994,14 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'context':
                 with LOCK, db() as conn:
                     return self.respond(context_preview(conn, parts[2]))
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'ask':
+                query = parse_qs(urlparse(self.path).query)
+                with LOCK, db() as conn:
+                    state = snapshot(conn, parts[2])
+                    player = require_player(state, query.get('playerId', [None])[0])
+                    if query.get('pilot', ['false'])[0] != 'true':
+                        raise ValueError('Enable Pilot Mode to view your Ask AI-DM conversation')
+                    return self.respond({'pilot': private_ask_messages(conn, parts[2], player['id'])})
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'request-log':
                 query = parse_qs(urlparse(self.path).query)
                 with LOCK, db() as conn:
@@ -1464,10 +1492,11 @@ class Handler(BaseHTTPRequestHandler):
             configured_model = getattr(provider, 'model', runtime['model'])
             with LOCK, db() as conn:
                 conn.execute('''INSERT INTO ai_requests
-                    (id,save_id,session_id,purpose,provider,configured_model,status,started_at)
-                    VALUES (?,?,?,?,?,?,?,?)''',
+                    (id,save_id,session_id,purpose,provider,configured_model,status,started_at,player_id)
+                    VALUES (?,?,?,?,?,?,?,?,?)''',
                     (request_entry['id'], save_id, session['id'], request_entry['purpose'],
-                     provider_name, configured_model, 'sending', request_entry['startedAt']))
+                     provider_name, configured_model, 'sending', request_entry['startedAt'],
+                     payload.get('playerId') if request_entry['purpose'] == 'ask' else None))
 
             def capture_metadata(metadata):
                 with LOCK, db() as conn:
@@ -1645,7 +1674,10 @@ class Handler(BaseHTTPRequestHandler):
         return self.run_generation(save_id, begin, publish, payload)
 
     def handle_ask(self, save_id, payload):
-        return self.run_generation(save_id, begin_ask, publish_ask, payload)
+        def publish(conn, save_id, text):
+            return publish_ask(conn, save_id, text, payload['playerId'])
+
+        return self.run_generation(save_id, begin_ask, publish, payload)
 
     def handle_summary_draft(self, save_id, payload):
         # Drafts are returned for Pilot review; nothing is saved until they choose to keep it.

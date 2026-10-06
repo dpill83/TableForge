@@ -356,34 +356,67 @@
     catch(error){if(!onError?.(error))notify(error);return false;}
     finally {state.updating=false;render();}
   };
-  const fillPilotThread = () => {
+  let askDialog=null;
+  const askDialogActive=dialog=>dialog&&askDialog===dialog&&state.pilot&&state.identity===dialog.playerId&&state.save?.save.id===dialog.saveId&&$('pilotThread')===dialog.thread;
+  const renderAskThread = () => {
     const thread=$('pilotThread');
-    if(!thread||!state.save) return;
+    if(!thread) return;
+    const dialog=askDialog;
+    if(!askDialogActive(dialog)){
+      thread.replaceChildren();
+      if($('pilotAsk')){$('pilotAsk').value='';$('pilotAsk').disabled=true;}
+      if($('pilotSend'))$('pilotSend').disabled=true;
+      return;
+    }
     const atBottom=thread.scrollHeight-thread.scrollTop-thread.clientHeight<48;
     thread.replaceChildren();
-    if(!state.save.pilot?.length){
+    if(!dialog.messages.length){
       const empty=document.createElement('div');
       empty.className='muted';
-      empty.textContent='Ask a question about the adventure, rules, or what happens next.';
+      empty.textContent=dialog.loaded?'Ask a question about the adventure, rules, or what happens next.':'Loading your private conversation…';
       thread.append(empty);
     }
-    for(const m of state.save.pilot||[]){
+    for(const m of dialog.messages){
       const row=document.createElement('div');
       row.className='pilot-line'+(m.kind==='ai'?' ai':'');
       const name=document.createElement('strong');
       name.textContent=m.name;
+      const header=document.createElement('div');
+      header.className='pilot-line-header';
+      header.append(name);
+      const date=new Date(m.created_at);
+      if(!Number.isNaN(date.getTime())){
+        const time=document.createElement('time');
+        time.dateTime=m.created_at;
+        time.textContent=date.toLocaleTimeString([], {hour:'numeric',minute:'2-digit'});
+        time.title=date.toLocaleString();
+        header.append(time);
+      }
       const body=document.createElement('div');
       body.className='markdown-body';
       body.innerHTML=TableForgeMarkdown.render(m.body);
-      row.append(name, body);
+      row.append(header, body);
       thread.append(row);
     }
     if(atBottom) thread.scrollTop=thread.scrollHeight;
     const send=$('pilotSend'), field=$('pilotAsk');
     const busy=state.asking||state.generating||!!state.save.activity?.aiDm;
-    if(send) send.disabled=!state.identity||!state.pilot||busy;
+    if(send) send.disabled=!dialog.loaded||!state.identity||!state.pilot||busy;
     if(field) field.disabled=busy;
   };
+  const refreshAskThread=async(dialog=askDialog)=>{
+    if(!askDialogActive(dialog)||dialog.loading)return;
+    const revision=dialog.revision;
+    dialog.loading=true;
+    try{
+      const result=await request(`saves/${dialog.saveId}/ask?playerId=${encodeURIComponent(dialog.playerId)}&pilot=true`);
+      if(!askDialogActive(dialog)||revision!==dialog.revision)return;
+      dialog.messages=result.pilot;dialog.loaded=true;
+      $('askHistoryError').textContent='';renderAskThread();
+    }catch(error){if(askDialogActive(dialog)&&revision===dialog.revision)$('askHistoryError').textContent=error.message;}
+    finally{dialog.loading=false;}
+  };
+  const fillPilotThread=()=>{renderAskThread();refreshAskThread();};
   // Presence comes from the server so every browser sees the AI-DM and other players typing.
   const aiDmBusy=purpose=>(purpose==='advance'&&state.generating)||(purpose==='ask'&&state.asking)||state.save?.activity?.aiDm===purpose;
   const refreshChoiceButtons=()=>{
@@ -1018,7 +1051,8 @@
     $('pilotPanel').classList.toggle('hidden',!state.pilot);
     refreshContextFlag();
     if(!state.pilot){
-      if($('sceneImageDialog')||$('moduleViewerLoading')||$('moduleViewerMessage')||$('moduleValidatorDialog')||$('aiRequestLogDialog'))$('modalRoot').replaceChildren();
+      if($('pilotThread')||$('sceneImageDialog')||$('moduleViewerLoading')||$('moduleViewerMessage')||$('moduleValidatorDialog')||$('aiRequestLogDialog'))$('modalRoot').replaceChildren();
+      askDialog=null;
       const showingReader=$('mainChat').classList.contains('showing-tool')&&
         (!$('castViewer').classList.contains('hidden')||!$('sceneViewer').classList.contains('hidden')||!$('moduleViewer').classList.contains('hidden'));
       if(showingReader)showTool(null);
@@ -1112,26 +1146,34 @@
   },2500);
   $('askAi').onclick=()=>{
     if(!state.pilot||!state.save||!state.identity)return;
-    modal('<h3>Ask AI-DM</h3><p>Pilot conversation is saved separately from the table chat. Asking does not change Ready or advance the table.</p><div id="pilotThread" class="pilot-chat-log" role="log" aria-label="Pilot conversation"></div><div id="pilotAskStatus" class="muted" role="status" aria-live="polite"></div><label>Question<textarea id="pilotAsk" rows="4" maxlength="20000" placeholder="Ask the AI-DM a question"></textarea></label><div class="actions"><button class="btn" data-close>Close</button><button class="btn primary" id="pilotSend">Send question</button></div>');
+    modal('<h3>Ask AI-DM</h3><p>Your questions and replies are private to your selected player profile and saved separately from table chat. Asking does not change Ready or advance the table.</p><div id="pilotThread" class="pilot-chat-log" role="log" aria-label="Your private AI-DM conversation"></div><div id="askHistoryError" class="muted" role="status"></div><div id="pilotAskStatus" class="muted" role="status" aria-live="polite"></div><label>Question<textarea id="pilotAsk" rows="4" maxlength="20000" placeholder="Ask the AI-DM a question"></textarea></label><div class="actions"><button class="btn" data-close>Close</button><button class="btn primary" id="pilotSend">Send question</button></div>');
+    const dialog=askDialog={saveId:state.save.save.id,playerId:state.identity,thread:$('pilotThread'),messages:[],loaded:false,loading:false,revision:0};
     fillPilotThread();renderActivity();
     const field=$('pilotAsk');
     const send=async()=>{
       const body=field.value.trim();
       if(!body)return notify(Error('Enter a question for the AI-DM.'));
       if(state.asking||state.generating||state.save.activity?.aiDm)return;
-      const previousId=state.save.pilot?.at(-1)?.id||0;
+      if(!askDialogActive(dialog)||!dialog.loaded)return;
+      const previousId=dialog.messages.at(-1)?.id||0;
+      dialog.revision++;
       state.asking=true;render();
       try{
-        state.save=await request('saves/'+state.save.save.id+'/ask',{playerId:state.identity,text:body});
-        field.value='';
+        const result=await request('saves/'+dialog.saveId+'/ask',{playerId:dialog.playerId,pilot:true,text:body});
+        if(askDialogActive(dialog)){dialog.revision++;dialog.messages=result.pilot;dialog.loaded=true;field.value='';}
+        result.pilot=[];
+        if(state.save?.save.id===dialog.saveId)state.save=result;
       }catch(error){
         try{
-          const latest=await request('saves/'+state.save.save.id);
-          if(latest.pilot.some(m=>m.id>previousId&&m.player_id===state.identity&&m.body===body))field.value='';
-          state.save=latest;
+          const latest=await request(`saves/${dialog.saveId}/ask?playerId=${encodeURIComponent(dialog.playerId)}&pilot=true`);
+          if(askDialogActive(dialog)){
+            dialog.revision++;
+            dialog.messages=latest.pilot;dialog.loaded=true;
+            if(latest.pilot.some(m=>m.id>previousId&&m.player_id===dialog.playerId&&m.body===body))field.value='';
+          }
         }catch(refreshError){console.error(refreshError);}
         notify(error);
-      }finally{state.asking=false;render();field.focus();}
+      }finally{state.asking=false;render();if(askDialogActive(dialog))field.focus();}
     };
     $('pilotSend').onclick=send;
     field.addEventListener('keydown',event=>{if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send();}});

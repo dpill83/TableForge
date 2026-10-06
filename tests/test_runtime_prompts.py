@@ -256,7 +256,7 @@ class PromptFlowTest(unittest.TestCase):
         state = self.api(f'/api/saves/{save_id}')
         fake = test_flow.FakeProvider('Use the encounter tactics.')
         with patch.object(ai, 'current_provider', return_value=fake):
-            self.api(f'/api/saves/{save_id}/ask', {'playerId': state['players'][0]['id'], 'text': 'What are its tactics?'})
+            self.api(f'/api/saves/{save_id}/ask', {'pilot': True, 'playerId': state['players'][0]['id'], 'text': 'What are its tactics?'})
         operational = ai.chat_messages(fake.context)
         self.assertTrue(operational[0]['content'].startswith(ai.ASK_PROMPT))
         self.assertNotIn('narrationPrompt', fake.context)
