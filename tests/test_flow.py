@@ -328,6 +328,47 @@ class FlowTest(unittest.TestCase):
         self.assertIn('# Test adventure', fake.context['module'])
         self.assertTrue(any(m['body'] == 'I look ahead.' for m in fake.context['messages']))
 
+    def test_ready_without_new_text_requests_continuation_despite_old_player_history(self):
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                save_id = self.ready_save()
+                if legacy:
+                    with server.db() as conn:
+                        prompt_id = runtime_prompts.store(conn, runtime_prompts.legacy_snapshot())
+                        conn.execute('UPDATE saves SET narration_prompt_id=? WHERE id=?', (prompt_id, save_id))
+                fake = FakeProvider('Will you help the crew, discuss the blade, or keep watch?')
+                with patch.object(ai, 'current_provider', return_value=fake):
+                    before = self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
+                    for player in before['players']:
+                        self.api(f'/api/saves/{save_id}/ready', {'playerId': player['id'], 'ready': True})
+                    preview = self.api(f'/api/saves/{save_id}/context')
+                    continued = self.api(f'/api/saves/{save_id}/advance', {'beat': 2})
+                request = preview['messages'][-1]
+                self.assertEqual(request['role'], 'user')
+                self.assertIn('without adding any new player text', request['content'])
+                self.assertIn('Do not repeat the previous narration', request['content'])
+                self.assertIn('or treat any offered choice as selected', request['content'])
+                self.assertEqual(ai.chat_messages(fake.context), preview['messages'])
+                self.assertEqual(preview['report']['transcript']['currentBeat'], 0)
+                # The continuation request is provider context, not an invented player contribution.
+                self.assertEqual([m for m in continued['messages'] if m['kind'] == 'player'],
+                                 [m for m in before['messages'] if m['kind'] == 'player'])
+
+    def test_sent_choice_and_other_player_ready_reach_the_provider_as_a_new_action(self):
+        save_id = self.ready_save()
+        fake = FakeProvider('Will you help the crew, discuss the blade, or keep watch?')
+        with patch.object(ai, 'current_provider', return_value=fake):
+            before = self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
+            first, second = [p['id'] for p in before['players']]
+            self.api(f'/api/saves/{save_id}/messages',
+                     {'playerId': first, 'text': 'I keep watch.', 'beat': 2, 'requestId': str(uuid.uuid4())})
+            self.api(f'/api/saves/{save_id}/ready', {'playerId': second, 'ready': True})
+            self.api(f'/api/saves/{save_id}/advance', {'beat': 2})
+        messages = ai.chat_messages(fake.context)
+        self.assertEqual(messages[-1], {'role': 'user', 'content': 'George: I keep watch.'})
+        self.assertFalse(any('without adding any new player text' in m['content'] for m in messages))
+        self.assertEqual(fake.context['report']['transcript']['currentBeat'], 1)
+
     def test_provider_error_leaves_beat_and_ready(self):
         save_id = self.ready_save()
         with patch.object(ai, 'current_provider', return_value=BoomProvider()):
