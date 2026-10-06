@@ -414,6 +414,15 @@ textarea{padding:10px;resize:none}
 .markdown-body pre{overflow:auto;margin:.5em 0 .75em;padding:.75em;border-radius:7px;background:#111820}
 .markdown-body pre code{padding:0;background:none}
 .markdown-body a{color:#a9cbea}
+.markdown-table-scroll{max-width:100%;overflow-x:auto;margin:.5em 0 .75em}
+.markdown-table-scroll:focus-visible{outline:2px solid #a9cbea;outline-offset:2px}
+.markdown-body table{border-collapse:collapse;width:max-content;min-width:100%;font-size:inherit}
+.markdown-body th,.markdown-body td{padding:.45em .65em;border:1px solid var(--border2);text-align:left;vertical-align:top}
+.markdown-body th{background:#171d25;font-weight:600}
+.markdown-body tbody tr:nth-child(even){background:#111820}
+.markdown-body .markdown-align-left{text-align:left}
+.markdown-body .markdown-align-center{text-align:center}
+.markdown-body .markdown-align-right{text-align:right}
 .message-actions{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-top:8px}
 .copy-message{
   min-height:28px;
