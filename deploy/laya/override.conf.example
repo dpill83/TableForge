@@ -1,0 +1,4 @@
+[Service]
+Environment="ROUTER_MODEL_CHEAP=gpt-6-luna"
+Environment="ROUTER_MODEL_STANDARD=gpt-6.1-sol"
+Environment="ROUTER_MODEL_HEAVY=gpt-6-astra"

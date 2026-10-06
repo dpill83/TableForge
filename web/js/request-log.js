@@ -26,7 +26,7 @@ const TableForgeRequestLog = (() => {
       .map(([key, value]) => `${key}: ${value}`).join(' · ');
     const requested = entry.requestedModel ?? (entry.legacy ? null : entry.model);
     return `<details class="context-message ai-request" data-request-id="${esc(entry.id)}">
-      <summary><strong>${esc(purpose)}</strong> · <span class="route-badge route-${badge}">${esc(routeLabel)}</span> · ${esc(entry.status)} · ${esc(requested || entry.model || 'Model unavailable')}
+      <summary><strong>${esc(purpose)}</strong> · <span class="route-badge route-${badge}">${esc(routeLabel)}</span> · ${esc(entry.status)} · ${esc(requested || entry.model || 'Model unavailable')}${route?.requestedEffort ? ` · ${esc(route.requestedEffort)} effort` : ''}
         ${fallbackLabel ? `<span class="route-badge route-fallback">${esc(fallbackLabel)}</span>` : ''}
         <span class="request-meta">${esc(entry.provider)} · Session ${esc(entry.sessionNumber ?? '?')} · ${esc(when(entry.startedAt))} · Input ${esc(available(entry.inputTokens))} / Output ${esc(available(entry.outputTokens))} / Total ${esc(available(entry.totalTokens))} tokens · ${esc(cost(entry.estimatedCostUsd))}</span>
       </summary>
@@ -36,6 +36,7 @@ const TableForgeRequestLog = (() => {
         ${row('Router contacted', flag(route?.routerContacted))}
         ${row('Selected tier', available(route?.tier))}
         ${row('Router-selected model', available(route?.model))}
+        ${row('Router-selected reasoning effort', route?.routerSelectedEffort ?? 'Not recorded / supplied')}
         ${row('Router reason', available(route?.reason))}
         ${row('Router scores', scores || 'Unavailable')}
         ${row('Laya/router fallback', flag(internalFallback))}
@@ -44,6 +45,13 @@ const TableForgeRequestLog = (() => {
         ${row('TableForge router fallback reason', available(tableforgeReason))}
         ${row('Configured default / fallback model', available(entry.configuredModel))}
         ${row(entry.provider === 'mock' ? 'Mock request model' : 'Model requested from OpenAI', available(requested))}
+        ${row('Configured default reasoning effort', route?.configuredEffort ?? 'Not recorded / configured')}
+        ${row('Reasoning effort requested from OpenAI', route?.requestedEffort ?? (route?.effortSource === 'provider default' ? 'Provider default (not sent)' : 'Not recorded / sent'))}
+        ${row('Reasoning effort source', route?.effortSource ?? 'Not recorded')}
+        ${row('Router effort reason', route?.effortReason ?? 'Not recorded / supplied')}
+        ${row('Router effort scores', route?.effortScores ? Object.entries(route.effortScores).map(([key, value]) => `${key}: ${value}`).join(' · ') : 'Not recorded / supplied')}
+        ${row('Router effort fallback', flag(route?.effortFallbackUsed))}
+        ${route?.effortNotice ? row('Reasoning effort note', route.effortNotice) : ''}
         ${row('Model reported by OpenAI', available(entry.reportedModel))}
         ${row('OpenAI service tier', available(entry.serviceTier))}
         ${entry.legacy ? row('Metered model (legacy)', available(entry.model)) : ''}

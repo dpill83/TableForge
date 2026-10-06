@@ -49,6 +49,22 @@ The `.env` file is plain text, excluded from Git, and outside the browser-served
 
 Set `TABLEFORGE_ROUTER_URL=http://10.0.0.22:8001/route` in `.env` and restart to route OpenAI text requests. An unset or blank value preserves the configured model and existing behavior. The router receives `POST {"prompt":"..."}` containing a task description capped at 2,400 characters: purpose (`advance`, `ask`, or `summary`), bounded recent player/Pilot requests, and brief relevant reply/combat context. It receives no cartridge, full transcript, API key, or generation prompt. These snippets can contain private Pilot information, so use a trusted router.
 
+Reasoning effort is optional. `TABLEFORGE_REASONING_EFFORT` sets a default, and
+`TABLEFORGE_ROUTER_EFFORT_CHEAP`, `_STANDARD`, and `_HEAVY` provide per-tier overrides
+for older routers. Allowed values are `low`, `medium`, `high`, and `xhigh`.
+A valid router `reasoning_effort` takes precedence over tier configuration, then the
+default. TableForge router failures use only the configured default effort. Blank
+settings and older router replies preserve the provider-default request behavior.
+Effort is sent only for known GPT-6 Luna, GPT-6 Sol, GPT-6.1 Sol, and GPT-6 Astra
+models (including their snapshots); other models keep their existing payload and
+show an explanatory note. Invalid router effort is ignored with a sanitized note.
+The AI Request Log shows requested effort in compact rows and separately records
+router-selected effort, configured default, source, effort reason/scores/fallback,
+and the exact effort sent. It does not claim OpenAI reported an effort it did not return.
+Older records show effort as unrecorded. No SQLite migration is needed.
+The optional [Laya router update](deploy/laya/README.md) provides independent
+Light/Normal/Hard effort classification within each of the three existing model tiers.
+
 The returned `model` selects the Chat Completions model for that request. A failed request, 4-second socket timeout, malformed/oversized response, or missing/invalid model falls back to `TABLEFORGE_AIDM_MODEL` (then legacy `TABLEFORGE_MODEL`, then the existing default). No retries are made. Mock narration and image generation are unaffected. Routing metadata is attached to `GeneratedText.routing`: `enabled`, `tier`, router-selected `model`, `reason`, numeric `scores`, and separate fallback layers:
 
 - `routerContacted`: whether an HTTP response was reached. A malformed response or HTTP error can mean contact succeeded but the decision was unusable.

@@ -36,6 +36,8 @@ OPENAI_TIMEOUT = 60
 ROUTER_TIMEOUT = 4
 ROUTER_PROMPT_CAP = 2400
 ROUTER_RESPONSE_CAP = 16_384
+REASONING_EFFORTS = ('low', 'medium', 'high', 'xhigh')
+EFFORT_MODELS = ('gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra')
 LOGGER = logging.getLogger(__name__)
 
 
@@ -426,7 +428,20 @@ def routing_state(enabled):
             'routerInternalFallbackUsed': None if enabled else False,
             'routerInternalFallbackReason': None,
             'tableforgeRouterFallbackUsed': False, 'tableforgeRouterFallbackReason': None,
-            'fallback': False, 'fallbackReason': None}
+            'fallback': False, 'fallbackReason': None,
+            'routerSelectedEffort': None, 'configuredEffort': None,
+            'requestedEffort': None, 'effortSource': None, 'effortNotice': None}
+
+
+def configured_effort(name):
+    value = os.environ.get(name, '').strip().lower()
+    if value and value not in REASONING_EFFORTS:
+        raise ValueError(f'{name} must be low, medium, high, or xhigh')
+    return value or None
+
+
+def supports_effort(model):
+    return any(model == name or model.startswith(name + '-') for name in EFFORT_MODELS)
 
 
 def router_internal_fallback(data, reason):
@@ -448,6 +463,9 @@ class OpenAIProvider:
         self.model = model
         self.router_url = (os.environ.get('TABLEFORGE_ROUTER_URL', '')
                            if router_url is None else router_url).strip()
+        self.effort = configured_effort('TABLEFORGE_REASONING_EFFORT')
+        self.tier_efforts = {tier: configured_effort('TABLEFORGE_ROUTER_EFFORT_' + tier.upper())
+                            for tier in ('cheap', 'standard', 'heavy')}
 
     def select_model(self, context):
         routing = routing_state(bool(self.router_url))
@@ -478,6 +496,20 @@ class OpenAIProvider:
             internal_used, internal_reason = router_internal_fallback(data, routing['reason'])
             routing.update(routerInternalFallbackUsed=internal_used,
                            routerInternalFallbackReason=internal_reason)
+            effort = data.get('reasoning_effort')
+            if isinstance(effort, str) and effort in REASONING_EFFORTS:
+                routing['routerSelectedEffort'] = effort
+                routing['effortReason'] = (' '.join(data['effort_reason'].split())[:240]
+                                          if isinstance(data.get('effort_reason'), str) else None)
+                routing['effortFallbackUsed'] = (data.get('effort_fallback_used')
+                                                if type(data.get('effort_fallback_used')) is bool else None)
+                effort_scores = data.get('effort_scores')
+                if isinstance(effort_scores, dict):
+                    routing['effortScores'] = {key: value for key, value in effort_scores.items()
+                                              if key in ('light', 'normal', 'hard') and type(value) in (int, float)
+                                              and math.isfinite(value) and 0 <= value <= 1} or None
+            elif effort is not None:
+                routing['effortNotice'] = 'Router effort invalid; using configured effort or provider default'
             scores = data.get('scores')
             if isinstance(scores, dict):
                 routing['scores'] = {tier: value for tier, value in scores.items()
@@ -511,9 +543,25 @@ class OpenAIProvider:
 
     def generate(self, context, on_request=None, on_metadata=None):
         model, routing = self.select_model(context)
+        tier_effort = self.tier_efforts.get(routing['tier']) if not routing['fallback'] else None
+        effort = routing['routerSelectedEffort'] or tier_effort or self.effort
+        routing['configuredEffort'] = self.effort
+        if effort and supports_effort(model):
+            routing['requestedEffort'] = effort
+            routing['effortSource'] = ('router' if routing['routerSelectedEffort'] else
+                                      'tier configuration' if tier_effort else 'default configuration')
+        elif effort:
+            routing['effortNotice'] = 'Effort omitted: model support has not been established'
+        else:
+            routing['effortSource'] = 'provider default'
+        LOGGER.info('TableForge reasoning: model=%s requested_effort=%s source=%s',
+                    model, routing['requestedEffort'], routing['effortSource'])
         if on_metadata:
             on_metadata({'configuredModel': self.model, 'requestedModel': model, 'routing': routing})
-        payload_text = json.dumps({'model': model, 'messages': chat_messages(context)})
+        payload_data = {'model': model, 'messages': chat_messages(context)}
+        if routing['requestedEffort']:
+            payload_data['reasoning_effort'] = routing['requestedEffort']
+        payload_text = json.dumps(payload_data)
         if on_request:
             on_request(payload_text)
         payload = payload_text.encode()

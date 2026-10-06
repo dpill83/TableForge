@@ -119,3 +119,26 @@ test('untrusted routing, provider and payload strings are escaped', () => {
   assert.match(html, /Temporary provider request payload/);
   assert.match(html, /role="alert"/);
 });
+
+test('effort is visible in the compact row and separately audited in details', () => {
+  const html = render({...entry, routing: {...entry.routing, routerSelectedEffort: 'xhigh',
+    configuredEffort: 'low', requestedEffort: 'xhigh', effortSource: 'router',
+    effortReason: 'Careful reasoning', effortScores: {light: 0.1, normal: 0.1, hard: 0.8},
+    effortFallbackUsed: false}});
+  assert.match(html.split('</summary>')[0], /xhigh effort/);
+  assert.match(html, /Router-selected reasoning effort<\/dt><dd>xhigh/);
+  assert.match(html, /Reasoning effort requested from OpenAI<\/dt><dd>xhigh/);
+  assert.match(html, /Configured default reasoning effort<\/dt><dd>low/);
+  assert.match(html, /hard: 0.8/);
+  assert.match(html, /Router effort fallback<\/dt><dd>false/);
+});
+
+test('legacy effort is unrecorded and provider default is not invented as medium', () => {
+  assert.match(render(entry), /Reasoning effort source<\/dt><dd>Not recorded/);
+  const html = render({...entry, routing: {...entry.routing, effortSource: 'provider default'}});
+  assert.match(html, /Provider default \(not sent\)/);
+  assert.doesNotMatch(html.split('</summary>')[0], /medium effort/);
+  const unsafe = render({...entry, routing: {...entry.routing, requestedEffort: '<script>',
+    effortReason: '<script>', effortScores: {'<script>': '<script>'}}});
+  assert.doesNotMatch(unsafe, /<script>/);
+});
