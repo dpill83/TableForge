@@ -816,7 +816,18 @@
   let typingSentAt=0;
   const sendTyping=typing=>{if(!state.save||!state.identity)return;typingSentAt=typing?Date.now():0;request('saves/'+state.save.save.id+'/typing',{playerId:state.identity,typing}).catch(()=>{});};
   field.addEventListener('input',()=>{const typing=!!field.value.trim();if(typing&&Date.now()-typingSentAt>2500)sendTyping(true);else if(!typing&&typingSentAt)sendTyping(false);});
-  field.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();$('sendBtn').click();}});
+  const sendOnEnter=event=>{
+    if(event.key!=='Enter'||event.shiftKey||event.isComposing)return;
+    // A focused Ready button must not leave a selected action unsent on Enter.
+    // Its ordinary click still allows contributing nothing, even with a draft.
+    if(event.currentTarget===readyButton&&(!pendingContribution()||combatPending()))return;
+    event.preventDefault();
+    if(event.repeat||combatPending())return;
+    field.focus();
+    $('sendBtn').click();
+  };
+  field.addEventListener('keydown',sendOnEnter);
+  readyButton.addEventListener('keydown',sendOnEnter);
   $('emojiBtn').onclick=()=>{field.value+=' 🙂';resize();field.focus();};
   $('attachmentBtn').onclick=event=>{
     event.stopPropagation();
