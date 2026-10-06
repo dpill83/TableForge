@@ -1016,6 +1016,9 @@ Flyman block.
         for tier, model in [('cheap', 'gpt-6-luna'), ('standard', 'gpt-6-sol'), ('heavy', 'gpt-6-astra')]:
             with self.subTest(tier=tier):
                 route = {'tier': tier, 'model': model, 'reason': 'Confidence threshold cleared',
+                         'reasoning_effort': 'low', 'effort_reason': 'Routine task',
+                         'effort_scores': {'light': 0.8, 'normal': 0.15, 'hard': 0.05},
+                         'effort_fallback_used': False,
                          'router_internal_fallback_used': False,
                          'scores': {'cheap': 0.49, 'standard': 0.42, 'heavy': 0.09}}
                 entry, sent, result = self.logged_openai(save_id, route, reported=model + '-snapshot')
@@ -1026,6 +1029,11 @@ Flyman block.
                 self.assertFalse(entry['routing']['routerInternalFallbackUsed'])
                 self.assertFalse(entry['routing']['tableforgeRouterFallbackUsed'])
                 self.assertEqual(entry['requestedModel'], sent[0]['model'])
+                self.assertEqual(sent[0]['reasoning_effort'], 'low')
+                self.assertEqual(entry['routing']['requestedEffort'], 'low')
+                self.assertEqual(entry['routing']['routerSelectedEffort'], 'low')
+                self.assertEqual(entry['routing']['effortScores'], route['effort_scores'])
+                self.assertFalse(entry['routing']['effortFallbackUsed'])
                 self.assertEqual(entry['reportedModel'], model + '-snapshot')
                 self.assertEqual(entry['serviceTier'], 'default')
                 self.assertEqual(entry['provider'], 'openai')

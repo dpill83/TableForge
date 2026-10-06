@@ -94,6 +94,7 @@ class RoutingTest(unittest.TestCase):
                 self.assertEqual(json.loads(second.args[0].data)['model'], model)
                 self.assertEqual(captured, [second.args[0].data.decode()])
                 self.assertEqual(result.routing, {**ai.routing_state(True), 'tier': tier, 'model': model,
+                                                 'effortSource': 'provider default',
                                                  'reason': 'Task classification', 'scores': {tier: 0.9},
                                                  'routerContacted': True, 'routerInternalFallbackUsed': False})
                 self.assertEqual(result.model, model)
