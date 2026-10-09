@@ -550,7 +550,7 @@ class OpenAIProvider:
                    routing['tableforgeRouterFallbackUsed'], routing['tableforgeRouterFallbackReason'])
         return self.model if routing['fallback'] else routing['model'], routing
 
-    def generate(self, context, on_request=None, on_metadata=None):
+    def generate(self, context, on_request=None, on_metadata=None, on_response=None):
         model, routing = self.select_model(context)
         tier_effort = self.tier_efforts.get(routing['tier']) if not routing['fallback'] else None
         effort = routing['routerSelectedEffort'] or tier_effort or self.effort
@@ -588,6 +588,14 @@ class OpenAIProvider:
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as error:
             raise ValueError(f'OpenAI request failed: {error}') from error
         choices = data.get('choices') if isinstance(data, dict) else None
+        if isinstance(data, dict):
+            generated = GeneratedText('', usage=data.get('usage'), model=data.get('model') or model,
+                                      service_tier=data.get('service_tier'), routing=routing,
+                                      configured_model=self.model, requested_model=model,
+                                      reported_model=data.get('model'))
+            if on_response:
+                # A received response can be billable even when its text is unusable.
+                on_response(generated)
         if not choices:
             raise ValueError('OpenAI returned no choices')
         text = str((choices[0].get('message') or {}).get('content') or '').strip()

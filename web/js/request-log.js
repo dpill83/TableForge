@@ -56,11 +56,15 @@ const TableForgeRequestLog = (() => {
         ${row('OpenAI service tier', available(entry.serviceTier))}
         ${entry.legacy ? row('Metered model (legacy)', available(entry.model)) : ''}
         ${row('Input tokens', available(entry.inputTokens))}
+        ${row('Cached input tokens (included in input)', available(entry.cachedInputTokens))}
+        ${row('Cache write tokens (included in input)', available(entry.cacheWriteTokens))}
         ${row('Output tokens', available(entry.outputTokens))}
+        ${row('Reasoning tokens (included in output)', available(entry.reasoningTokens))}
         ${row('Total tokens', available(entry.totalTokens))}
         ${row('Estimated request cost', cost(entry.estimatedCostUsd))}
         ${row('Finished', entry.finishedAt ? when(entry.finishedAt) : 'Unavailable')}
       </dl>
+      <p class="muted">Output tokens include billed reasoning; reasoning tokens are not added again. Each attempt, including a retry or failed response with reported usage, has its own cost.</p>
       ${fallbackLabel ? '<p class="request-fallback">Fallback layer is separate from the provider generation status above.</p>' : ''}
       ${route && (route.routerContacted == null || internalFallback == null) ? '<p class="muted">Unknown means this fallback layer or router contact status was not recorded or reported.</p>' : ''}
       ${entry.legacy ? '<p class="muted">Older record: routing and distinct provider models were not recorded.</p>' : ''}

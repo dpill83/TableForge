@@ -186,7 +186,7 @@ def initialize():
                 purpose TEXT NOT NULL, model TEXT NOT NULL,
                 input_tokens INTEGER, cached_tokens INTEGER NOT NULL DEFAULT 0,
                 cache_write_tokens INTEGER NOT NULL DEFAULT 0,
-                output_tokens INTEGER, total_tokens INTEGER,
+                output_tokens INTEGER, total_tokens INTEGER, reasoning_tokens INTEGER,
                 estimated_cost_usd REAL, service_tier TEXT,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(save_id) REFERENCES saves(id),
@@ -230,6 +230,8 @@ def initialize():
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(ai_usage)')}
         if 'request_id' not in columns:
             conn.execute('ALTER TABLE ai_usage ADD COLUMN request_id TEXT REFERENCES ai_requests(id)')
+        if 'reasoning_tokens' not in columns:
+            conn.execute('ALTER TABLE ai_usage ADD COLUMN reasoning_tokens INTEGER')
         conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS ai_usage_request ON ai_usage(request_id) '
                      'WHERE request_id IS NOT NULL')
         # A restarted host must not claim an interrupted provider request is still sending.
@@ -645,7 +647,8 @@ def request_log(conn, save_id, player_id, pilot):
     captures = {entry['id']: entry for entry in AI_REQUEST_LOGS.get(save_id, [])}
     entries = []
     rows = conn.execute('''SELECT r.*,s.number AS session_number,
-        u.input_tokens,u.output_tokens,u.total_tokens,u.estimated_cost_usd,u.service_tier
+        u.input_tokens,u.cached_tokens,u.cache_write_tokens,u.reasoning_tokens,
+        u.output_tokens,u.total_tokens,u.estimated_cost_usd,u.service_tier
         FROM ai_requests r JOIN sessions s ON s.id=r.session_id
         LEFT JOIN ai_usage u ON u.request_id=r.id WHERE r.save_id=? ORDER BY r.rowid''', (save_id,))
     for row in rows:
@@ -1514,14 +1517,38 @@ class Handler(BaseHTTPRequestHandler):
                         request_entry['payload'] = body
                         AI_REQUEST_LOGS.setdefault(save_id, []).append(request_entry)
 
+            response_captured = False
+
+            def capture_response(generated):
+                nonlocal response_captured
+                with LOCK, db() as conn:
+                    values = metering.record(generated.model or 'unknown', generated.usage,
+                                             generated.service_tier)
+                    conn.execute('''INSERT INTO ai_usage
+                        (save_id,session_id,purpose,model,input_tokens,cached_tokens,cache_write_tokens,
+                         output_tokens,total_tokens,estimated_cost_usd,service_tier,created_at,request_id,
+                         reasoning_tokens) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                        (save_id, request_entry['sessionId'], request_entry['purpose'], *values, utc(),
+                         request_entry['id'], metering.reasoning_tokens(generated.usage)))
+                    conn.execute('''UPDATE ai_requests SET configured_model=COALESCE(?,configured_model),
+                        requested_model=COALESCE(?,requested_model),reported_model=?,routing=COALESCE(?,routing)
+                        WHERE id=?''', (generated.configured_model, generated.requested_model,
+                                       generated.reported_model,
+                                       json.dumps(generated.routing) if generated.routing is not None else None,
+                                       request_entry['id']))
+                response_captured = True
+
             if isinstance(provider, ai.OpenAIProvider):
-                generated = provider.generate(context, on_request=capture_request, on_metadata=capture_metadata)
+                generated = provider.generate(context, on_request=capture_request, on_metadata=capture_metadata,
+                                              on_response=capture_response)
             elif isinstance(provider, ai.MockProvider):
                 capture_metadata({'configuredModel': configured_model, 'requestedModel': configured_model,
                                   'routing': ai.routing_state(False)})
                 generated = provider.generate(context, on_request=capture_request)
             else:
                 generated = provider.generate(context)
+            if isinstance(generated, ai.GeneratedText) and not response_captured:
+                capture_response(generated)
             text = str(generated or '').strip()
             if not text:
                 raise ValueError('The AI-DM returned an empty response')
@@ -1541,23 +1568,8 @@ class Handler(BaseHTTPRequestHandler):
         with LOCK:
             try:
                 with db() as conn:
-                    if isinstance(generated, ai.GeneratedText):
-                        session = active_session(conn, save_id)
-                        if not session:
-                            raise ValueError('Start the next session before playing')
-                        values = metering.record(generated.model or 'unknown', generated.usage,
-                                                 generated.service_tier)
-                        conn.execute('''INSERT INTO ai_usage
-                            (save_id,session_id,purpose,model,input_tokens,cached_tokens,cache_write_tokens,
-                             output_tokens,total_tokens,estimated_cost_usd,service_tier,created_at,request_id)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                            (save_id, session['id'], context['purpose'], *values, utc(), request_entry['id']))
-                        conn.execute('''UPDATE ai_requests SET configured_model=COALESCE(?,configured_model),
-                            requested_model=COALESCE(?,requested_model),reported_model=?,routing=COALESCE(?,routing)
-                            WHERE id=?''', (generated.configured_model, generated.requested_model,
-                                           generated.reported_model,
-                                           json.dumps(generated.routing) if generated.routing is not None else None,
-                                           request_entry['id']))
+                    if isinstance(generated, ai.GeneratedText) and not active_session(conn, save_id):
+                        raise ValueError('Start the next session before playing')
                     conn.execute("UPDATE ai_requests SET status='complete',finished_at=? WHERE id=?",
                                  (utc(), request_entry['id']))
                 # Provider usage is billable even if saving the narration later fails.
