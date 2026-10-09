@@ -776,6 +776,8 @@ textarea{padding:10px;resize:none}
 .pilot-line{margin:0 0 10px;font-size:13px;line-height:1.45}
 .pilot-line strong{color:#d5bd98}
 .pilot-line.ai strong{color:#8fb5d8}
+.pilot-line-header{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.pilot-line-header time{color:var(--muted);font-size:11px}
 
 @media(max-width:900px){
   .app-brand{width:auto;min-width:0;border-right:0;padding:0 10px}

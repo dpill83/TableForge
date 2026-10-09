@@ -254,7 +254,7 @@ class FlowTest(unittest.TestCase):
         before = self.api(f'/api/saves/{save_id}')
         with patch.object(ai, 'current_provider', return_value=MeteredProvider()):
             answered = self.api(f'/api/saves/{save_id}/ask',
-                                {'playerId': before['players'][0]['id'], 'text': 'What does the ogre want?'})
+                                {'pilot': True, 'playerId': before['players'][0]['id'], 'text': 'What does the ogre want?'})
         self.assertEqual(answered['save']['beat'], before['save']['beat'])
         self.assertEqual([p['ready'] for p in answered['players']], [p['ready'] for p in before['players']])
         self.assertEqual(answered['usage']['save']['requests'], 1)
@@ -556,7 +556,7 @@ Flyman block.
         before = self.api(f'/api/saves/{save_id}/location', {'playerId': player, 'location': 1})
         fake = FakeProvider('Those are the available lair actions.')
         with patch.object(ai, 'current_provider', return_value=fake):
-            after = self.api(f'/api/saves/{save_id}/ask', {'playerId': player, 'text': "What are Muxus's lair actions?"})
+            after = self.api(f'/api/saves/{save_id}/ask', {'pilot': True, 'playerId': player, 'text': "What are Muxus's lair actions?"})
         self.assertIn('EXACT MUXUS LAIR ACTIONS', fake.context['module'])
         self.assertNotIn('OBSERVATORY SECRET', fake.context['module'])
         self.assertEqual(after['save']['location'], 1)
@@ -874,12 +874,12 @@ Flyman block.
     def test_ask_does_not_change_table_or_ready(self):
         save_id = self.ready_save()
         first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
-        result = self.api(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'What would Shenka do?'})
+        result = self.api(f'/api/saves/{save_id}/ask', {'pilot': True, 'playerId': first, 'text': 'What would Shenka do?'})
         self.assertEqual(result['save']['beat'], 1)
         self.assertTrue(all(p['ready'] for p in result['players']))
         self.assertEqual([m['kind'] for m in result['messages']], ['player'])
         self.assertEqual([m['kind'] for m in result['pilot']], ['pilot', 'ai'])
-        self.assertEqual(result['pilot'][0]['name'], 'George')
+        self.assertEqual(result['pilot'][0]['name'], 'Dan')
         self.assertIn('operational', result['pilot'][-1]['body'].lower())
         self.assertNotIn('Mock AI-DM, beat', result['pilot'][-1]['body'])
 
@@ -916,7 +916,7 @@ Flyman block.
         save_id = self.ready_save('# Test adventure')
         first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
         with patch.object(ai, 'current_provider', return_value=fake):
-            result = self.api(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'Would Shenka flee?'})
+            result = self.api(f'/api/saves/{save_id}/ask', {'pilot': True, 'playerId': first, 'text': 'Would Shenka flee?'})
         self.assertEqual(result['pilot'][-1]['body'], 'Shenka would likely flee north.')
         self.assertEqual(result['save']['beat'], 1)
         self.assertEqual(fake.context['purpose'], 'ask')
@@ -955,7 +955,7 @@ Flyman block.
             provider.release.set()
             worker.join(5)
             advanced = outcomes[0]
-            asked = self.api(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'What is nearby?'})
+            asked = self.api(f'/api/saves/{save_id}/ask', {'pilot': True, 'playerId': first, 'text': 'What is nearby?'})
 
         entries = self.api(log_path)['entries']
         self.assertEqual([entry['purpose'] for entry in entries], ['advance', 'ask'])
@@ -1045,7 +1045,7 @@ Flyman block.
         provider = ai.OpenAIProvider('secret-key', 'gpt-6-luna',
                                      '' if route is None else 'http://router/route')
         path = {'advance': 'advance', 'ask': 'ask', 'summary': 'summary-draft'}[purpose]
-        payload = {'playerId': first, 'override': True, 'text': 'What happens?'}
+        payload = {'playerId': first, 'pilot': True, 'override': True, 'text': 'What happens?'}
         with patch.object(ai, 'current_provider', return_value=provider), \
                 patch('ai.urllib.request.urlopen', side_effect=opened):
             result = (self.api_error if failure or publish_failure else self.api)(f'/api/saves/{save_id}/{path}', payload)
@@ -1255,12 +1255,13 @@ Flyman block.
         save_id = self.ready_save()
         first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
         with patch.object(ai, 'current_provider', return_value=BoomProvider()):
-            error = self.api_error(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'Would Shenka flee?'})
+            error = self.api_error(f'/api/saves/{save_id}/ask', {'pilot': True, 'playerId': first, 'text': 'Would Shenka flee?'})
         self.assertIn('provider down', error['error'])
         restored = self.api(f'/api/saves/{save_id}')
         self.assertEqual(restored['save']['beat'], 1)
         self.assertTrue(all(p['ready'] for p in restored['players']))
         self.assertEqual([m['kind'] for m in restored['messages']], ['player'])
+        restored['pilot'] = self.api(f'/api/saves/{save_id}/ask?playerId={first}&pilot=true')['pilot']
         self.assertEqual([m['kind'] for m in restored['pilot']], ['pilot'])
         self.assertEqual(restored['pilot'][0]['body'], 'Would Shenka flee?')
         self.assertEqual(server.GENERATING, {})
@@ -1298,7 +1299,7 @@ Flyman block.
             worker = threading.Thread(target=lambda: errors.append(self.api(f'/api/saves/{save_id}/advance', {'beat': 1})))
             worker.start()
             self.assertTrue(gate.started.wait(2))
-            blocked = self.api_error(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'Would Shenka flee?'})
+            blocked = self.api_error(f'/api/saves/{save_id}/ask', {'pilot': True, 'playerId': first, 'text': 'Would Shenka flee?'})
             self.assertIn('already responding', blocked['error'])
             gate.release.set()
             worker.join(5)
@@ -1309,7 +1310,7 @@ Flyman block.
         gate = GateProvider('Operational slowly.')
         with patch.object(ai, 'current_provider', return_value=gate):
             errors = []
-            worker = threading.Thread(target=lambda: errors.append(self.api(f'/api/saves/{save_id}/ask', {'playerId': first, 'text': 'Would Shenka flee?'})))
+            worker = threading.Thread(target=lambda: errors.append(self.api(f'/api/saves/{save_id}/ask', {'pilot': True, 'playerId': first, 'text': 'Would Shenka flee?'})))
             worker.start()
             self.assertTrue(gate.started.wait(2))
             blocked = self.api_error(f'/api/saves/{save_id}/advance', self.override(save_id, beat=2))
@@ -1319,6 +1320,7 @@ Flyman block.
         self.assertEqual(len(errors), 1)
         restored = self.api(f'/api/saves/{save_id}')
         self.assertEqual(restored['save']['beat'], 2)
+        restored['pilot'] = self.api(f'/api/saves/{save_id}/ask?playerId={first}&pilot=true')['pilot']
         self.assertEqual(restored['pilot'][-1]['body'], 'Operational slowly.')
 
     def test_retried_send_with_request_id_posts_once(self):

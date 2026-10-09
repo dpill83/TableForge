@@ -142,7 +142,7 @@ class CombatFlowTest(unittest.TestCase):
                     self.payload(state, playerId=state['players'][1]['id'], text='Different report'))
                 self.assertEqual(duplicate['combat']['phase'], 'resuming')
                 self.assertIn('already responding', self.api_error(f'/api/saves/{save_id}/ask',
-                    {'playerId': state['players'][0]['id'], 'text': 'A ruling?'})['error'])
+                    {'pilot': True, 'playerId': state['players'][0]['id'], 'text': 'A ruling?'})['error'])
             finally:
                 provider.release.set()
             after = running.result(timeout=5)
@@ -168,7 +168,7 @@ class CombatFlowTest(unittest.TestCase):
         before = self.api(f'/api/saves/{save_id}')
         with patch('ai.current_provider', return_value=test_flow.FakeProvider('Example\n'+combat.MARKER)):
             after = self.api(f'/api/saves/{save_id}/ask',
-                {'playerId': before['players'][0]['id'], 'text': 'What is initiative?'})
+                {'pilot': True, 'playerId': before['players'][0]['id'], 'text': 'What is initiative?'})
         self.assertEqual(after['save']['mode'], 'normal')
         self.assertIsNone(after['combat'])
         self.assertEqual(after['messages'], before['messages'])

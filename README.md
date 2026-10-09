@@ -130,6 +130,10 @@ replacing their saved Stage 3 instructions or changing historical messages.
 
 **Options → Backups → Back up now** copies the whole save database (transcripts, portraits, illustrations, party notes) into `data/backups/` using SQLite's online backup and verifies the copy before listing it. Cartridges are not copied; they stay in `data/cartridges/`, and a restored save whose cartridge is missing asks you to locate it. **Restore…** checks the backup's integrity, shows what it contains, backs up the current data first, then replaces it and confirms the result matches. To restore a downloaded backup, copy it into `data/backups/` first. Restore is refused while the AI-DM or a scene illustration is generating.
 
+Ask AI-DM is a private conversation for the selected player profile. It shows player names (for example, Dan) and local timestamps; hover over a timestamp for the full date and time. Each question and reply is saved to that player's thread. The AI sees the shared adventure/table context and only that player's Ask history. Asking does not advance the table or change Ready.
+
+Ordinary save responses exclude Ask history. Pilot Mode loads the selected player's thread, and AI Request Log shows only their Ask requests and temporary payloads. Existing shared Ask history remains in the database and backups but is excluded from new private threads; old AI replies are not assigned to players by inference. Privacy follows the selected player profile in TableForge's trusted-group model; choosing another profile selects its thread, and the host's whole-save backups retain all threads.
+
 Run the HTTP workflow tests with `python3 -m unittest discover -s tests -v`.
 Run frontend tests with `node --test tests/*.cjs` and syntax checks with `node --check web/js/app.js` and `node --check web/js/request-log.js`.
 
