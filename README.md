@@ -137,6 +137,8 @@ Ordinary save responses exclude Ask history. Pilot Mode loads the selected playe
 Run the HTTP workflow tests with `python3 -m unittest discover -s tests -v`.
 Run frontend tests with `node --test tests/*.cjs` and syntax checks with `node --check web/js/app.js` and `node --check web/js/request-log.js`.
 
+Ask AI-DM and shared chat display a safe Markdown subset: headings, emphasis, lists, quotes, links, code, and pipe tables with column alignment. Wide tables scroll horizontally within the message. Raw HTML is shown as text, and saves retain the original message text.
+
 The core model is simple:
 
 - **AdventureForge** creates the adventure.

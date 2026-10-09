@@ -8,7 +8,7 @@ const TableForgeMarkdown = (() => {
     let html = '';
     for (let i = 0; i < source.length;) {
       const rest = source.slice(i);
-      if (rest[0] === '\\' && /[\\`*_{}\[\]()#+.!>~-]/.test(rest[1] || '')) {
+      if (rest[0] === '\\' && /[\\`*_{}\[\]()#+.!>~|\-]/.test(rest[1] || '')) {
         html += escapeHtml(rest[1]); i += 2; continue;
       }
       const code = /^`([^`\n]+)`/.exec(rest);
@@ -31,6 +31,33 @@ const TableForgeMarkdown = (() => {
       if (!matched) { html += escapeHtml(source[i]); i++; }
     }
     return html;
+  };
+
+  // Split only unescaped pipes. Remove structural pipe escapes even in code
+  // spans, while keeping other escapes for the safe inline renderer.
+  const tableCells = line => {
+    const cells = [];
+    let cell = '', hasPipe = false;
+    for (let i = 0; i < line.length; i++) {
+      if (line[i] === '\\' && i + 1 < line.length) {
+        cell += line[i + 1] === '|' ? line[++i] : line[i] + line[++i];
+      } else if (line[i] === '|') {
+        cells.push(cell.trim()); cell = ''; hasPipe = true;
+      } else cell += line[i];
+    }
+    cells.push(cell.trim());
+    if (hasPipe && cells[0] === '') cells.shift();
+    if (hasPipe && cells.at(-1) === '') cells.pop();
+    return {cells, hasPipe};
+  };
+  const tableHeader = (lines, index) => {
+    if (index + 1 >= lines.length) return null;
+    const header = tableCells(lines[index]);
+    const separators = tableCells(lines[index + 1]).cells;
+    if (!header.hasPipe || !header.cells.length || header.cells.length !== separators.length ||
+        !separators.every(cell => /^:?-+:?$/.test(cell))) return null;
+    return {cells: header.cells, alignments: separators.map(cell =>
+      cell.startsWith(':') ? (cell.endsWith(':') ? 'center' : 'left') : (cell.endsWith(':') ? 'right' : null))};
   };
 
   const render = source => {
@@ -66,8 +93,22 @@ const TableForgeMarkdown = (() => {
         out.push(`<${tag}>${items.join('')}</${tag}>`);
         continue;
       }
+      const table = tableHeader(lines, i);
+      if (table) {
+        const cellHtml = (cell, index, tag) => `<${tag}${tag === 'th' ? ' scope="col"' : ''}${table.alignments[index] ? ` class="markdown-align-${table.alignments[index]}"` : ''}>${inline(cell)}</${tag}>`;
+        const rows = [];
+        i += 2;
+        while (i < lines.length && lines[i].trim()) {
+          const row = tableCells(lines[i]);
+          if (!row.hasPipe) break;
+          rows.push(`<tr>${table.cells.map((_, index) => cellHtml(row.cells[index] || '', index, 'td')).join('')}</tr>`);
+          i++;
+        }
+        out.push(`<div class="markdown-table-scroll" tabindex="0" role="region" aria-label="Markdown table"><table><thead><tr>${table.cells.map((cell, index) => cellHtml(cell, index, 'th')).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>`);
+        continue;
+      }
       const paragraph = [];
-      while (i < lines.length && lines[i].trim() && (paragraph.length === 0 || !special(lines[i]))) paragraph.push(lines[i++]);
+      while (i < lines.length && lines[i].trim() && (paragraph.length === 0 || (!special(lines[i]) && !tableHeader(lines, i)))) paragraph.push(lines[i++]);
       out.push(`<p>${paragraph.map(inline).join('<br>')}</p>`);
     }
     return out.join('');
