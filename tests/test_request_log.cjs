@@ -142,3 +142,21 @@ test('legacy effort is unrecorded and provider default is not invented as medium
     effortReason: '<script>', effortScores: {'<script>': '<script>'}}});
   assert.doesNotMatch(unsafe, /<script>/);
 });
+
+test('cached input and reasoning are displayed as subsets, with unknown legacy breakdowns', () => {
+  const html = render({...entry, cachedInputTokens: 40, cacheWriteTokens: 10, reasoningTokens: 15});
+  assert.match(html, /Cached input tokens \(included in input\)<\/dt><dd>40/);
+  assert.match(html, /Cache write tokens \(included in input\)<\/dt><dd>10/);
+  assert.match(html, /Reasoning tokens \(included in output\)<\/dt><dd>15/);
+  assert.match(html.split('</summary>')[0], /Output 20 \/ Total 120 tokens/);
+  assert.match(html, /reasoning tokens are not added again/);
+  assert.match(render(entry), /Reasoning tokens \(included in output\)<\/dt><dd>Unavailable/);
+  assert.match(render({...entry, reasoningTokens: 0}), /Reasoning tokens \(included in output\)<\/dt><dd>0/);
+});
+
+test('failed billed attempts retain their own cost and usage', () => {
+  const html = render({...entry, status: 'failed', reasoningTokens: 15, error: 'AI provider request failed'});
+  assert.match(html.split('</summary>')[0], /failed/);
+  assert.match(html.split('</summary>')[0], /\$0\.00002 estimated/);
+  assert.match(html, /Each attempt, including a retry or failed response with reported usage, has its own cost/);
+});

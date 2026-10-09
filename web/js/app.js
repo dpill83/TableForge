@@ -118,7 +118,10 @@
   const runtimeLabel = info => (info.provider === 'openai' ? 'OpenAI' : 'Mock AI') + ' · ' + info.model;
   const tokenLabel = value => new Intl.NumberFormat().format(value || 0);
   const costLabel = usage => {
-    if(usage.unpricedRequests) return 'Cost unavailable';
+    if(usage.unpricedRequests) {
+      const known=usage.knownEstimatedCostUsd;
+      return `Cost unavailable${known>0?` · known estimate ${costLabel({estimatedCostUsd:known})}`:''} · ${usage.unpricedRequests} request${usage.unpricedRequests===1?'':'s'} without cost data`;
+    }
     const value=Number(usage.estimatedCostUsd || 0);
     return value>0 && value<0.0001?'≈<$0.0001':`≈$${value.toFixed(4)}`;
   };

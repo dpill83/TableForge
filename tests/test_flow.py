@@ -1020,7 +1020,8 @@ Flyman block.
         self.assertIsNotNone(row['estimated_cost_usd'])
 
     def logged_openai(self, save_id, route, *, reported='gpt-6-luna-snapshot', purpose='advance',
-                      failure=False, service_tier='default', publish_failure=False):
+                      failure=False, service_tier='default', publish_failure=False, usage=None,
+                      empty_response=False, no_choices=False):
         """Keep real localhost HTTP calls; stub only router and OpenAI boundaries."""
         real_urlopen = urllib.request.urlopen
         sent = []
@@ -1035,8 +1036,13 @@ Flyman block.
                 if failure:
                     raise urllib.error.URLError('PRIVATE PROVIDER ERROR secret-key')
                 completion = {'choices': [{'message': {'content': 'Narration.'}}],
-                              'usage': {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120},
+                              'usage': usage if usage is not None else {
+                                  'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120},
                               'service_tier': service_tier}
+                if empty_response:
+                    completion['choices'][0]['message']['content'] = ''
+                if no_choices:
+                    completion['choices'] = []
                 if reported is not None:
                     completion['model'] = reported
                 return io.BytesIO(json.dumps(completion).encode())
@@ -1048,7 +1054,8 @@ Flyman block.
         payload = {'playerId': first, 'pilot': True, 'override': True, 'text': 'What happens?'}
         with patch.object(ai, 'current_provider', return_value=provider), \
                 patch('ai.urllib.request.urlopen', side_effect=opened):
-            result = (self.api_error if failure or publish_failure else self.api)(f'/api/saves/{save_id}/{path}', payload)
+            result = (self.api_error if failure or publish_failure or empty_response or no_choices else self.api)(
+                f'/api/saves/{save_id}/{path}', payload)
         entry = self.api(f'/api/saves/{save_id}/request-log?playerId={first}&pilot=true')['entries'][-1]
         return entry, sent, result
 
@@ -1225,6 +1232,7 @@ Flyman block.
             session = server.active_session(conn, save_id)
             conn.execute('DROP INDEX ai_usage_request')
             conn.execute('ALTER TABLE ai_usage DROP COLUMN request_id')
+            conn.execute('ALTER TABLE ai_usage DROP COLUMN reasoning_tokens')
             conn.execute('DROP TABLE ai_requests')
             conn.execute('''INSERT INTO ai_usage
                 (save_id,session_id,purpose,model,input_tokens,output_tokens,total_tokens,created_at)
@@ -1235,9 +1243,76 @@ Flyman block.
         self.assertTrue(entry['legacy'])
         self.assertEqual(entry['model'], 'legacy-model')
         self.assertEqual(entry['totalTokens'], 15)
+        self.assertIsNone(entry['reasoningTokens'])
         for key in ('routing', 'configuredModel', 'requestedModel', 'reportedModel', 'payload'):
             self.assertIsNone(entry[key])
         self.assertEqual(self.api('/api/usage')['usage']['requests'], 1)
+
+    def test_sol_metering_breakdown_persists_after_restart(self):
+        save_id = self.ready_save()
+        usage = {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120,
+                 'prompt_tokens_details': {'cached_tokens': 40, 'cache_write_tokens': 10},
+                 'completion_tokens_details': {'reasoning_tokens': 15}}
+        entry, _, result = self.logged_openai(save_id, {'model': 'gpt-6.1-sol'},
+                                              reported='gpt-6.1-sol-snapshot', usage=usage)
+        expected = (50 * 2 + 40 * .10 + 10 * 2.50 + 20 * 10) / 1e6
+        self.assertEqual((entry['cachedInputTokens'], entry['cacheWriteTokens'], entry['reasoningTokens']),
+                         (40, 10, 15))
+        self.assertAlmostEqual(entry['estimatedCostUsd'], expected)
+        self.assertEqual(result['usage']['session']['reasoningTokens'], 15)
+        self.assertEqual(result['usage']['session']['unreportedReasoningRequests'], 0)
+        with server.db() as conn:
+            row = conn.execute('SELECT * FROM ai_usage WHERE request_id=?', (entry['id'],)).fetchone()
+            self.assertEqual(row['reasoning_tokens'], 15)
+        server.AI_REQUEST_LOGS.clear()
+        server.initialize()
+        first = result['players'][0]['id']
+        restored = self.api(f'/api/saves/{save_id}/request-log?playerId={first}&pilot=true')['entries'][0]
+        for field in ('cachedInputTokens', 'cacheWriteTokens', 'reasoningTokens', 'estimatedCostUsd'):
+            self.assertEqual(restored[field], entry[field])
+        self.assertIsNone(restored['payload'])
+
+    def test_rejected_provider_response_and_retry_both_count_toward_cost(self):
+        for rejection in ('empty_response', 'no_choices'):
+            with self.subTest(rejection=rejection):
+                save_id = self.ready_save()
+                usage = {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120,
+                         'completion_tokens_details': {'reasoning_tokens': 15}}
+                failed, _, _ = self.logged_openai(save_id, {'model': 'gpt-6.1-sol'},
+                    reported='gpt-6.1-sol-snapshot', usage=usage, **{rejection: True})
+                self.assertEqual(failed['status'], 'failed')
+                self.assertEqual(failed['reportedModel'], 'gpt-6.1-sol-snapshot')
+                self.assertEqual(failed['reasoningTokens'], 15)
+                self.assertEqual(self.api(f'/api/saves/{save_id}')['save']['beat'], 1)
+                succeeded, _, result = self.logged_openai(save_id, {'model': 'gpt-6.1-sol'},
+                    reported='gpt-6.1-sol-snapshot', usage=usage)
+                self.assertNotEqual(failed['id'], succeeded['id'])
+                totals = result['usage']['save']
+                self.assertEqual((totals['requests'], totals['totalTokens'], totals['reasoningTokens']), (2, 240, 30))
+                self.assertAlmostEqual(totals['estimatedCostUsd'], 2 * failed['estimatedCostUsd'])
+                self.assertEqual(totals['unpricedRequests'], 0)
+
+    def test_unknown_failed_attempt_and_retry_show_known_subtotal_without_zero_cost(self):
+        save_id = self.ready_save()
+        failed, _, _ = self.logged_openai(save_id, None, failure=True)
+        self.assertIsNone(failed['estimatedCostUsd'])
+        succeeded, _, result = self.logged_openai(save_id, None)
+        totals = result['usage']['save']
+        self.assertEqual((totals['requests'], totals['totalTokens'], totals['unmeteredRequests'],
+                          totals['unpricedRequests']), (2, 120, 1, 1))
+        self.assertIsNone(totals['estimatedCostUsd'])
+        self.assertAlmostEqual(totals['knownEstimatedCostUsd'], succeeded['estimatedCostUsd'])
+        server.initialize()
+        self.assertEqual(self.api(f'/api/saves/{save_id}')['usage']['save'], totals)
+
+    def test_publication_failure_and_retry_count_both_paid_responses(self):
+        save_id = self.ready_save()
+        with patch.object(server, 'publish_advance', side_effect=ValueError('save failed')):
+            failed, _, _ = self.logged_openai(save_id, None, publish_failure=True)
+        _, _, result = self.logged_openai(save_id, None)
+        totals = result['usage']['save']
+        self.assertEqual((totals['requests'], totals['totalTokens']), (2, 240))
+        self.assertAlmostEqual(totals['estimatedCostUsd'], 2 * failed['estimatedCostUsd'])
 
     def test_request_log_restart_marks_pending_request_interrupted(self):
         save_id = self.ready_save()
