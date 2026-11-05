@@ -83,6 +83,10 @@ class PromptFlowTest(unittest.TestCase):
         self.assertIn('Find the ledger.', preview['messages'][0]['content'])
         self.assertIn('"ac": 18', preview['messages'][0]['content'])
         self.assertIn('first AI-DM narration', preview['messages'][-1]['content'])
+        opening = preview['messages'][-1]['content']
+        self.assertIn('already running in TableForge; do not ask whether TableForge is being used', opening)
+        self.assertIn('Use the saved character assignments and skip relay setup and party-sheet confirmation', opening)
+        self.assertIn('Start with the character establishing round, then follow the hook, acceptance, travel, and arrival sequence', opening)
         self.assertEqual(preview['report']['narrationPrompt']['version'], '2.1.1')
         self.assertIsNone(preview['promptUpdate'])
         fake = test_flow.FakeProvider('Where is George this morning?')
@@ -94,6 +98,7 @@ class PromptFlowTest(unittest.TestCase):
         with patch.object(ai, 'current_provider', return_value=fake):
             self.api(f'/api/saves/{save_id}/advance', {'beat': 2})
         self.assertFalse(fake.context['opening'])
+        self.assertNotIn('This session is already running in TableForge', ai.chat_messages(fake.context)[-1]['content'])
         self.assertEqual(fake.context['narrationPrompt'], prompt)
         self.api(f'/api/saves/{save_id}/end-session', {'playerId': player, 'note': 'At the market.'})
         self.api(f'/api/saves/{save_id}/start-session', {'playerId': player})
