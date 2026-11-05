@@ -11,6 +11,7 @@ import urllib.request
 import module_context
 import combat
 import narration_choices
+import narration_pacing
 import runtime_prompts
 
 ASK_PROMPT = (
@@ -278,6 +279,7 @@ def chat_messages(context):
         return summary_chat_messages(context)
     system = context['narrationPrompt']['instructions'] + context.get('locationInstructions', '')
     system += combat.INSTRUCTIONS
+    system += narration_pacing.INSTRUCTIONS
     if context.get('choiceInstructions'):
         system += '\n\n' + context['choiceInstructions']
         system += '\n\nChoice audiences (playerId null means party-wide):\n' + json.dumps(context['choicePlayers'], ensure_ascii=False)
@@ -316,8 +318,10 @@ def chat_messages(context):
                          'Begin the adventure. This is the first AI-DM narration. '
                          'This session is already running in TableForge; do not ask whether TableForge is being used. '
                          'Use the saved character assignments and skip relay setup and party-sheet confirmation. '
-                         'Start with the character establishing round, then follow the hook, acceptance, travel, '
-                         'and arrival sequence. Honor any player contributions above.'})
+                         'Present only the first playable opening beat, beginning with the character establishing '
+                         'round. The hook, acceptance, travel, and arrival happen across later beats as players '
+                         'respond; they are not a checklist for this response. Stop when you ask what the players '
+                         'do, without narrating an outcome or the next scene. Honor any player contributions above.'})
     elif not resume and not split_beat(context['messages'])[1]:
         # Earlier player messages are history, not a contribution to this beat.
         # Ready (or an override) can request continuation without declaring an action.

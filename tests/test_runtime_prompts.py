@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 import ai
 import module_context
+import narration_pacing
 import runtime_prompts
 import server
 import test_flow
@@ -86,7 +87,9 @@ class PromptFlowTest(unittest.TestCase):
         opening = preview['messages'][-1]['content']
         self.assertIn('already running in TableForge; do not ask whether TableForge is being used', opening)
         self.assertIn('Use the saved character assignments and skip relay setup and party-sheet confirmation', opening)
-        self.assertIn('Start with the character establishing round, then follow the hook, acceptance, travel, and arrival sequence', opening)
+        self.assertIn('Present only the first playable opening beat', opening)
+        self.assertIn('they are not a checklist for this response', opening)
+        self.assertIn(narration_pacing.INSTRUCTIONS, preview['messages'][0]['content'])
         self.assertEqual(preview['report']['narrationPrompt']['version'], '2.1.1')
         self.assertIsNone(preview['promptUpdate'])
         fake = test_flow.FakeProvider('Where is George this morning?')
