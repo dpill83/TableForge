@@ -48,6 +48,24 @@ class PacingGuardTest(unittest.TestCase):
                 'The wagon skids.\n\nWhat do you do? The crew immediately saves it.'
             )
 
+    def test_followup_questions_are_allowed_on_same_or_separate_lines(self):
+        for suffix in (
+            ' Do you rush across or look for another route?',
+            '\nDo you rush across or look for another route?',
+            '\n\nDo you rush across? Or do you look for another route?',
+            '\n\n- Rush across\n- Look for another route',
+        ):
+            with self.subTest(suffix=suffix):
+                narration_pacing.validate_public_narration('The wagon skids.\n\nWhat do you do?' + suffix)
+
+    def test_followup_questions_then_story_are_still_guarded(self):
+        for suffix in (
+            ' Do you rush across? The wagon then stops on its own.',
+            '\nDo you rush across?\n\nThe wagon then stops on its own.',
+        ):
+            with self.subTest(suffix=suffix), self.assertRaises(ValueError):
+                narration_pacing.validate_public_narration('The wagon skids.\n\nWhat do you do?' + suffix)
+
     def test_npc_dialogue_and_rhetorical_questions_are_not_boundaries(self):
         narration_pacing.validate_public_narration(
             'The guard asks, "What do you do?" and then lowers his lantern.\n\n'
@@ -92,3 +110,12 @@ class PacingFlowTest(unittest.TestCase):
             result = self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
         self.assertIn('What do you do?', result['messages'][-1]['body'])
         self.assertIsNotNone(result['messages'][-1]['choices'])
+
+    def test_followup_question_publishes_without_a_rejected_generation(self):
+        save_id = self.ready_save()
+        text = ('The quarry wagon skids sideways.\n\n'
+                'What do you do? Do you rush to the axle or inspect the brake shoe?')
+        with patch.object(ai, 'current_provider', return_value=test_flow.FakeProvider(text)):
+            result = self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
+        self.assertEqual(result['messages'][-1]['body'], text)
+        self.assertEqual(result['save']['beat'], 2)

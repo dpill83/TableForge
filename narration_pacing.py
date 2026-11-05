@@ -32,6 +32,30 @@ DECISION_LINE = re.compile(
     r'|what (?:is|will be) your next move'
     r'|do you (?:accept|agree to) [^?]+)\?', re.IGNORECASE,
 )
+FOLLOWUP_QUESTION = re.compile(
+    r'\s*(?:do|does|did|can|could|will|would|shall|should|is|are|was|were'
+    r'|what|which|who|where|when|why|how|or)\b[^.!?]*\?', re.IGNORECASE,
+)
+
+
+def is_clarification(text):
+    """Allow further questions or listed options without story progression.
+
+    Ambiguous prose still fails the guard, but a question by itself never means
+    the AI has chosen an answer for the players.
+    """
+    for line in text.splitlines():
+        remaining = line.strip()
+        if not remaining:
+            continue
+        if remaining.startswith(('- ', '* ')):
+            continue
+        while remaining:
+            question = FOLLOWUP_QUESTION.match(remaining)
+            if not question:
+                return False
+            remaining = remaining[question.end():].strip()
+    return True
 
 
 def validate_public_narration(prose):
@@ -43,8 +67,8 @@ def validate_public_narration(prose):
     lines = prose.strip().splitlines()
     for index, line in enumerate(lines):
         prompt = DECISION_LINE.match(line.strip())
-        if prompt and (line.strip()[prompt.end():].strip()
-                       or any(next_line.strip() for next_line in lines[index + 1:])):
+        if prompt and not is_clarification(
+                '\n'.join([line.strip()[prompt.end():], *lines[index + 1:]])):
             raise ValueError(
                 'The AI-DM continued narrating after asking players to act. '
                 'No narration was published. Retry the beat or review its context in Pilot Mode.'
