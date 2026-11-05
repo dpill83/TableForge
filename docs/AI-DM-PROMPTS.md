@@ -64,11 +64,22 @@ explicit opening request, including existing player contributions. Later advance
 continue the current situation instead of restarting the opening.
 
 The opening request explicitly states that the session is already running in
-TableForge, skips the relay setup and party-sheet confirmation, and directs the
-AI-DM through the establishing round, hook, acceptance, travel, and arrival.
-This request reinforces the adapter without changing the cartridge's Stage 3
-source or the save's pinned instruction snapshot. It applies when a save is
-eligible for its first narration; it does not restart an opening already underway.
+TableForge, skips the relay setup and party-sheet confirmation, and asks for only
+the first playable beat. Establishing, hook, acceptance, travel, and arrival are
+an ordered sequence **across player-response rounds**, not steps to narrate in one
+generation. This request applies when a save is eligible for its first narration;
+it does not restart an opening already underway.
+
+The server also appends a player-agency/turn-boundary contract to every public
+narration request, independently of the saved Stage 3 snapshot. It requires the
+AI-DM to end its current response at a player-facing decision instead of
+inventing a response and immediately narrating the outcome. Existing saves get
+this runtime safeguard without silently upgrading their cartridge instructions.
+After protocol metadata is removed, a narrow publication guard rejects narration
+that contains an explicit standalone player-action question followed by more
+story. The beat and player Ready state remain intact for a retry; ordinary NPC
+dialogue and rhetorical questions are not scanned as turn boundaries. The
+guard is a safety net for clear violations, not a complete semantic validator.
 
 Narration receives selected module context, saved transcript/summary/checkpoint,
 recent combat outcomes, and player/character assignments. Stage 3 saves also get

@@ -26,6 +26,7 @@ import metering
 import scene_images
 import module_context
 import narration_choices
+import narration_pacing
 import runtime_prompts
 from local_config import load_env
 
@@ -884,6 +885,7 @@ def publish_advance(conn, save_id, text, override=None):
     text, marked, location = module_context.take_marker(text)
     if not text:
         raise ValueError('The AI-DM returned an empty response')
+    narration_pacing.validate_public_narration(text)
     if marked:
         adventure = adventure_for(state)
         if adventure.focused and adventure.valid(location):
