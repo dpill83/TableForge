@@ -1033,6 +1033,8 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(bound_scenes(state))
             if path.startswith('/api/saves/'):
                 with LOCK, db() as conn:
+                    if not conn.execute('SELECT 1 FROM saves WHERE id=?', (path.rsplit('/', 1)[-1],)).fetchone():
+                        return self.respond({'error': 'This playthrough is no longer available.', 'code': 'save_unavailable'}, 404)
                     return self.respond(snapshot(conn, path.rsplit('/', 1)[-1]))
             asset = '/index.html' if path == '/' else path
             file = (WEB / asset.lstrip('/')).resolve()
@@ -1056,6 +1058,8 @@ class Handler(BaseHTTPRequestHandler):
             payload = self.body()
             path = urlparse(self.path).path
             parts = path.strip('/').split('/')
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'delete':
+                return self.handle_delete_save(parts[2], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'images':
                 return self.handle_image(parts[2], payload)
             if len(parts) == 6 and parts[:2] == ['api', 'saves'] and parts[3] == 'images' and parts[5] in ('share', 'discard'):
@@ -1576,6 +1580,46 @@ class Handler(BaseHTTPRequestHandler):
                 GENERATING.pop(save_id, None)
             result['activity'] = activity(save_id)
         return self.respond(result)
+
+    def handle_delete_save(self, save_id, payload):
+        with LOCK:
+            if payload.get('confirmed') is not True or payload.get('confirmation') != 'DELETE':
+                raise ValueError('Confirm deletion and type DELETE exactly')
+            if save_id in GENERATING:
+                raise ValueError('Wait for the AI-DM to finish before deleting this playthrough')
+            with db() as conn:
+                save = conn.execute('SELECT name FROM saves WHERE id=?', (save_id,)).fetchone()
+                if not save:
+                    return self.respond({'error': 'This playthrough is no longer available.', 'code': 'save_unavailable'}, 404)
+                if payload.get('name') != save['name']:
+                    raise ValueError('The playthrough name changed. Close this dialog and select it again.')
+                if conn.execute("SELECT 1 FROM scene_images WHERE save_id=? AND status='generating'", (save_id,)).fetchone():
+                    raise ValueError('Wait for the scene illustration to finish before deleting this playthrough')
+            try:
+                backup = backups.create(DATA, label='before-delete')
+                with db() as conn:
+                    conn.execute('BEGIN IMMEDIATE')
+                    conn.execute('PRAGMA defer_foreign_keys=ON')
+                    # All save-owned tables use save_id. Unknown future tables fail closed.
+                    known = {'players', 'player_portraits', 'messages', 'chat_images', 'pilot_messages',
+                             'sessions', 'session_events', 'checkpoints', 'summaries', 'ai_usage',
+                             'ai_requests', 'party_notes', 'revealed_assets', 'scene_images', 'combat_handoffs'}
+                    for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
+                        table = row['name']
+                        quoted = '"' + table.replace('"', '""') + '"'
+                        if not any(column['name'] == 'save_id' for column in conn.execute(f'PRAGMA table_info({quoted})')):
+                            continue
+                        if table not in known:
+                            raise ValueError('Unknown save data; update TableForge before deleting this playthrough')
+                        conn.execute(f'DELETE FROM {quoted} WHERE save_id=?', (save_id,))
+                    conn.execute('DELETE FROM saves WHERE id=?', (save_id,))
+                    if conn.execute('PRAGMA foreign_key_check').fetchone():
+                        raise ValueError('Database relationship check failed; deletion rolled back')
+            except (OSError, sqlite3.Error) as error:
+                return self.respond({'error': 'Unable to back up or delete this playthrough. No deletion was committed.'}, 500)
+            TYPING.pop(save_id, None)
+            AI_REQUEST_LOGS.pop(save_id, None)
+            return self.respond({'deleted': save_id, 'backup': backup['name']})
 
     def handle_restore(self, name):
         with LOCK:

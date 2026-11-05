@@ -308,6 +308,34 @@
     try {state.save=await request('saves',{cartridgeId:state.cartridge.id,resources:state.cartridge.resources,name:$('setupSaveName').value,players});state.identity=null;renderJoin();show('join');}
     catch(error){notify(error);}
   };
+  const leaveUnavailableSave=async()=>{
+    state.save=null;state.identity=null;state.draft=null;state.pendingImage=null;
+    sessionStorage.removeItem('tableforge-player');
+    askDialog=null;sceneDialog=null;
+    $('modalRoot').replaceChildren();showTool(null);
+    for(const tool of toolFrames){$(tool.id).onload=null;$(tool.id).src='about:blank';$(tool.id).dataset.ready='false';}
+    await show('load');
+  };
+  const deleteSave=save=>{
+    confirmBox('Delete playthrough?',`Are you sure you want to delete “${save.name}”? Its transcript, players, notes, images, and usage records will be removed. The cartridge and other playthroughs will stay available.`,()=>{
+      modal(`<h3>Permanently delete ${esc(save.name)}?</h3><p>A database backup will be created before deletion. Type <strong>DELETE</strong> exactly to confirm.</p><label>Confirmation<input id="deleteConfirmation" autocomplete="off" spellcheck="false"></label><p id="deleteError" role="alert"></p><div class="actions"><button class="btn" id="cancelDelete" data-close>Cancel</button><button class="btn warn" id="deletePermanently" disabled>Delete permanently</button></div>`);
+      const field=$('deleteConfirmation'),button=$('deletePermanently'),cancel=$('cancelDelete'),errorLabel=$('deleteError');
+      field.oninput=()=>{button.disabled=field.value!=='DELETE';};field.focus();
+      button.onclick=async()=>{
+        if(button.disabled||field.value!=='DELETE')return;
+        button.disabled=true;field.disabled=true;cancel.disabled=true;errorLabel.textContent='';
+        try{
+          await request(`saves/${save.id}/delete`,{confirmed:true,confirmation:field.value,name:save.name});
+          $('modalRoot').replaceChildren();
+          if(state.save?.save.id===save.id)await leaveUnavailableSave();
+          else await refreshSaves();
+        }catch(error){
+          errorLabel.textContent=error.message;
+          field.disabled=false;cancel.disabled=false;button.disabled=field.value!=='DELETE';
+        }
+      };
+    });
+  };
   const refreshSaves=async()=>{
     const result=await request('saves');
     const panel=$('load').querySelector('.card'); panel.replaceChildren();
@@ -317,6 +345,8 @@
       const session=save.session_ended_at?`Session ${save.session_number} ended · Next: Session ${save.session_number+1}`:`Session ${save.session_number} open`;
       row.innerHTML=`<div class="row"><div><strong>${esc(save.name)}</strong><div class="muted">${esc(save.title)} · ${esc(session)} · ${new Date(save.updated_at).toLocaleString()}</div>${save.cartridgeAvailable?'':'<div class="binding-issue">Cartridge missing. Locate the original package to continue.</div>'}</div><div class="actions" style="margin-top:0"><button class="btn primary continue-save" ${save.cartridgeAvailable?'':'disabled'}>Continue</button>${save.cartridgeAvailable?'':'<button class="btn locate-zip">Locate ZIP</button><button class="btn locate-folder">Locate Folder</button>'}</div></div>`;
       row.querySelector('.continue-save').onclick=async()=>{try{state.save=await request('saves/'+save.id);renderJoin();show('join');}catch(error){notify(error);}};
+      const deleteButton=document.createElement('button');deleteButton.className='btn warn';deleteButton.textContent='Delete…';
+      deleteButton.onclick=()=>deleteSave(save);row.querySelector('.actions').append(deleteButton);
       if(!save.cartridgeAvailable){
         for(const [selector,folder] of [['.locate-zip',false],['.locate-folder',true]]){
           const input=document.createElement('input');input.type='file';input.className='hidden';
@@ -1461,7 +1491,11 @@
       if(next.save.updated_at!==state.save.save.updated_at){state.save=next;render();}
       else if(JSON.stringify(next.activity)!==JSON.stringify(state.save.activity)){state.save.activity=next.activity;render();}
       syncCombatDialog();
-    }catch(error){console.error(error);}
+    }catch(error){
+      if(error.code==='save_unavailable'&&state.save?.save.id===saveId){
+        await leaveUnavailableSave();notify(Error('This playthrough was deleted or is no longer available.'));
+      }else console.error(error);
+    }
     finally{refreshingTable=false;}
   },2500);
 })();
