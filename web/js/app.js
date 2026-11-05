@@ -1225,7 +1225,8 @@
     if(transcript.currentBeatOverBudget) flags.push({level:'info',text:`The current beat is ${count(transcript.currentBeatChars)} characters, over the ${count(transcript.cap)}-character transcript budget. It is still sent in full.`});
     if(transcript.summarized) flags.push({level:'info',text:`${plural(transcript.summarized,'earlier message')} are represented by the saved summary instead of verbatim.`});
     if(module.staleLocation) flags.push({level:'warn',text:'The saved party location no longer exists in this cartridge. Approach is used until a Pilot picks the right area.'});
-    if(!flags.some(flag=>flag.level==='warn')) flags.unshift({level:'ok',text:module.mode==='focused'?'Nothing is unexpectedly omitted. Module sections outside the current focus are left out by design; see Module focus below.':'Nothing is omitted. The full module and every unsummarized message are sent.'});
+    if(report.opening?.withheldCompanionFiles?.length) flags.push({level:'info',text:`Opening stage: ${report.opening.stage}. ${plural(report.opening.withheldCompanionFiles.length,'companion file')} withheld until exploration so future outcomes cannot be mistaken for history.`});
+    if(!flags.some(flag=>flag.level==='warn')) flags.unshift({level:'ok',text:module.mode==='opening'?'Only the authored current opening material is sent. Later scenes are withheld until play reaches them.':module.mode==='focused'?'Nothing is unexpectedly omitted. Module sections outside the current focus are left out by design; see Module focus below.':'Nothing is omitted. The full module and every unsummarized message are sent.'});
     return flags;
   };
   const contextKey=()=>state.save?state.save.save.id+'|'+state.save.save.updated_at:'';
@@ -1257,11 +1258,11 @@
     renderLocation();
   };
   const moduleFocus=module=>{
-    if(module.mode!=='focused') return `<p>${module.roomsInRunData?'run-data.json lists rooms, but module.md has no matching “### Area N” headings under “## Areas”, so':'run-data.json has no rooms, so'} the full module is sent every time.</p>`;
+    if(module.mode!=='focused'&&module.mode!=='opening') return `<p>${module.roomsInRunData?'run-data.json lists rooms, but module.md has no matching “### Area N” headings under “## Areas”, so':'run-data.json has no rooms, so'} the full module is sent every time.</p>`;
     const included=module.included.filter(item=>item.chars>20);
     const rows=included.map(item=>`<li><span>${esc(item.title.replace(/\s*\*\(.*\)\*\s*$/,''))}</span><span class="muted">${esc(item.reason)} · ${count(item.chars)}</span></li>`).join('');
     const skipped=module.excluded.map(title=>`<li>${esc(title.replace(/\s*\*\(.*\)\*\s*$/,''))}</li>`).join('');
-    return `<p>Focused on <strong>${esc(module.locationLabel)}</strong>: sending ${count(module.sentChars)} of ${count(module.fullChars)} module characters. The core is always sent; areas and stat blocks follow the party and the subjects of current contributions. This count covers module text only.</p>
+    return `<p>${module.mode==='opening'?`Opening stage <strong>${esc(module.openingStage)}</strong>: only its relevant sections are sent. Later scenes and future outcomes are withheld.`:`Focused on <strong>${esc(module.locationLabel)}</strong>: the core is always sent; areas and stat blocks follow the party and the subjects of current contributions.`} Sending ${count(module.sentChars)} of ${count(module.fullChars)} module characters. This count covers module text only.</p>
       <ul class="context-sections">${rows}</ul>
       ${skipped?`<details class="context-message"><summary>Not sent this turn · ${plural(module.excluded.length,'section')}</summary><ul class="context-skipped">${skipped}</ul></details>`:''}`;
   };

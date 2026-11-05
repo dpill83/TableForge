@@ -29,6 +29,19 @@ them through **Pilot Mode → Review Context → Use cartridge instructions for 
 See [AI-DM prompt integration](docs/AI-DM-PROMPTS.md) for source provenance,
 context behavior, save migration, and the upgrade procedure.
 
+New saves with a Stage 2 authored hook setup track an opening stage in the save:
+establishing, hook, decision, travel, arrival, and then exploration. Before
+exploration, the AI-DM receives only the stage's authored setup (not future
+area descriptions or companion files such as prewritten `continuity.json`).
+The AI-DM includes an `[Opening: next-stage]` machine line, removed before
+publication; the server rejects jumps, including travel without fresh player
+contributions and site entry before the arrival stage. Players may also decline
+the job and return to freeform exploration without being sent to the site. The initial establishing
+round must ask players to place their characters. Existing saves and cartridges
+without structured opening setup retain the previous context behavior, and no
+past narration is rewritten. Pilot Mode → Review Context shows the active stage
+and withheld sections. A rejected reply leaves the beat intact for a retry.
+
 ### Keep your API key between restarts
 
 Create a `.env` file alongside `server.py` (copy `.env.example` if needed), then enter your key locally:

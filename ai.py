@@ -12,6 +12,7 @@ import module_context
 import combat
 import narration_choices
 import narration_pacing
+import opening_flow
 import runtime_prompts
 
 ASK_PROMPT = (
@@ -181,6 +182,9 @@ def build_context(state, data_dir, purpose='advance'):
     cartridge = state['cartridge']
     summary = state.get('summary')
     adventure = module_context.load(data_dir, cartridge['id'], cartridge['resources'])
+    prompt = runtime_prompts.load_saved(data_dir, state['save']['id']) if purpose != 'ask' else None
+    opening_stage = (state['save'].get('opening_stage') if prompt and prompt['kind'] == 'stage3'
+                     and state['save'].get('opening_stage') in opening_flow.GUIDANCE else None)
     location = state['save'].get('location')
     stale_location = not adventure.valid(location)
     if stale_location:
@@ -199,7 +203,10 @@ def build_context(state, data_dir, purpose='advance'):
     # without using the entire transcript or summary as a retrieval query.
     if any(re.search(r'\b(it|that|those|them|there|him|her|this)\b', query, re.I) for _, query in queries):
         queries += [('preceding reply', m['body']) for m in previous]
-    module, focus = adventure.assemble(location, queries)
+    if opening_stage:
+        module, focus = adventure.opening_assemble(opening_stage)
+    else:
+        module, focus = adventure.assemble(location, queries)
     messages, transcript = select_transcript(state['messages'], summary)
     context = {
         'purpose': purpose,
@@ -209,7 +216,9 @@ def build_context(state, data_dir, purpose='advance'):
         'beat': state['save']['beat'],
         'summary': {'body': summary['body'], 'throughMessageId': summary['through_message_id']} if summary else None,
         'messages': [{'kind': m['kind'], 'name': m['name'], 'body': m['body']} for m in messages],
-        'cartridgeResources': adventure.optional_resources,
+        # Companion artifacts include future continuity and completed outcomes.
+        # They are authored references, not the record of the new playthrough.
+        'cartridgeResources': {} if opening_stage else adventure.optional_resources,
     }
     report = {
         'module': {**module_report(module), **focus, 'fullChars': len(adventure.module_text),
@@ -228,7 +237,6 @@ def build_context(state, data_dir, purpose='advance'):
         context['pilot'] = [{'kind': m['kind'], 'name': m['name'], 'body': m['body']} for m in kept]
         report['pilot'] = {'total': len(pilot), 'omitted': len(pilot) - len(kept)}
         return context
-    prompt = runtime_prompts.load_saved(data_dir, state['save']['id'])
     context['narrationPrompt'] = prompt
     report['narrationPrompt'] = runtime_prompts.metadata(prompt)
     context['choiceInstructions'] = narration_choices.instructions()
@@ -238,7 +246,13 @@ def build_context(state, data_dir, purpose='advance'):
                               and not any(m['kind'] == 'ai' for m in state['messages'])
                               and not state.get('checkpoint') and not state.get('save', {}).get('location'))
         context['party'] = [{'player': p['name'], 'character': p['character']} for p in state['players']]
-        context['runData'] = adventure.structured_context(focus)
+        context['runData'] = (adventure.opening_data(opening_stage) if opening_stage
+                              else adventure.structured_context(focus))
+    if opening_stage:
+        context['openingStage'] = opening_stage
+        context['openingHasPlayerText'] = bool(current)
+        report['opening'] = {'stage': opening_stage,
+                             'withheldCompanionFiles': sorted(adventure.optional_resources)}
     context['locationInstructions'] = adventure.marker_instructions()
     outcomes = [event for event in state.get('events', []) if event['kind'] == 'combat_outcome']
     context['checkpoint'] = state.get('checkpoint')
@@ -307,6 +321,9 @@ def chat_messages(context):
                        'victory, defeat, loot, or other combat results. Ask for necessary missing results.')
         else:
             system += '\nAccepted outcome for this combat:\n' + resume['outcome']
+    if context.get('openingStage'):
+        system += opening_flow.instructions(context['openingStage'], first=context.get('opening', False),
+                                            has_player_text=context.get('openingHasPlayerText', False))
     messages = [{'role': 'system', 'content': system}]
     for item in context['messages']:
         if item['kind'] == 'ai':
@@ -431,6 +448,13 @@ class MockProvider:
             'Mock AI-DM, beat ' + str(beat) + ': The party has a moment to consider what happens next. '
             'This is placeholder narration; no AI provider is connected yet.'
         )
+        if context.get('openingStage') == 'establishing':
+            text += '\n\nWhere are your characters as the adventure begins, and what are they doing?'
+            text += '\n\n[Opening: hook]'
+        elif context.get('openingStage'):
+            # The offline mock cannot infer acceptance from a real character
+            # decision, so it preserves the current opening stage.
+            text += '\n\n[Opening: ' + context['openingStage'] + ']'
         if context.get('locationInstructions'):
             where = context.get('location')
             text += '\n\n[Location: ' + ('Approach' if where is None else f'Area {where}') + ']'

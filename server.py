@@ -27,6 +27,7 @@ import scene_images
 import module_context
 import narration_choices
 import narration_pacing
+import opening_flow
 import runtime_prompts
 from local_config import load_env
 
@@ -119,6 +120,7 @@ def initialize():
             CREATE TABLE IF NOT EXISTS saves (
                 id TEXT PRIMARY KEY, name TEXT NOT NULL, cartridge_id TEXT NOT NULL,
                 mode TEXT NOT NULL DEFAULT 'normal', beat INTEGER NOT NULL DEFAULT 1,
+                opening_stage TEXT NOT NULL DEFAULT 'exploration',
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 FOREIGN KEY(cartridge_id) REFERENCES cartridges(id)
             );
@@ -250,6 +252,10 @@ def initialize():
         if 'location' not in columns:
             # NULL means the party has not yet reached the site (approach).
             conn.execute('ALTER TABLE saves ADD COLUMN location INTEGER')
+        if 'opening_stage' not in columns:
+            # Old saves, including untouched saves, keep their prior behavior.
+            # Only newly created saves with authored opening setups use stages.
+            conn.execute("ALTER TABLE saves ADD COLUMN opening_stage TEXT NOT NULL DEFAULT 'exploration'")
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(messages)')}
         if 'session_id' not in columns:
             conn.execute('ALTER TABLE messages ADD COLUMN session_id TEXT')
@@ -869,7 +875,13 @@ def set_location(conn, state, location, player_id, source):
     if location == state['save']['location']:
         return
     session = active_session(conn, state['save']['id'])
-    conn.execute('UPDATE saves SET location=?, updated_at=? WHERE id=?', (location, utc(), state['save']['id']))
+    opening_stage = state['save'].get('opening_stage')
+    if source == 'pilot' and location is not None and opening_stage in opening_flow.GUIDANCE:
+        # A deliberate Pilot location correction takes precedence over the
+        # automated opening. The Pilot can skip straight to a keyed area.
+        opening_stage = 'exploration'
+    conn.execute('UPDATE saves SET location=?, opening_stage=?, updated_at=? WHERE id=?',
+                 (location, opening_stage, utc(), state['save']['id']))
     conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
                  (state['save']['id'], session['id'], player_id, 'location',
                   json.dumps({'location': location, 'source': source}), utc()))
@@ -883,6 +895,21 @@ def publish_advance(conn, save_id, text, override=None):
     if combat_started:
         choices = None
     text, marked, location = module_context.take_marker(text)
+    opening_stage = state['save'].get('opening_stage')
+    next_opening_stage = opening_stage
+    if opening_stage in opening_flow.GUIDANCE:
+        first = (state['save']['beat'] == 1 and not any(
+            message['kind'] == 'ai' for message in state['messages']))
+        _, contributed = ai.split_beat(state['messages'])
+        adventure = adventure_for(state)
+        text, next_opening_stage = opening_flow.prepare(
+            text, opening_stage, first=first, has_player_text=bool(contributed),
+            require_opening_contract=opening_flow.supported(adventure.run_data),
+        )
+        if marked and location is not None and not (
+                opening_stage == 'arrival' and next_opening_stage == 'exploration'):
+            raise ValueError('The AI-DM entered the site before the players did. '
+                             'No narration was published. Retry the beat.')
     if not text:
         raise ValueError('The AI-DM returned an empty response')
     narration_pacing.validate_public_narration(text)
@@ -901,7 +928,8 @@ def publish_advance(conn, save_id, text, override=None):
                      (save_id, session['id'], override['playerId'], 'ready_override',
                       json.dumps({'beat': override['beat'], 'messageId': message_id,
                                   'ready': override['ready'], 'waitingOn': override['waitingOn']}), stamp))
-    conn.execute('UPDATE saves SET beat=beat+1, updated_at=? WHERE id=?', (utc(), save_id))
+    conn.execute('UPDATE saves SET beat=beat+1, opening_stage=?, updated_at=? WHERE id=?',
+                 (next_opening_stage, utc(), save_id))
     conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
     if combat_started:
         combat.start(conn, save_id, session['id'], None, stamp)
@@ -1142,10 +1170,12 @@ class Handler(BaseHTTPRequestHandler):
                         raise ValueError('Every player needs a name and character')
                     save_id = str(uuid.uuid4())
                     prompt_id = runtime_prompts.store(conn, runtime_prompts.cartridge_snapshot(files, info['resources']))
+                    run_data = json.loads(files[info['resources']['run-data.json']].decode('utf-8'))
+                    opening_stage = 'establishing' if opening_flow.supported(run_data) else 'exploration'
                     stamp = utc()
-                    conn.execute('INSERT INTO saves (id,name,cartridge_id,created_at,updated_at,resource_bindings,adventure_title,narration_prompt_id) VALUES (?,?,?,?,?,?,?,?)',
+                    conn.execute('INSERT INTO saves (id,name,cartridge_id,created_at,updated_at,resource_bindings,adventure_title,narration_prompt_id,opening_stage) VALUES (?,?,?,?,?,?,?,?,?)',
                                  (save_id, str(payload.get('name') or info['title']).strip(), payload['cartridgeId'], stamp, stamp,
-                                   json.dumps(info['resources']), info['title'], prompt_id))
+                                   json.dumps(info['resources']), info['title'], prompt_id, opening_stage))
                     for player in roster:
                         conn.execute('INSERT INTO players (id,save_id,name,character) VALUES (?,?,?,?)', (str(uuid.uuid4()), save_id, player['name'].strip(), player['character'].strip()))
                     start_session(conn, save_id)
