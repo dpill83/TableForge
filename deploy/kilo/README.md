@@ -212,6 +212,44 @@ after health checks pass. No automatic database rollback is attempted.
 
 ## Operator commands (on KILO, after installation)
 
+### SSH playthrough maintenance
+
+After deploying the version containing `manage_saves.py`, run this menu over SSH:
+
+```bash
+sudo systemctl stop tableforge.service
+sudo -u tableforge python3 /opt/tableforge/repo/deploy/kilo/manage_saves.py
+sudo systemctl start tableforge.service
+```
+
+This pauses the whole table; finish any in-flight AI request before stopping it.
+The menu lists saves with their cartridge title, ID, beat, and last update time.
+Select a number to rename the playthrough or delete it. Deletion requires typing
+`DELETE` exactly and removes that save's history, players, notes, images, and AI
+usage records. Cartridges, shared prompt snapshots, and other saves are preserved.
+Editing is limited to the playthrough name; transcripts and game state are not
+editable here.
+
+Each mutation first creates a verified, full SQLite backup under
+`/var/lib/tableforge/backups/before-maintenance-*.sqlite3`. These backups retain
+deleted content until separately removed; restoring one restores the entire
+database, including other playthroughs as they existed at backup time.
+Deletion is transactional and checks foreign keys; unfamiliar save tables block
+deletion until this tool is updated. The menu refuses to run unless systemd
+reports TableForge stopped, and rechecks before each mutation. Keep the service
+stopped throughout maintenance; do not deploy or restart it from another terminal.
+Always run the final start command after quitting or encountering an error.
+
+There is no web endpoint or player-facing delete button. Access uses the host's
+existing SSH/sudo permissions. The tool is standalone standard-library Python and
+can also be installed outside the checkout by an administrator with
+`sudo install -o root -g root -m 0755 /opt/tableforge/repo/deploy/kilo/manage_saves.py /usr/local/libexec/tableforge/manage_saves.py`.
+Reinstall that copy to pick up future changes. An alternate database may be
+selected with `--database /absolute/path/tableforge.sqlite3`; the same service
+stop check still applies.
+
+### Service and deployment commands
+
 ```bash
 # Logs / service control
 sudo journalctl -u tableforge.service -f
