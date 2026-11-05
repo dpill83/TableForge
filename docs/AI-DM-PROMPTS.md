@@ -63,6 +63,13 @@ Save creation makes no provider call. The first authorized advance sends an
 explicit opening request, including existing player contributions. Later advances
 continue the current situation instead of restarting the opening.
 
+The opening request explicitly states that the session is already running in
+TableForge, skips the relay setup and party-sheet confirmation, and directs the
+AI-DM through the establishing round, hook, acceptance, travel, and arrival.
+This request reinforces the adapter without changing the cartridge's Stage 3
+source or the save's pinned instruction snapshot. It applies when a save is
+eligible for its first narration; it does not restart an opening already underway.
+
 Narration receives selected module context, saved transcript/summary/checkpoint,
 recent combat outcomes, and player/character assignments. Stage 3 saves also get
 global run-data fields (party, hook, clock, source version), plus rooms/stat blocks

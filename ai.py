@@ -313,8 +313,11 @@ def chat_messages(context):
             messages.append({'role': 'user', 'content': f"{item['name']}: {item['body']}"})
     if context.get('opening'):
         messages.append({'role': 'user', 'content':
-                         'Begin the adventure. This is the first AI-DM narration. Follow the opening sequence '
-                         'as adapted for TableForge, honoring any player contributions above.'})
+                         'Begin the adventure. This is the first AI-DM narration. '
+                         'This session is already running in TableForge; do not ask whether TableForge is being used. '
+                         'Use the saved character assignments and skip relay setup and party-sheet confirmation. '
+                         'Start with the character establishing round, then follow the hook, acceptance, travel, '
+                         'and arrival sequence. Honor any player contributions above.'})
     elif not resume and not split_beat(context['messages'])[1]:
         # Earlier player messages are history, not a contribution to this beat.
         # Ready (or an override) can request continuation without declaring an action.
