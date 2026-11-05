@@ -1049,6 +1049,7 @@
     state.pilot=!state.pilot;
     $('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');
     $('pilotPanel').classList.toggle('hidden',!state.pilot);
+    for(const tool of toolFrames) $(tool.button).classList.toggle('hidden',!state.pilot);
     refreshContextFlag();
     if(!state.pilot){
       if($('pilotThread')||$('sceneImageDialog')||$('moduleViewerLoading')||$('moduleViewerMessage')||$('moduleValidatorDialog')||$('aiRequestLogDialog'))$('modalRoot').replaceChildren();
