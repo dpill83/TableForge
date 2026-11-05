@@ -122,6 +122,22 @@ Choices are optional suggestions. Free-text replies remain available. Existing
 saves receive the output-format instruction on future narration requests without
 replacing their saved Stage 3 instructions or changing historical messages.
 
+### Deleting playthroughs
+
+**Load Adventure → Delete…** removes a selected playthrough after two
+confirmations: first confirm the named playthrough, then type `DELETE` exactly
+to enable **Delete permanently**. This is available to the trusted table without
+Pilot Mode or accounts. Confirmations prevent accidents; they are not access
+control. Deletion includes that save's transcript, players, notes, images, and
+usage records, and retains the cartridge and other saves. AI-DM and illustration
+requests must finish first. Other open browsers return to Load Adventure when
+their next table refresh detects the deleted save.
+
+TableForge creates a verified full-database backup before deleting. Backups remain
+available in Options and retain the deleted data; restoring one restores the
+whole database to that point, including other playthroughs. The SSH maintenance
+tool remains available for host-side administration.
+
 ### Party knowledge
 
 **NPCs**, **Locations**, and **World Notes** in the left sidebar show only what Pilots have written down as known to the party. Nothing is read from the cartridge, and these notes are not sent to the AI-DM. In Pilot Mode, add, edit, or remove entries; removed entries stay in the save history.
