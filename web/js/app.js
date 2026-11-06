@@ -561,7 +561,7 @@
           img.addEventListener('load',()=>{if(state.followLatest!==false)$('feed').scrollTop=$('feed').scrollHeight;});
           row.querySelector('.message-body').prepend(link);
           const source=document.createElement('button');source.className='btn small';source.textContent='View source narration';
-          source.onclick=()=>document.getElementById('message-'+record.source_message_id)?.scrollIntoView({block:'center'});
+          source.onclick=()=>openSceneSource(record.source_message_id);
           row.querySelector('.message-actions').append(source);
         }
       }
@@ -920,6 +920,13 @@
     }catch(error){notify(error);}
   };
   const modal=(html,size='')=>{const root=$('modalRoot');root.innerHTML=`<div class="overlay"><div class="modal ${size}">${html}</div></div>`;root.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>root.replaceChildren());root.querySelector('.overlay').onclick=e=>{if(e.target.classList.contains('overlay'))root.replaceChildren();};};
+  const openSceneSource=messageId=>{
+    const source=state.save?.messages.find(message=>message.id===messageId&&message.kind==='ai');
+    modal('<h3>Source narration</h3><div id="sceneSourceNarration" class="markdown-body"></div><div class="actions"><button class="btn" data-close>Close</button></div>','wide');
+    const body=$('sceneSourceNarration');
+    if(source)body.innerHTML=TableForgeMarkdown.render(source.body);
+    else body.textContent='The source narration is unavailable in this save.';
+  };
   const openPortraitEditor=()=>{
     const player=state.save?.players.find(p=>p.id===state.identity);
     if(!player)return;
@@ -1095,13 +1102,18 @@
     }
   };
   let sceneDialog=null;
-  const imageDialogActive = dialog => sceneDialog===dialog&&!!$('sceneImageDialog')&&state.pilot&&state.save?.save.id===dialog.saveId;
+  const imageDialogActive = dialog => sceneDialog===dialog&&!!$('sceneImageDialog')&&state.pilot&&state.identity===dialog.playerId&&state.save?.save.id===dialog.saveId;
+  const sceneReferenceSelection = () => ({
+    characterIds:$('sceneIncludeCharacters').checked?[...$('sceneCharacters').querySelectorAll('input:checked')].map(input=>input.value):[],
+    npcReferences:[...$('sceneNpcReferences').querySelectorAll('.scene-reference')].filter(row=>row.querySelector('input[type="checkbox"]').checked).map(row=>({assetId:row.dataset.assetId,name:row.querySelector('input[type="text"]').value.trim()})),
+  });
   const renderSceneImages = dialog => {
     if(!imageDialogActive(dialog))return;
     const busy=dialog.submitting||dialog.images.some(i=>i.status==='generating');
     const enabled=state.save.imageSettings?.enabled;
     $('generateScene').disabled=busy||!enabled||!!state.save.sessions.at(-1)?.ended_at;
     $('sceneDirection').disabled=dialog.submitting;
+    $('sceneReferenceControls').querySelectorAll('input').forEach(input=>input.disabled=dialog.submitting||input.dataset.unavailable==='true');
     $('sceneImageStatus').textContent=!enabled?'Configure the OpenAI API key on the host, then restart the server.':busy?'Generating a draft… You can close this window and keep playing. Reopen Illustrate Scene to review it.':'One low-quality landscape image per click. Each generation is a paid API request.';
     const latest=state.save.messages.findLast(m=>m.kind==='ai');
     $('sceneSourceNotice').textContent=latest?.id!==dialog.sourceId?'The story has moved on. This request still uses the narration shown below. Reopen this window to use the latest narration.':'';
@@ -1151,16 +1163,30 @@
   $('illustrateScene').onclick=async()=>{
     if(!state.pilot||!state.identity||!state.save)return;
     const source=state.save.messages.findLast(m=>m.kind==='ai');if(!source)return;
-    const dialog={saveId:state.save.save.id,sourceId:source.id,images:[],submitting:false,polling:false,rendered:null};sceneDialog=dialog;
-    modal(`<div id="sceneImageDialog"><h3>Illustrate Scene</h3><p id="sceneSourceNotice" class="binding-issue"></p><details><summary>Source: latest AI-DM narration</summary><div class="scene-source"></div></details><label>Visual direction (optional)<textarea id="sceneDirection" rows="3" maxlength="2000" placeholder="Show the ruined courtyard from the party's viewpoint."></textarea></label><p id="sceneImageStatus" role="status" aria-live="polite"></p><p id="sceneImageError" class="binding-issue" role="alert"></p><div class="actions"><button class="btn" data-close>Close</button><button class="btn primary" id="generateScene" disabled>Generate Draft</button></div><div id="sceneImagePreviews"></div></div>`,'wide');
+    const dialog={saveId:state.save.save.id,playerId:state.identity,sourceId:source.id,images:[],submitting:false,polling:false,rendered:null};sceneDialog=dialog;
+    modal(`<div id="sceneImageDialog"><h3>Illustrate Scene</h3><p id="sceneSourceNotice" class="binding-issue"></p><details><summary>Source: latest AI-DM narration</summary><div class="scene-source"></div></details><div id="sceneReferenceControls"><p>Default viewpoint: show what the party sees, with player characters off-camera.</p><label class="scene-reference-toggle"><input type="checkbox" id="sceneIncludeCharacters"> Include player characters using their portraits</label><div id="sceneCharacters" class="hidden"></div><details><summary>NPC artwork from cartridge</summary><p class="muted">Select only NPCs already visible in this scene and enter their names. Selected artwork may appear in the shared illustration. Other cartridge content stays private.</p><div id="sceneNpcReferences">Loading artwork…</div></details><p class="muted">Up to 8 references, 20 MB total. Portraits guide appearance; cropped portraits may leave clothing and equipment unspecified. Reference images add to API usage.</p></div><label>Visual direction (optional)<textarea id="sceneDirection" rows="3" maxlength="2000" placeholder="Show the ruined courtyard from the party's viewpoint."></textarea></label><p id="sceneImageStatus" role="status" aria-live="polite"></p><p id="sceneImageError" class="binding-issue" role="alert"></p><div class="actions"><button class="btn" data-close>Close</button><button class="btn primary" id="generateScene" disabled>Generate Draft</button></div><div id="sceneImagePreviews"></div></div>`,'wide');
     $('sceneImageDialog').querySelector('.scene-source').textContent=source.body;
+    $('sceneCharacters').innerHTML=state.save.players.map(player=>`<label class="scene-reference"><input type="checkbox" value="${esc(player.id)}" ${player.portraitUrl?'checked':'disabled data-unavailable="true"'}>${player.portraitUrl?`<img src="${esc(player.portraitUrl)}" alt="">`:''}<span>${esc(player.character)}${player.portraitUrl?'':' — upload a portrait first'}</span></label>`).join('');
+    $('sceneIncludeCharacters').onchange=()=>{$('sceneCharacters').classList.toggle('hidden',!$('sceneIncludeCharacters').checked);};
+    const loadReferences=async()=>{
+      try{
+        const result=await request(`saves/${dialog.saveId}/image-references?playerId=${encodeURIComponent(dialog.playerId)}&pilot=true`);
+        if(!imageDialogActive(dialog))return;
+        $('sceneNpcReferences').innerHTML=result.assets.map(asset=>`<div class="scene-reference" data-asset-id="${esc(asset.id)}"><label class="scene-reference-toggle"><input type="checkbox" aria-label="Use ${esc(asset.path)}"><img src="${esc(asset.url)}" alt="" loading="lazy"><span>${esc(asset.path)}</span></label><input type="text" maxlength="100" placeholder="NPC name" aria-label="NPC name for ${esc(asset.path)}"></div>`).join('')||'<p>No supported artwork found. PNG, JPEG, and WebP images up to 5 MB are supported.</p>';
+        renderSceneImages(dialog);
+      }catch(error){if(imageDialogActive(dialog))$('sceneNpcReferences').textContent='Could not load NPC artwork. Reopen this dialog to retry. Player portraits and party viewpoint are still available.';}
+    };
+    loadReferences();
     $('generateScene').onclick=async()=>{
       if(!imageDialogActive(dialog)||dialog.submitting)return;
+      const selection=sceneReferenceSelection();
+      if($('sceneIncludeCharacters').checked&&!selection.characterIds.length){$('sceneImageError').textContent='Select a player character with an uploaded portrait, or turn off Include player characters.';return;}
+      if(selection.characterIds.length+selection.npcReferences.length>8||selection.npcReferences.some(ref=>!ref.name)){$('sceneImageError').textContent='Choose at most 8 references and name each selected NPC.';return;}
       dialog.submitting=true;const direction=$('sceneDirection').value;
       $('sceneImageError').textContent='';renderSceneImages(dialog);
       try{
         const requestId=newRequestId();
-        await request('saves/'+dialog.saveId+'/images',{playerId:state.identity,pilot:true,requestId,sourceMessageId:dialog.sourceId,direction});
+        await request('saves/'+dialog.saveId+'/images',{playerId:dialog.playerId,pilot:true,requestId,sourceMessageId:dialog.sourceId,direction,...selection});
       }catch(error){if(imageDialogActive(dialog))$('sceneImageError').textContent=error.message;}
       finally{
         dialog.submitting=false;

@@ -761,6 +761,14 @@ textarea{padding:10px;resize:none}
 .scene-image{display:block;max-width:100%;width:600px;height:auto;border-radius:10px;margin:12px 0;border:1px solid var(--border)}
 .scene-preview{margin-top:18px;padding-top:14px;border-top:1px solid var(--border)}
 .scene-source{white-space:pre-wrap;max-height:240px;overflow:auto;font-size:13px;line-height:1.5;margin:10px 0;color:var(--muted)}
+.scene-reference,.scene-reference-toggle{display:flex;align-items:center;gap:10px;margin:8px 0}
+.scene-reference input[type="checkbox"],.scene-reference-toggle input[type="checkbox"]{width:auto;flex:none}
+.scene-reference img{width:48px;height:48px;object-fit:cover;border-radius:6px;flex:none}
+.scene-reference span{overflow-wrap:anywhere;min-width:0}
+#sceneNpcReferences{max-height:280px;overflow:auto}
+#sceneNpcReferences .scene-reference{flex-wrap:wrap}
+#sceneNpcReferences .scene-reference-toggle{flex:1;min-width:180px}
+#sceneNpcReferences input[type="text"]{width:180px}
 .image-usage{margin-top:10px;padding-top:8px;border-top:1px solid var(--border)}
 .overlay{
   position:fixed;inset:0;background:rgba(0,0,0,.64);display:grid;place-items:center;
