@@ -25,6 +25,21 @@ supported by the public situation, with no secrets or operational instructions.
 A party-wide option expresses the selecting player's proposal, not a decision
 already made by the whole group. Choices are suggestions, never exhaustive.
 
+Party-wide options must also be **speaker-safe**: the text is copied into the
+message box of whichever player selects it, as that character's first-person
+statement. Write every Party option so it sounds natural coming from **any**
+current player. Do not name a player character as a third-person actor in a
+Party option, or assume that a specific character is the one selecting it.
+Use "we", "someone", or a neutral action instead:
+
+- Bad Party option: "I suggest Cara try picking the grille's lock." (Cara may
+  be the speaker.)
+- Good Party option: "I suggest we try picking the grille's lock."
+- If the action is meant only for Cara, give Cara a player-specific option:
+  "I try picking the grille's lock." Other players can propose that plan in
+  their own words. Do not assign actions to a player character through a
+  party-wide suggestion.
+
 Omit the block when no concrete alternatives are offered. Ordinary questions,
 requests for rolls or statistics, combat handoffs, and open-ended roleplay do not
 need invented options. Do not put this metadata in ordinary code blocks or show
