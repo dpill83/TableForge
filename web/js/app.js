@@ -3,7 +3,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const avatar = (player, className, fallback) => `<div class="${className}">${esc(fallback ?? player?.character?.[0] ?? '?')}${player?.portraitUrl?`<img src="${esc(player.portraitUrl)}" alt="">`:''}</div>`;
   const screens = [...document.querySelectorAll('.screen')];
-  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, composer:false, draft:null, pendingImage:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0};
+  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, draft:null, pendingImage:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0};
   const combatPending=()=>state.save?.save.mode==='combat'||!!(state.save?.combat&&state.save.combat.phase!=='complete');
   const combatEligible=()=>state.save?.save.mode==='combat'&&!!state.save.players.length&&state.save.players.every(p=>p.ready);
   const outcomeDraftKey=()=>state.save&&state.identity&&state.save.combat?`tableforge-combat:${state.save.save.id}:${state.save.combat.id}:${state.identity}`:null;
@@ -464,7 +464,6 @@
     const composer=$('composer'),text=TableForgeMessageActions.appendText(composer.value,option.text);
     if(text.length>20000){notify(Error('This choice would exceed the 20,000-character message limit.'));return;}
     composer.value=text;
-    if(state.composer)$('toggleComposer').click();
     composer.dispatchEvent(new Event('input',{bubbles:true}));
     composer.focus();
     composer.setSelectionRange(text.length,text.length);
@@ -1501,7 +1500,6 @@
   const toggle=(id,css,key,other,symbols)=>{state[key]=!state[key];$(other).classList.toggle('collapsed',state[key]);$(id).textContent=state[key]?symbols[1]:symbols[0];if(css)$('workarea').classList.toggle(css,state[key]);};
   $('toggleLeft').onclick=()=>toggle('toggleLeft','left-collapsed','left','leftSidebar',['‹','›']);
   $('toggleRight').onclick=()=>toggle('toggleRight','right-collapsed','right','rightSidebar',['›','‹']);
-  $('toggleComposer').onclick=()=>toggle('toggleComposer',null,'composer','composerWrap',['↓','↑']);
   const applySearch=()=>{const q=$('messageSearch').value.trim().toLowerCase();let hits=0;document.querySelectorAll('#feedInner .message').forEach(el=>{const found=!!q&&el.dataset.searchText.includes(q);hits+=Number(found);el.classList.toggle('search-dim',!!q&&!found);el.classList.toggle('search-match',found);});$('searchCount').textContent=q?hits:'';};
   $('messageSearch').oninput=applySearch;
   $('messageSearch').onkeydown=e=>{if(e.key==='Escape'){$('messageSearch').value='';applySearch();}if(e.key==='Enter')document.querySelector('.search-match')?.scrollIntoView({block:'center'});};

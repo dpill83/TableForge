@@ -14,7 +14,7 @@ const section=(start,end)=>{
 function table(){
   const document={body:{},activeElement:null};
   const elements={};
-  for(const id of ['composer','sendBtn','readyBtn','toggleComposer','play','modalRoot']){
+  for(const id of ['composer','sendBtn','readyBtn','play','modalRoot']){
     elements[id]={value:'',disabled:false,childElementCount:0,listeners:{},
       classList:{contains:()=>true},
       addEventListener(type,handler){this.listeners[type]=handler;},
@@ -32,7 +32,7 @@ function table(){
       {letter:'C',text:'I keep watch.'},
     ]},
   ]}};
-  const state={identity:'first',composer:false,draft:null,pendingImage:null,
+  const state={identity:'first',draft:null,pendingImage:null,
     save:{save:{id:'save',beat:2,mode:'normal'},sessions:[{id:'session',ended_at:null}],
       players:[{id:'first',ready:false},{id:'second',ready:false}],messages:[message],activity:{}},
   };
@@ -44,7 +44,6 @@ function table(){
     else state.draft||={saveId:'save',beat:2,requestId:null};
   };
   field.addEventListener('input',syncDraft);
-  elements.toggleComposer.onclick=()=>{state.composer=!state.composer;};
   const context=vm.createContext({state,document,field,readyButton,
     $:id=>elements[id],TableForgeMessageActions:actions,Event:class{constructor(type){this.type=type;}},
     pendingContribution,combatPending,draftStale,syncDraft,
@@ -105,10 +104,9 @@ test('Enter on Ready with a selected action sends it before any advancement',asy
   assert.equal(t.requests[0].payload.text,'I discuss the blade.');
 });
 
-test('choice appends to a draft, expands the composer, and preserves an attachment',async()=>{
-  const t=table();t.field.value='I greet the crew.';t.state.composer=true;
+test('choice appends to a draft and preserves an attachment',async()=>{
+  const t=table();t.field.value='I greet the crew.';
   t.state.pendingImage={mime:'image/png',data:'test-image'};t.choose('C');
-  assert.equal(t.state.composer,false);
   await t.press(t.readyButton);
   assert.equal(t.requests[0].payload.text,'I greet the crew.\nI keep watch.');
   assert.equal(t.requests[0].payload.image.data,'test-image');
