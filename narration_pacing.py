@@ -50,6 +50,33 @@ SOCIAL_SCENE_INSTRUCTIONS = '''\n\nTableForge organic roleplay contract (applies
   dialogue menu. Players remain free to speak and act however they choose.
 '''
 
+# Applied after authored adventure material and the saved Stage 3 snapshot.
+# A player-facing request for a check is part of the adventure, even though
+# separate private Ask AI-DM conversations handle off-table rules questions.
+PUBLIC_CHECK_INSTRUCTIONS = '''\n\nTableForge public discovery and ability-check contract:
+- Address each player's current in-fiction questions as well as their declared
+  actions. An NPC saying "I don't know" does not settle what a player character
+  could recognize, observe, or infer for themselves.
+- Give readily observable facts and ordinary character knowledge directly,
+  without a roll. When a character could plausibly learn something useful but
+  the outcome is genuinely uncertain, proactively ask THAT player for a fitting
+  ability (skill) check in the SHARED table narration, even when they did not
+  explicitly ask whether they could roll. State what the check could help
+  determine and ask them to report their result. Do not direct them to private
+  Ask AI-DM or require Pilot Mode to discover this option.
+- Do not demand rolls for every question or offer impossible checks. Explain
+  limits honestly: recognizing a substance by appearance does not automatically
+  establish whether breathing it is safe, and an NPC's guess is not proof.
+  Keep unrevealed adventure facts sealed until legitimately discovered.
+- If a check is requested, do not roll for the player, invent a total, or
+  narrate its outcome before they report it. Other players' independent actions
+  can still resolve in parallel, but do not move past the pending inquiry as
+  though it had been answered or demand a new decision from that character.
+  Resolve their reported check publicly on a later beat, or let them abandon it.
+- Private Ask AI-DM remains for off-table rules and tactics consultation;
+  public character checks and their in-fiction results belong at the table.
+'''
+
 # Conservative safeguard for explicit, standalone player prompts. General
 # questions in NPC dialogue and rhetorical questions are not decision boundaries.
 # The model prompt above, not this narrow parser, handles more subtle cases.

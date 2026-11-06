@@ -331,6 +331,9 @@ def chat_messages(context):
     # This applies after the authored module, run-data, and opening instructions:
     # NPC briefings are facts to draw from, never dialogue the model must dump.
     system += narration_pacing.SOCIAL_SCENE_INSTRUCTIONS
+    # Keep in-fiction skill-check requests and their resolutions in the table
+    # chat, rather than making players discover them through private Ask AI-DM.
+    system += narration_pacing.PUBLIC_CHECK_INSTRUCTIONS
     messages = [{'role': 'system', 'content': system}]
     for item in context['messages']:
         if item['kind'] == 'ai':

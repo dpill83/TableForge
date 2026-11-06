@@ -90,6 +90,7 @@ class PromptFlowTest(unittest.TestCase):
         self.assertIn('Present only the first playable opening beat', opening)
         self.assertIn('they are not a checklist for this response', opening)
         self.assertIn(narration_pacing.INSTRUCTIONS, preview['messages'][0]['content'])
+        self.assertIn(narration_pacing.PUBLIC_CHECK_INSTRUCTIONS, preview['messages'][0]['content'])
         self.assertEqual(preview['report']['narrationPrompt']['version'], '2.1.1')
         self.assertIsNone(preview['promptUpdate'])
         fake = test_flow.FakeProvider('Where is George this morning?')
@@ -120,6 +121,27 @@ class PromptFlowTest(unittest.TestCase):
         messages = ai.chat_messages(context)
         self.assertIn('George: I look ahead.', [m['content'] for m in messages])
         self.assertIn('first AI-DM narration', messages[-1]['content'])
+
+    def test_character_knowledge_questions_have_public_roll_guidance(self):
+        save_id = self.ready_save()
+        state = self.api(f'/api/saves/{save_id}')
+        player = state['players'][0]['id']
+        question = 'What is this yellow dust? Is it toxic?'
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': question})
+        context = self.api(f'/api/saves/{save_id}/context')
+        prompt = context['messages'][0]['content']
+        self.assertIn(f'George: {question}', [item['content'] for item in context['messages']])
+        self.assertIn('An NPC saying "I don\'t know" does not settle', prompt)
+        self.assertIn('proactively ask THAT player', prompt)
+        self.assertIn('SHARED table narration', prompt)
+        self.assertIn('do not roll for the player', prompt)
+        self.assertIn('Other players\' independent actions', prompt)
+        self.assertGreater(prompt.index('TableForge public discovery and ability-check contract'),
+                           prompt.index('TableForge organic roleplay contract'))
+        private = ai.chat_messages(ai.build_context(self.api(f'/api/saves/{save_id}'),
+                                                    self.path, purpose='ask'))
+        self.assertNotIn('TableForge public discovery and ability-check contract',
+                         private[0]['content'])
 
     def test_newer_cartridge_prompt_is_used_without_a_tableforge_release(self):
         source = test_flow.STAGE3_TEXT.replace('2.1.1', '9.4.0') + '\nNew adventure-specific runtime guidance.\n'
