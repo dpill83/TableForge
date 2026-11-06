@@ -41,6 +41,11 @@ round must ask players to place their characters. Existing saves and cartridges
 without structured opening setup retain the previous context behavior, and no
 past narration is rewritten. Pilot Mode → Review Context shows the active stage
 and withheld sections. A rejected reply leaves the beat intact for a retry.
+During social scenes, TableForge also asks the AI-DM to respond to the players'
+actual questions and actions before delivering adventure exposition. Authored
+patron briefings are reference material, not mandatory speeches; a hook can
+develop naturally without requiring a minimum number of dialogue rounds. The
+existing optional A/B/C action choices remain available.
 
 ### Keep your API key between restarts
 

@@ -328,6 +328,9 @@ def chat_messages(context):
     if context.get('openingStage'):
         system += opening_flow.instructions(context['openingStage'], first=context.get('opening', False),
                                             has_player_input=context.get('openingHasPlayerInput', False))
+    # This applies after the authored module, run-data, and opening instructions:
+    # NPC briefings are facts to draw from, never dialogue the model must dump.
+    system += narration_pacing.SOCIAL_SCENE_INSTRUCTIONS
     messages = [{'role': 'system', 'content': system}]
     for item in context['messages']:
         if item['kind'] == 'ai':

@@ -23,6 +23,33 @@ conflicting opening sequences or adventure text):
   Ready/Unready process. Do not invent an extra readiness confirmation.
 '''
 
+# Kept after cartridge/run-data references in the actual AI request so that an
+# authored patron briefing cannot override how NPCs respond to live players.
+# This is guidance, not a publication regex: judging social credibility from
+# text patterns would reject valid scenes and waste paid model generations.
+SOCIAL_SCENE_INSTRUCTIONS = '''\n\nTableForge organic roleplay contract (applies when people interact):
+- The current player actions and questions lead the scene. First resolve what
+  they did and answer what they asked, from the NPC's actual perspective and
+  knowledge. Do not pivot directly from a rescue, greeting, or narrow question
+  to a prepared adventure pitch just because the module contains one.
+- NPCs have immediate concerns, reactions, motives, and limits. Convey these
+  through a concrete detail or response, not a biography or obligatory small
+  talk. Strangers do not become companions or jointly hired by default.
+- Authored patron briefings, mysteries, payment, destinations, and transport
+  arrangements are reference facts, NOT a monologue or a checklist to reveal
+  as soon as the NPC appears. Share relevant details when players ask, show
+  interest, encounter evidence, or when the NPC has a believable reason to
+  volunteer them. Let the conversation breathe without stalling progress.
+- No mandatory number of dialogue beats: urgent NPCs may make a direct offer
+  when justified, and interested players can get the full terms immediately.
+  Do not withhold answers, add filler, or force repeated introductions.
+- If players distrust or challenge an NPC, show a credible reaction once and
+  respond to their actual concern. Do not repeatedly apologize, re-sell the
+  quest, or repeat all the same facts in subsequent turns.
+- This does not change the optional A/B/C action-choice format or require a
+  dialogue menu. Players remain free to speak and act however they choose.
+'''
+
 # Conservative safeguard for explicit, standalone player prompts. General
 # questions in NPC dialogue and rhetorical questions are not decision boundaries.
 # The model prompt above, not this narrow parser, handles more subtle cases.

@@ -81,6 +81,19 @@ story. The beat and player Ready state remain intact for a retry; ordinary NPC
 dialogue and rhetorical questions are not scanned as turn boundaries. The
 guard is a safety net for clear violations, not a complete semantic validator.
 
+Public narration also receives an **organic roleplay contract** after the
+cartridge/module and stage-specific material. The AI-DM should answer the actual
+player action or question first, portray an NPC's immediate perspective and
+motives, and treat authored patron briefings as reference facts rather than a
+speech to deliver on first contact. Clues, offers, and payment details can
+emerge when credible or requested; there is no mandatory small-talk period or
+fixed number of beats. Opening stages are permissions, not a checklist to finish
+quickly. Individual strangers are not presumed to be a party merely because
+they share a scene. After pushback, the NPC should respond rather than repeatedly
+apologize or repeat the same pitch. The optional A/B/C choice format is unchanged.
+These are model instructions, not fragile keyword-based publication rejections:
+social timing still requires playtesting and judgment.
+
 Narration receives selected module context, saved transcript/summary/checkpoint,
 recent combat outcomes, and player/character assignments. Stage 3 saves also get
 global run-data fields (party, hook, clock, source version), plus rooms/stat blocks

@@ -33,13 +33,19 @@ GUIDANCE = {
     ),
     'hook': (
         'Use only the authored opening incident and patron material. Let players act '
-        'on unresolved dangers before narrating their outcome. Offer the job in character '
-        'when the scene permits. Do not decide whether they accept or narrate travel.'
+        'on unresolved dangers before narrating their outcome. After the incident, '
+        'respond to what each player actually said or did. The patron briefing is '
+        'reference material, not a speech to recite; do not automatically jump to '
+        'the full mystery, reward, and travel plans. An NPC can make a job offer '
+        'as soon as it makes sense from the interaction, but an offer is not a '
+        'required ending for this beat. Do not decide acceptance or narrate travel.'
     ),
     'decision': (
-        'The offer is pending. Answer questions, resolve declared actions, or let the '
-        'players decline or seek another path. Do not treat Ready without a message as '
-        'acceptance. Only explicit player intent to undertake the journey permits '
+        'The offer is pending. Answer new questions without replaying the full pitch, '
+        'resolve declared actions, or let players decline or seek another path. '
+        'Each character can respond separately; an interested character does not '
+        'speak for the others. Do not treat Ready without a message as acceptance. '
+        'Only explicit player intent to undertake the journey permits '
         'moving to travel, and actual travel belongs to a later beat. If the '
         'players explicitly refuse and leave this adventure hook, move to '
         'exploration for freeform play without sending them to the site.'
@@ -68,8 +74,11 @@ def instructions(stage, first=False, has_player_input=False):
         '\n\nTableForge authoritative opening state: ' + stage + '. '
         + ('This is the very first public AI-DM response. ' if first else '')
         + GUIDANCE[stage] + pending
-        + '\nThe stage reflects the SAVE, not the module outline. A module description '
-        'of a later scene is not evidence that it occurred. Do not narrate private '
+        + '\nOpening stages are permissions for what may happen, not objectives '
+        'to complete quickly. Keep the current stage if the interaction is still '
+        'developing; do not force extra dialogue beats just to delay a natural '
+        'offer. The stage reflects the SAVE, not the module outline. A module '
+        'description of a later scene is not evidence that it occurred. Do not narrate private '
         'thoughts, choices, or movement for player characters. '
         'After the public prose, include a separate machine line [Opening: NEXT] '
         '(before the required final [Location: ...] line, if there is one), where NEXT '

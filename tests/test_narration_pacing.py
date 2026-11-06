@@ -111,6 +111,20 @@ class PacingFlowTest(unittest.TestCase):
         self.assertIn('What do you do?', result['messages'][-1]['body'])
         self.assertIsNotNone(result['messages'][-1]['choices'])
 
+    def test_social_scene_guidance_follows_cartridge_and_preserves_choices(self):
+        save_id = self.ready_save('# A wagon crossing\nAlicia has work to offer.')
+        context = self.api(f'/api/saves/{save_id}/context')
+        system = context['messages'][0]['content']
+        self.assertIn('TableForge organic roleplay contract', system)
+        self.assertIn('The current player actions and questions lead the scene', system)
+        self.assertIn('NOT a monologue or a checklist', system)
+        self.assertIn('No mandatory number of dialogue beats', system)
+        self.assertGreater(system.index('TableForge organic roleplay contract'),
+                           system.index('Alicia has work to offer'))
+        # The model still receives the existing optional A/B/C choice contract.
+        self.assertIn('```tableforge-choices', system)
+        self.assertIn('This does not change the optional A/B/C action-choice format', system)
+
     def test_followup_question_publishes_without_a_rejected_generation(self):
         save_id = self.ready_save()
         text = ('The quarry wagon skids sideways.\n\n'
