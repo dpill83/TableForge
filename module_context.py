@@ -231,6 +231,71 @@ class Adventure:
         }
         return text, report
 
+    def opening_assemble(self, stage):
+        """Expose the authored scene for this opening stage, not later scenes.
+
+        An opening is never evidence of arrival or discovery. In particular,
+        future area descriptions and the approach-to-site scene are withheld
+        while the characters are still meeting or considering the patron's job.
+        This works for both fully keyed and minimal/unkeyed cartridges.
+        """
+        stages = ('establishing', 'hook', 'decision', 'travel', 'arrival')
+        if stage not in stages:
+            raise ValueError('Unknown opening stage')
+        number = stages.index(stage)
+        reasons = {}
+        entrance = (sorted(n for n, room in self.rooms.items() if room.get('beat') == 'entrance')
+                    or sorted(self.rooms)[:1])
+        for section in self.sections:
+            title = section['title'].lower()
+            parent = (section['parent'] or '').lower()
+            kind, key = section['kind'], section['key']
+            reason = None
+            if section['level'] == 1:
+                reason = 'opening introduction'
+            elif kind == 'core' and (title.startswith(('running notes', 'opening', 'hook', 'the loss clock', 'clock'))
+                                     or parent.startswith('hook')):
+                # Patron answers and secret background do not belong to the
+                # character-establishing round, even when authored under Hook.
+                if number >= 1 or not title.startswith(('patron faq', 'dm secrets')):
+                    reason = 'opening hook'
+            elif kind == 'approach' and title.startswith('player briefing') and number >= 1:
+                reason = 'patron briefing'
+            elif kind == 'approach' and title.startswith('approach') and number >= 3:
+                reason = 'chosen travel'
+            elif kind == 'area' and key in entrance and number >= 4:
+                reason = 'arrival entrance reference'
+            if reason:
+                reasons[id(section)] = reason
+        selected = [section for section in self.sections if id(section) in reasons]
+        module = ''.join(section['text'] for section in selected)
+        module += ('\n\n# Current opening focus\n\nThe saved opening stage is ' + stage + '. '
+                   'Later cartridge material is deliberately withheld. An authored scene '
+                   'is never proof that any player has acted or traveled.\n')
+        report = {
+            'mode': 'opening', 'location': None, 'locationLabel': 'Approach', 'openingStage': stage,
+            'included': [{'title': s['title'] or 'Introduction', 'reason': reasons[id(s)],
+                          'chars': len(s['text'])} for s in selected],
+            'excluded': [s['title'] for s in self.sections if id(s) not in reasons],
+        }
+        return module, report
+
+    def opening_data(self, stage):
+        """Keep future outcomes, completed-adventure records, and rooms out of the opening."""
+        allowed = ('schemaVersion', 'promptVersion', 'adventureName', 'title', 'theme', 'party', 'clock')
+        data = {key: self.run_data[key] for key in allowed if key in self.run_data}
+        hook = self.run_data.get('hook')
+        if isinstance(hook, dict):
+            if stage == 'establishing':
+                data['hook'] = {key: hook[key] for key in ('dmSecrets',) if key in hook}
+            else:
+                data['hook'] = hook
+        if stage == 'arrival':
+            entrance = (sorted(n for n, room in self.rooms.items() if room.get('beat') == 'entrance')
+                        or sorted(self.rooms)[:1])
+            data['rooms'] = [self.rooms[n] for n in entrance]
+        return data
+
     def structured_context(self, focus):
         """Supply Stage 3's authored numbers and opening data with the same room focus."""
         if not self.focused:
