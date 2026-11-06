@@ -169,6 +169,67 @@ class SceneImageFlowTest(unittest.TestCase):
                 self.assertIn('API_KEY', self.api_error(self.image_path, self.payload)['error'])
             provider.assert_not_called()
 
+    def test_portrait_selection_and_default_viewpoint(self):
+        before = self.prepare()
+        image, provider = self.generate()
+        self.assertIn('Keep ALL player characters off-camera', provider.call_args.args[0])
+        self.assertEqual(len(provider.call_args.args), 2)
+        self.payload['requestId'] = str(uuid.uuid4())
+        self.payload['characterIds'] = [self.player]
+        with patch.object(scene_images, 'generate') as unused:
+            self.assertIn('portrait', self.api_error(self.image_path, self.payload)['error'])
+            unused.assert_not_called()
+        with server.db() as conn:
+            conn.execute("INSERT INTO player_portraits VALUES (?,?,'image/jpeg',?,'today')",
+                         (self.player, self.save_id, JPEG))
+        image, provider = self.generate()
+        prompt, model, references = provider.call_args.args
+        self.assertIn('Show only these player characters: ["George"]', prompt)
+        self.assertEqual(references, [{'label': 'George', 'mime': 'image/jpeg', 'data': JPEG}])
+        self.assertNotIn('secret dragon', prompt)
+        with server.db() as conn:
+            saved = conn.execute('SELECT prompt FROM scene_images WHERE id=?', (image['id'],)).fetchone()['prompt']
+        self.assertEqual(saved, prompt)
+        restored = self.api(f'/api/saves/{self.save_id}')
+        self.assertEqual(restored['messages'], before['messages'])
+        self.assertEqual(restored['save']['beat'], before['save']['beat'])
+
+    def test_npc_artwork_is_pilot_only_and_explicitly_selected(self):
+        self.prepare()
+        path = f'/api/saves/{self.save_id}/image-references'
+        query = '?playerId=' + self.player
+        files = {'npc/guide.jpg': JPEG, 'npc/secret-villain.jpg': JPEG[:-2]+b'secret'+JPEG[-2:],
+                 'module.md': b'Secret story', 'invalid.png': b'not an image'}
+        with patch.object(server, 'stored_cartridge_files', return_value=files):
+            self.assertIn('Pilot', self.api_error(path+query)['error'])
+            assets = self.api(path+query+'&pilot=true')['assets']
+            self.assertEqual(len(assets), 2)
+            asset = next(asset for asset in assets if asset['path'] == 'npc/guide.jpg')
+            with urllib.request.urlopen(self.base+asset['url']) as response:
+                self.assertEqual(response.read(), JPEG)
+            self.assertIn('Pilot', self.api_error(asset['url'].replace('&pilot=true', ''))['error'])
+            self.payload['npcReferences'] = [{'assetId': asset['id'], 'name': 'Our guide'}]
+            image, provider = self.generate()
+            prompt, model, references = provider.call_args.args
+            self.assertEqual(references, [{'label': 'Our guide', 'mime': 'image/jpeg', 'data': JPEG}])
+            self.assertNotIn('secret-villain', prompt)
+            self.assertNotIn('Secret story', prompt)
+            self.assertIn('Keep ALL player characters off-camera', prompt)
+            # Choosing an illustration reference does not reveal cartridge assets/maps.
+            with server.db() as conn:
+                self.assertEqual(conn.execute('SELECT count(*) FROM revealed_assets').fetchone()[0], 0)
+
+    def test_invalid_references_are_rejected_before_paid_request(self):
+        self.prepare()
+        with patch.object(scene_images, 'generate') as provider:
+            for changes in ({'characterIds': 'bad'}, {'characterIds': [None]},
+                            {'characterIds': ['missing']}, {'characterIds': [self.player]*9},
+                            {'npcReferences': 'bad'}, {'npcReferences': [None]},
+                            {'npcReferences': [{'assetId': 'missing', 'name': 'NPC'}]},
+                            {'npcReferences': [{'assetId': 'missing', 'name': ''}]}):
+                self.api_error(self.image_path, dict(self.payload, **changes))
+            provider.assert_not_called()
+
     def test_restart_recovers_pending_and_preserves_completed_drafts(self):
         self.prepare()
         image, _ = self.generate()
@@ -189,6 +250,28 @@ del _FlowTest
 
 
 class ImageProviderTest(unittest.TestCase):
+    def test_reference_request_uses_edits_with_ordered_image_bytes(self):
+        from email.parser import BytesParser
+        from email.policy import default
+        references = [{'label': 'George', 'mime': 'image/jpeg', 'data': JPEG},
+                      {'label': 'Guide', 'mime': 'image/png', 'data': b'\x89PNG\r\n\x1a\nreference'}]
+        raw = {'data': [{'b64_json': base64.b64encode(JPEG).decode()}]}
+        with patch.dict(os.environ, {'TABLEFORGE_OPENAI_API_KEY': 'test-key'}), patch.object(
+                scene_images.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(raw).encode())) as call:
+            scene_images.generate('Scene prompt', scene_images.DEFAULT_MODEL, references)
+        request = call.call_args.args[0]
+        self.assertEqual(request.full_url, 'https://api.openai.com/v1/images/edits')
+        message = BytesParser(policy=default).parsebytes(
+            ('Content-Type: '+request.get_header('Content-type')+'\r\n\r\n').encode()+request.data)
+        parts = list(message.iter_parts())
+        images = [part for part in parts if part.get_param('name', header='content-disposition') == 'image[]']
+        self.assertEqual([part.get_payload(decode=True) for part in images], [ref['data'] for ref in references])
+        self.assertEqual([part.get_content_type() for part in images], ['image/jpeg', 'image/png'])
+        fields = {part.get_param('name', header='content-disposition'): part.get_payload(decode=True).decode()
+                  for part in parts if not part.get_filename()}
+        self.assertEqual(fields['prompt'], 'Scene prompt')
+        self.assertEqual((fields['n'], fields['quality'], fields['output_format']), ('1', 'low', 'jpeg'))
+
     def test_payload_decoding_and_usage(self):
         raw = {'data': [{'b64_json': base64.b64encode(JPEG).decode()}],
                'usage': {'input_tokens': 100, 'output_tokens': 200}}

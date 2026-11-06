@@ -335,6 +335,18 @@ def package_assets(files, manifest=None, manifest_path=None):
     return assets
 
 
+def scene_reference_assets(files):
+    """Pilot-selectable artwork, including PNGs not declared in a manifest."""
+    assets = []
+    for path, data in sorted(files.items()):
+        mime = {'.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+                '.webp': 'image/webp'}.get(Path(path).suffix.lower())
+        if mime and len(data) <= MAX_PORTRAIT_BYTES and PORTRAIT_SIGNATURES[mime](data):
+            assets.append({'id': hashlib.sha256(path.encode()).hexdigest()[:16],
+                           'path': path, 'mediaType': mime})
+    return assets
+
+
 def validate_bindings(files, resources, require_manifest=True):
     if not isinstance(resources, dict) or any(key not in RESOURCE_KEYS for key in resources):
         raise ValueError('Invalid resource bindings')
@@ -966,6 +978,8 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             parts = path.strip('/').split('/')
+            if len(parts) in (4, 5) and parts[:2] == ['api', 'saves'] and parts[3] == 'image-references':
+                return self.get_image_references(parts)
             if len(parts) in (4, 5) and parts[:2] == ['api', 'saves'] and parts[3] == 'images':
                 return self.get_images(parts)
             if len(parts) in (4, 5) and parts[:2] == ['api', 'saves'] and parts[3] == 'assets':
@@ -1427,6 +1441,33 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(image)
 
+    def get_image_references(self, parts):
+        save_id = parts[2]
+        query = parse_qs(urlparse(self.path).query)
+        player_id = query.get('playerId', [None])[0]
+        with LOCK, db() as conn:
+            state = snapshot(conn, save_id)
+            require_player(state, player_id)
+            if query.get('pilot', ['false'])[0] != 'true':
+                raise ValueError('Enable Pilot Mode to inspect cartridge reference artwork.')
+            files = stored_cartridge_files(state['cartridge']['id'])
+            assets = scene_reference_assets(files)
+            if len(parts) == 4:
+                return self.respond({'assets': [{**asset, 'url':
+                    f'/api/saves/{save_id}/image-references/{asset["id"]}?playerId={quote(player_id)}&pilot=true'}
+                    for asset in assets]})
+            asset = next((asset for asset in assets if asset['id'] == parts[4]), None)
+            if not asset:
+                return self.send_error(404)
+            image = files[asset['path']]
+        self.send_response(200)
+        self.send_header('Content-Type', asset['mediaType'])
+        self.send_header('Content-Length', str(len(image)))
+        self.send_header('Cache-Control', 'no-store')
+        self.send_header('X-Content-Type-Options', 'nosniff')
+        self.end_headers()
+        self.wfile.write(image)
+
     def handle_image(self, save_id, payload):
         with LOCK, db() as conn:
             state = snapshot(conn, save_id)
@@ -1458,7 +1499,38 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('Visual direction must be at most 2,000 characters.')
             if len(source['body']) > 60000:
                 raise ValueError('This narration is too long to illustrate in one request.')
-            prompt = scene_images.prompt_for(source['body'], direction.strip())
+            character_ids = payload.get('characterIds', [])
+            npc_refs = payload.get('npcReferences', [])
+            if (not isinstance(character_ids, list) or not all(isinstance(item, str) for item in character_ids)
+                    or len(set(character_ids)) != len(character_ids) or not isinstance(npc_refs, list)
+                    or len(character_ids) + len(npc_refs) > scene_images.MAX_REFERENCES):
+                raise ValueError('Choose at most 8 distinct character references.')
+            references, characters = [], []
+            for character_id in character_ids:
+                character = require_player(state, character_id)
+                portrait = conn.execute('SELECT mime,image FROM player_portraits WHERE save_id=? AND player_id=?',
+                                        (save_id, character_id)).fetchone()
+                if not portrait:
+                    raise ValueError('Upload a portrait for each selected player character first.')
+                characters.append(character['character'])
+                references.append({'label': character['character'], 'mime': portrait['mime'], 'data': portrait['image']})
+            if npc_refs:
+                files = stored_cartridge_files(state['cartridge']['id'])
+                assets = {asset['id']: asset for asset in scene_reference_assets(files)}
+                seen = set()
+                for ref in npc_refs:
+                    if (not isinstance(ref, dict) or not isinstance(ref.get('assetId'), str)
+                            or not isinstance(ref.get('name'), str) or not 1 <= len(ref['name'].strip()) <= 100):
+                        raise ValueError('Choose NPC artwork and enter its character name (up to 100 characters).')
+                    asset = assets.get(ref['assetId'])
+                    if not asset or ref['assetId'] in seen:
+                        raise ValueError('Choose distinct NPC artwork from this cartridge.')
+                    seen.add(ref['assetId'])
+                    references.append({'label': ref['name'].strip(), 'mime': asset['mediaType'], 'data': files[asset['path']]})
+            if sum(len(ref['data']) for ref in references) > scene_images.MAX_REFERENCE_BYTES:
+                raise ValueError('Selected reference images exceed 20 MB. Choose fewer images.')
+            prompt = scene_images.prompt_for(source['body'], direction.strip(), references, characters,
+                                            [member['character'] for member in state['players']])
             conn.execute('''INSERT INTO scene_images
                 (id,save_id,session_id,player_id,source_message_id,direction,prompt,model,quality,size,status,created_at)
                 VALUES (?,?,?,?,?,?,?,?,?,?,?,?)''',
@@ -1466,7 +1538,8 @@ class Handler(BaseHTTPRequestHandler):
                  settings['model'], settings['quality'], settings['size'], 'generating', utc()))
         # Keep the request outside the database lock and the AI-DM generation lock.
         try:
-            generated = scene_images.generate(prompt, settings['model'])
+            generated = (scene_images.generate(prompt, settings['model'], references) if references
+                         else scene_images.generate(prompt, settings['model']))
             with LOCK, db() as conn:
                 conn.execute("""UPDATE scene_images SET status='draft',image=?,model=?,usage=?,estimated_cost_usd=?,completed_at=?
                                 WHERE id=?""", (generated.data, generated.model, json.dumps(generated.usage),
