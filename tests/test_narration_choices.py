@@ -18,6 +18,13 @@ def footer(groups):
 class ChoiceParserTest(unittest.TestCase):
     players = [{'id': 'first', 'character': 'Caravaggio'}, {'id': 'second', 'character': 'Ethereal'}]
 
+    def test_party_prompt_requires_options_safe_for_any_speaker(self):
+        instructions = narration_choices.instructions()
+        self.assertIn('Party-wide options must also be **speaker-safe**', instructions)
+        self.assertIn('Cara may\n  be the speaker', instructions)
+        self.assertIn('I suggest we try picking the grille\'s lock', instructions)
+        self.assertIn('If the action is meant only for Cara', instructions)
+
     def test_public_labels_and_actions_share_one_mapping(self):
         text = 'How do you spend the time?' + footer([
             {'playerId': 'first', 'options': ['I help the crew.', '  I keep\nwatch.  ']},
