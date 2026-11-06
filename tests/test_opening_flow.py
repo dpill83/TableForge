@@ -188,6 +188,23 @@ class OpeningFlowTest(unittest.TestCase):
         self.assertNotIn('continuity.json (authored reference', system)
         self.assertIn('continuity.json', context['report']['opening']['withheldCompanionFiles'])
 
+    def test_hook_can_continue_with_npc_reaction_before_any_job_offer(self):
+        state = self.new_save()
+        save_id, player = state['save']['id'], state['players'][0]['id']
+        self.advance(save_id, 'Where do we find your characters?\n[Opening: hook]')
+        self.api(f'/api/saves/{save_id}/messages', {
+            'playerId': player, 'text': 'I help Alicia clear the wagon. What did she see?'})
+        response = ('Alicia steadies herself and looks at the wedged wheel. '
+                    '"The brake fell just as the axle hit," she says. '
+                    '"Is either of you hurt?"\n[Opening: hook]')
+        result = self.advance(save_id, response)
+        self.assertEqual(result['save']['opening_stage'], 'hook')
+        self.assertEqual(result['messages'][-1]['body'], response.split('\n[Opening:')[0])
+        system = self.api(f'/api/saves/{save_id}/context')['messages'][0]['content']
+        self.assertIn('an offer is not a required ending', system.lower())
+        self.assertIn('Stages are permissions'.lower(), system.lower())
+        self.assertIn('The current player actions and questions lead the scene', system)
+
     def test_actual_skipped_opening_is_rejected_before_saving_or_changing_location(self):
         state = self.new_save()
         save_id = state['save']['id']
