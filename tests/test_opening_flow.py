@@ -3,10 +3,13 @@ import json
 import sqlite3
 import tempfile
 import unittest
+import urllib.error
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
 import ai
+import combat
 import module_context
 import opening_flow
 import server
@@ -99,6 +102,27 @@ class OpeningContextTest(unittest.TestCase):
                                             'establishing', first=True, require_opening_contract=True)
         self.assertEqual(clean, 'Where are you today?')
         self.assertEqual(stage, 'hook')
+
+    def test_establishing_accepts_natural_location_questions_without_accepting_job_offers(self):
+        for question in (
+            'Where do we find each of your characters this morning?',
+            'Where are your characters as the sun rises?',
+            'What are your characters doing when the day begins?',
+            'Who is traveling alongside you as the scene opens?',
+            'How would you like to begin the morning?',
+        ):
+            with self.subTest(question=question):
+                clean, stage = opening_flow.prepare(
+                    'A quiet lane stretches before you.\n\n' + question + '\n[Opening: hook]',
+                    'establishing', first=True, require_opening_contract=True)
+                self.assertIn(question, clean)
+                self.assertEqual(stage, 'hook')
+        for question in ('Do you accept the job?', 'Where is Hollowfells Mine?',
+                         'What do you do about the runaway wagon?'):
+            with self.subTest(question=question), self.assertRaisesRegex(
+                    ValueError, 'skipped character establishment'):
+                opening_flow.prepare(question + '\n[Opening: hook]', 'establishing',
+                                     first=True, require_opening_contract=True)
 
 
 class OpeningMigrationTest(unittest.TestCase):
@@ -233,6 +257,64 @@ class OpeningFlowTest(unittest.TestCase):
         self.assertEqual(moved['save']['location'], 1)
         self.assertIn('hidden tally board', self.api(
             f'/api/saves/{save_id}/context')['messages'][0]['content'])
+
+    def arrival_combat(self):
+        state = self.new_save()
+        save_id, player = state['save']['id'], state['players'][0]['id']
+        self.advance(save_id, 'Where do we find each of your characters this morning?\n[Opening: hook]')
+        self.advance(save_id, 'Alicia offers the job. Do you accept?\n[Opening: decision]')
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'We accept the job.'})
+        self.advance(save_id, 'Alicia gives you directions.\n[Opening: travel]')
+        self.advance(save_id, 'The path reaches the mine.\n[Opening: arrival]')
+        fighting = self.advance(save_id, 'Two guards rush out. Roll initiative.\n'
+                                '[Opening: arrival]\n' + combat.MARKER)
+        self.assertEqual(fighting['save']['opening_stage'], 'arrival')
+        self.assertEqual(fighting['save']['mode'], 'combat')
+        for participant in fighting['players']:
+            fighting = self.api(f'/api/saves/{save_id}/ready', {
+                'playerId': participant['id'], 'ready': True,
+                'handoffId': fighting['combat']['id']})
+        return save_id, fighting
+
+    def test_combat_outcome_is_player_input_for_arrival_to_exploration(self):
+        save_id, fighting = self.arrival_combat()
+        report = 'We defeat the guards and fight our way inside Area 1.'
+        provider = test_flow.FakeProvider(
+            'You stand in the intake cut, with the guards behind you.\n'
+            '[Opening: exploration]\n[Location: Area 1]')
+        with patch.object(ai, 'current_provider', return_value=provider):
+            try:
+                result = self.api(f'/api/saves/{save_id}/combat-outcome', {
+                    'handoffId': fighting['combat']['id'], 'requestId': str(uuid.uuid4()),
+                    'playerId': fighting['players'][0]['id'], 'text': report})
+            except urllib.error.HTTPError as error:
+                self.fail(error.read().decode())
+        self.assertEqual(result['save']['opening_stage'], 'exploration')
+        self.assertEqual(result['save']['location'], 1)
+        self.assertEqual(result['combat']['phase'], 'complete')
+        self.assertIn(report, ai.chat_messages(provider.context)[0]['content'])
+        self.assertNotIn('There are no new player contributions this beat',
+                         ai.chat_messages(provider.context)[0]['content'])
+
+    def test_skipped_combat_report_cannot_authorize_site_entry(self):
+        save_id, fighting = self.arrival_combat()
+        payload = {'handoffId': fighting['combat']['id'], 'requestId': str(uuid.uuid4()),
+                   'playerId': fighting['players'][0]['id'], 'skip': True}
+        with patch.object(ai, 'current_provider', return_value=test_flow.FakeProvider(
+                'You step into the mine.\n[Opening: exploration]\n[Location: Area 1]')):
+            error = self.api_error(f'/api/saves/{save_id}/combat-outcome', payload)
+        self.assertIn('No player entered the site', error['error'])
+        unchanged = self.api(f'/api/saves/{save_id}')
+        self.assertEqual(unchanged['save']['opening_stage'], 'arrival')
+        self.assertIsNone(unchanged['save']['location'])
+        self.assertEqual(unchanged['combat']['phase'], 'failed')
+        provider = test_flow.FakeProvider('The mine entrance is quiet. What do you do?\n[Opening: arrival]')
+        with patch.object(ai, 'current_provider', return_value=provider):
+            retried = self.api(f'/api/saves/{save_id}/combat-retry', payload)
+        self.assertEqual(retried['save']['opening_stage'], 'arrival')
+        self.assertEqual(retried['combat']['phase'], 'complete')
+        self.assertIn('There are no new player contributions this beat',
+                      ai.chat_messages(provider.context)[0]['content'])
 
 
 if __name__ == '__main__':

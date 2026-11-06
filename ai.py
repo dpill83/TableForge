@@ -250,7 +250,11 @@ def build_context(state, data_dir, purpose='advance'):
                               else adventure.structured_context(focus))
     if opening_stage:
         context['openingStage'] = opening_stage
-        context['openingHasPlayerText'] = bool(current)
+        # Accepted human combat reports are player input even though they live
+        # in session events/handoffs rather than the public chat transcript.
+        context['openingHasPlayerInput'] = bool(current) or bool(
+            handoff and handoff['phase'] in ('resuming', 'failed')
+            and not handoff['skipped'] and handoff['outcome'])
         report['opening'] = {'stage': opening_stage,
                              'withheldCompanionFiles': sorted(adventure.optional_resources)}
     context['locationInstructions'] = adventure.marker_instructions()
@@ -323,7 +327,7 @@ def chat_messages(context):
             system += '\nAccepted outcome for this combat:\n' + resume['outcome']
     if context.get('openingStage'):
         system += opening_flow.instructions(context['openingStage'], first=context.get('opening', False),
-                                            has_player_text=context.get('openingHasPlayerText', False))
+                                            has_player_input=context.get('openingHasPlayerInput', False))
     messages = [{'role': 'system', 'content': system}]
     for item in context['messages']:
         if item['kind'] == 'ai':

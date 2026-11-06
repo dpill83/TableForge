@@ -13,10 +13,10 @@ STAGES = ('establishing', 'hook', 'decision', 'travel', 'arrival', 'exploration'
 MARKER = re.compile(r'^\s*\[Opening:\s*([a-z]+)\s*\]\s*$', re.IGNORECASE | re.MULTILINE)
 OPENING_LINE = re.compile(r'^\s*\[Opening\s*:', re.IGNORECASE | re.MULTILINE)
 ESTABLISHING_QUESTION = re.compile(
-    r'\b(?:where\s+(?:are|is)\b[^?]{0,180}'
+    r'\b(?:where\b[^?]{0,180}\b(?:you|your|characters?|party|are|start|begin)\b[^?]{0,100}'
     r'|what\b[^?]{0,120}\b(?:doing|up to)\b[^?]{0,100}'
-    r'|who\b[^?]{0,120}\bwith\b[^?]{0,80}'
-    r'|how\b[^?]{0,120}\b(?:begin|start|positioned)\b[^?]{0,80})\?', re.IGNORECASE,
+    r'|who\b[^?]{0,120}\b(?:with|alongside|accompanies)\b[^?]{0,80}'
+    r'|how\b[^?]{0,120}\b(?:begin|start|positioned|introduce)\b[^?]{0,80})\?', re.IGNORECASE,
 )
 
 
@@ -57,13 +57,13 @@ GUIDANCE = {
 }
 
 
-def instructions(stage, first=False, has_player_text=False):
+def instructions(stage, first=False, has_player_input=False):
     """Place the stage gate after all cartridge reference text for recency."""
     if stage not in GUIDANCE:
         return ''
     pending = (' There are no new player contributions this beat; no one has '
                'accepted the offer or entered the site.'
-               if not has_player_text and stage in ('decision', 'arrival') else '')
+               if not has_player_input and stage in ('decision', 'arrival') else '')
     return (
         '\n\nTableForge authoritative opening state: ' + stage + '. '
         + ('This is the very first public AI-DM response. ' if first else '')
@@ -86,7 +86,7 @@ def instructions(stage, first=False, has_player_text=False):
     )
 
 
-def prepare(text, stage, *, first=False, has_player_text=False, require_opening_contract=False):
+def prepare(text, stage, *, first=False, has_player_input=False, require_opening_contract=False):
     """Strip stage metadata and reject invalid opening progress without saving it.
 
     Older/simple modules without formal starting-scene setup can still use
@@ -105,14 +105,14 @@ def prepare(text, stage, *, first=False, has_player_text=False, require_opening_
     next_stage = matches[0].group(1).lower() if matches else ('hook' if first else stage)
     adjacent = next_stage in STAGES and STAGES.index(next_stage) in (
         STAGES.index(stage), STAGES.index(stage) + 1)
-    off_script = next_stage == 'exploration' and stage in ('hook', 'decision', 'travel') and has_player_text
+    off_script = next_stage == 'exploration' and stage in ('hook', 'decision', 'travel') and has_player_input
     if not adjacent and not off_script:
         raise ValueError('The AI-DM skipped an opening stage. No narration was published. Retry the beat.')
     if first and next_stage != 'hook' and next_stage != 'establishing':
         raise ValueError('The AI-DM skipped the establishing round. No narration was published. Retry the beat.')
-    if next_stage == 'travel' and stage == 'decision' and not has_player_text:
+    if next_stage == 'travel' and stage == 'decision' and not has_player_input:
         raise ValueError('No player accepted the journey. No narration was published. Retry the beat.')
-    if next_stage == 'exploration' and stage == 'arrival' and not has_player_text:
+    if next_stage == 'exploration' and stage == 'arrival' and not has_player_input:
         raise ValueError('No player entered the site. No narration was published. Retry the beat.')
     clean = remaining.strip()
     if require_opening_contract and first:

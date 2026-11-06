@@ -887,7 +887,7 @@ def set_location(conn, state, location, player_id, source):
                   json.dumps({'location': location, 'source': source}), utc()))
 
 
-def publish_advance(conn, save_id, text, override=None):
+def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=False):
     session = active_session(conn, save_id)
     state = snapshot(conn, save_id)
     text, combat_started = combat.extract(text)
@@ -903,7 +903,8 @@ def publish_advance(conn, save_id, text, override=None):
         _, contributed = ai.split_beat(state['messages'])
         adventure = adventure_for(state)
         text, next_opening_stage = opening_flow.prepare(
-            text, opening_stage, first=first, has_player_text=bool(contributed),
+            text, opening_stage, first=first,
+            has_player_input=bool(contributed) or accepted_combat_outcome,
             require_opening_contract=opening_flow.supported(adventure.run_data),
         )
         if marked and location is not None and not (
@@ -1736,13 +1737,16 @@ class Handler(BaseHTTPRequestHandler):
             conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
             context = ai.build_context(snapshot(conn, save_id), DATA)
             handoff_id['id'] = handoff['id']
+            accepted = context.get('combatResume') or {}
+            handoff_id['accepted_outcome'] = bool(accepted.get('outcome') and not accepted.get('skipped'))
             GENERATING[save_id] = 'advance'
             return context
 
         def publish(conn, save_id, text):
             # Commit completion and narration together; a new handoff may start in this response.
             conn.execute("UPDATE combat_handoffs SET phase='complete' WHERE id=?", (handoff_id['id'],))
-            result = publish_advance(conn, save_id, text)
+            result = publish_advance(conn, save_id, text,
+                                     accepted_combat_outcome=handoff_id['accepted_outcome'])
             message_id = result['messages'][-1]['id']
             conn.execute('UPDATE combat_handoffs SET message_id=? WHERE id=?', (message_id, handoff_id['id']))
             return snapshot(conn, save_id)
