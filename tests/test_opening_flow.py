@@ -5,6 +5,7 @@ import tempfile
 import unittest
 import urllib.error
 import uuid
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import patch
 
@@ -128,7 +129,7 @@ class OpeningContextTest(unittest.TestCase):
 class OpeningMigrationTest(unittest.TestCase):
     def test_existing_playthrough_is_not_reclassified_as_a_new_opening(self):
         with tempfile.TemporaryDirectory() as folder, patch.object(server, 'DATA', Path(folder)):
-            with sqlite3.connect(Path(folder) / 'tableforge.sqlite3') as conn:
+            with closing(sqlite3.connect(Path(folder) / 'tableforge.sqlite3')) as conn, conn:
                 conn.executescript('''
                     CREATE TABLE cartridges (id TEXT PRIMARY KEY, title TEXT NOT NULL,
                         source TEXT NOT NULL, resources TEXT NOT NULL, created_at TEXT NOT NULL);

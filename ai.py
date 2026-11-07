@@ -9,6 +9,7 @@ import urllib.error
 import urllib.request
 
 import module_context
+import cartridge_geometry
 import combat
 import narration_choices
 import narration_pacing
@@ -257,6 +258,11 @@ def build_context(state, data_dir, purpose='advance'):
             and not handoff['skipped'] and handoff['outcome'])
         report['opening'] = {'stage': opening_stage,
                              'withheldCompanionFiles': sorted(adventure.optional_resources)}
+    if adventure.run_data.get('geometryVersion') == 1 and not opening_stage:
+        arrival_id = state['save'].get('arrival_connection_id')
+        endpoint = cartridge_geometry.arrival_endpoint(adventure.run_data, location, arrival_id)
+        context['arrival'] = {'connectionId': arrival_id if endpoint else None, 'endpoint': endpoint}
+        report['arrival'] = context['arrival']
     context['locationInstructions'] = adventure.marker_instructions()
     outcomes = [event for event in state.get('events', []) if event['kind'] == 'combat_outcome']
     context['checkpoint'] = state.get('checkpoint')
@@ -304,6 +310,8 @@ def chat_messages(context):
     system += f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
     system += optional_resource_text(context)
     system += summary_text(context)
+    if 'arrival' in context:
+        system += '\n\nTracked arrival (unknown means no assumed entry viewpoint):\n' + json.dumps(context['arrival'], ensure_ascii=False)
     if 'runData' in context:
         system += '\n\nRun-data (authored reference, not party knowledge):\n' + json.dumps(context['runData'], ensure_ascii=False)
         system += '\n\nSaved player/character assignments:\n' + json.dumps(context['party'], ensure_ascii=False)

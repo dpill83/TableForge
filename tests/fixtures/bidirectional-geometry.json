@@ -1,0 +1,373 @@
+{
+  "adventureName": "Bidirectional geometry fixture",
+  "geometryVersion": 1,
+  "rooms": [
+    {
+      "roomNumber": 9,
+      "geometry": {
+        "outline": [
+          {
+            "id": "north",
+            "from": {
+              "xFt": 0,
+              "yFt": 0
+            },
+            "to": {
+              "xFt": 10,
+              "yFt": 0
+            }
+          },
+          {
+            "id": "east",
+            "from": {
+              "xFt": 10,
+              "yFt": 0
+            },
+            "to": {
+              "xFt": 10,
+              "yFt": 10
+            }
+          },
+          {
+            "id": "south",
+            "from": {
+              "xFt": 10,
+              "yFt": 10
+            },
+            "to": {
+              "xFt": 0,
+              "yFt": 10
+            }
+          },
+          {
+            "id": "west",
+            "from": {
+              "xFt": 0,
+              "yFt": 10
+            },
+            "to": {
+              "xFt": 0,
+              "yFt": 0
+            }
+          }
+        ],
+        "features": []
+      },
+      "connectsTo": [
+        4
+      ],
+      "exits": [
+        {
+          "connectionId": "south-east-opening",
+          "direction": "north",
+          "connectsTo": 4,
+          "exitsDungeon": false,
+          "type": "door",
+          "locked": false
+        },
+        {
+          "connectionId": "second-opening",
+          "direction": "north",
+          "connectsTo": 4,
+          "exitsDungeon": false,
+          "type": "door",
+          "locked": false
+        },
+        {
+          "connectionId": "site-entrance",
+          "direction": "south",
+          "connectsTo": null,
+          "exitsDungeon": true,
+          "type": "door",
+          "locked": false
+        }
+      ]
+    },
+    {
+      "roomNumber": 4,
+      "geometry": {
+        "outline": [
+          {
+            "id": "north",
+            "from": {
+              "xFt": 0,
+              "yFt": 0
+            },
+            "to": {
+              "xFt": 60,
+              "yFt": 0
+            }
+          },
+          {
+            "id": "east",
+            "from": {
+              "xFt": 60,
+              "yFt": 0
+            },
+            "to": {
+              "xFt": 60,
+              "yFt": 20
+            }
+          },
+          {
+            "id": "south",
+            "from": {
+              "xFt": 60,
+              "yFt": 20
+            },
+            "to": {
+              "xFt": 0,
+              "yFt": 20
+            }
+          },
+          {
+            "id": "west",
+            "from": {
+              "xFt": 0,
+              "yFt": 20
+            },
+            "to": {
+              "xFt": 0,
+              "yFt": 0
+            }
+          }
+        ],
+        "features": [
+          {
+            "id": "near-pillar",
+            "type": "pillar",
+            "position": {
+              "xFt": 50,
+              "yFt": 15
+            }
+          },
+          {
+            "id": "far-chest",
+            "type": "chest",
+            "position": {
+              "xFt": 5,
+              "yFt": 5
+            }
+          },
+          {
+            "id": "unplaced-banner",
+            "type": "banner"
+          }
+        ]
+      },
+      "connectsTo": [
+        9,
+        12
+      ],
+      "exits": [
+        {
+          "connectionId": "south-east-opening",
+          "direction": "south",
+          "connectsTo": 9,
+          "exitsDungeon": false,
+          "type": "door",
+          "locked": false
+        },
+        {
+          "connectionId": "second-opening",
+          "direction": "south",
+          "connectsTo": 9,
+          "exitsDungeon": false,
+          "type": "door",
+          "locked": false
+        },
+        {
+          "connectionId": "alcove-opening",
+          "direction": "east",
+          "connectsTo": 12,
+          "exitsDungeon": false,
+          "type": "door",
+          "locked": false
+        }
+      ]
+    },
+    {
+      "roomNumber": 12,
+      "geometry": {
+        "outline": [
+          {
+            "id": "north",
+            "from": {
+              "xFt": 0,
+              "yFt": 0
+            },
+            "to": {
+              "xFt": 30,
+              "yFt": 0
+            }
+          },
+          {
+            "id": "east",
+            "from": {
+              "xFt": 30,
+              "yFt": 0
+            },
+            "to": {
+              "xFt": 30,
+              "yFt": 10
+            }
+          },
+          {
+            "id": "alcove-south",
+            "from": {
+              "xFt": 30,
+              "yFt": 10
+            },
+            "to": {
+              "xFt": 10,
+              "yFt": 10
+            }
+          },
+          {
+            "id": "alcove-east",
+            "from": {
+              "xFt": 10,
+              "yFt": 10
+            },
+            "to": {
+              "xFt": 10,
+              "yFt": 30
+            }
+          },
+          {
+            "id": "south",
+            "from": {
+              "xFt": 10,
+              "yFt": 30
+            },
+            "to": {
+              "xFt": 0,
+              "yFt": 30
+            }
+          },
+          {
+            "id": "west",
+            "from": {
+              "xFt": 0,
+              "yFt": 30
+            },
+            "to": {
+              "xFt": 0,
+              "yFt": 0
+            }
+          }
+        ],
+        "features": []
+      },
+      "connectsTo": [
+        4
+      ],
+      "exits": [
+        {
+          "connectionId": "alcove-opening",
+          "direction": "west",
+          "connectsTo": 4,
+          "exitsDungeon": false,
+          "type": "door",
+          "locked": false
+        }
+      ]
+    }
+  ],
+  "connections": [
+    {
+      "id": "south-east-opening",
+      "endpoints": [
+        {
+          "roomNumber": 9,
+          "boundaryId": "north",
+          "position": {
+            "xFt": 2.5,
+            "yFt": 0
+          },
+          "widthFt": 5,
+          "description": "north wall"
+        },
+        {
+          "roomNumber": 4,
+          "boundaryId": "south",
+          "position": {
+            "xFt": 52.5,
+            "yFt": 20
+          },
+          "widthFt": 5,
+          "description": "eastern end of the south wall"
+        }
+      ]
+    },
+    {
+      "id": "second-opening",
+      "endpoints": [
+        {
+          "roomNumber": 9,
+          "boundaryId": "north",
+          "position": {
+            "xFt": 7.5,
+            "yFt": 0
+          },
+          "widthFt": 5,
+          "description": "north wall"
+        },
+        {
+          "roomNumber": 4,
+          "boundaryId": "south",
+          "position": {
+            "xFt": 57.5,
+            "yFt": 20
+          },
+          "widthFt": 5,
+          "description": "eastern end of the south wall"
+        }
+      ]
+    },
+    {
+      "id": "alcove-opening",
+      "endpoints": [
+        {
+          "roomNumber": 12,
+          "boundaryId": "west",
+          "position": {
+            "xFt": 0,
+            "yFt": 5
+          },
+          "widthFt": 5,
+          "description": "west wall"
+        },
+        {
+          "roomNumber": 4,
+          "boundaryId": "east",
+          "position": {
+            "xFt": 60,
+            "yFt": 5
+          },
+          "widthFt": 5,
+          "description": "east wall"
+        }
+      ]
+    },
+    {
+      "id": "site-entrance",
+      "endpoints": [
+        {
+          "roomNumber": 9,
+          "boundaryId": "south",
+          "position": {
+            "xFt": 5,
+            "yFt": 10
+          },
+          "widthFt": 5,
+          "description": "south wall"
+        },
+        {
+          "roomNumber": null,
+          "outside": true
+        }
+      ]
+    }
+  ]
+}

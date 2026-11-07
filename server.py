@@ -25,6 +25,7 @@ import backups
 import metering
 import scene_images
 import module_context
+import cartridge_geometry
 import narration_choices
 import narration_pacing
 import opening_flow
@@ -249,6 +250,8 @@ def initialize():
             conn.execute('ALTER TABLE saves ADD COLUMN adventure_title TEXT')
         if 'format_version' not in columns:
             conn.execute('ALTER TABLE saves ADD COLUMN format_version INTEGER NOT NULL DEFAULT 1')
+        if 'arrival_connection_id' not in columns:
+            conn.execute('ALTER TABLE saves ADD COLUMN arrival_connection_id TEXT')
         if 'location' not in columns:
             # NULL means the party has not yet reached the site (approach).
             conn.execute('ALTER TABLE saves ADD COLUMN location INTEGER')
@@ -393,6 +396,9 @@ def validate_bindings(files, resources, require_manifest=True):
             if rooms is not None and (not isinstance(rooms, list) or any(
                     not isinstance(room, dict) or type(room.get('roomNumber')) is not int for room in rooms)):
                 raise ValueError('Run data rooms must be an array of objects with integer roomNumber values')
+            geometry_errors = cartridge_geometry.validate(run_data)
+            if geometry_errors:
+                invalid['run-data.json'] = 'Invalid cartridge geometry: ' + '; '.join(geometry_errors)
             party = run_data.get('party')
             if party is not None and not isinstance(party, list):
                 raise ValueError('Run data party must be an array')
@@ -882,9 +888,17 @@ def adventure_for(state):
     return module_context.load(DATA, cartridge['id'], cartridge['resources'])
 
 
-def set_location(conn, state, location, player_id, source):
+def set_location(conn, state, location, player_id, source, arrival=None, arrival_marked=False):
     """Move the party's tracked location; every change is kept as a session event."""
-    if location == state['save']['location']:
+    previous = state['save'].get('arrival_connection_id')
+    if source == 'pilot' or location is None:
+        arrival = None
+    elif arrival_marked:
+        if not cartridge_geometry.arrival_endpoint(adventure_for(state).run_data, location, arrival):
+            arrival = None
+    elif location == state['save']['location']:
+        arrival = previous
+    if location == state['save']['location'] and arrival == previous:
         return
     session = active_session(conn, state['save']['id'])
     opening_stage = state['save'].get('opening_stage')
@@ -892,11 +906,12 @@ def set_location(conn, state, location, player_id, source):
         # A deliberate Pilot location correction takes precedence over the
         # automated opening. The Pilot can skip straight to a keyed area.
         opening_stage = 'exploration'
-    conn.execute('UPDATE saves SET location=?, opening_stage=?, updated_at=? WHERE id=?',
-                 (location, opening_stage, utc(), state['save']['id']))
+    conn.execute('UPDATE saves SET location=?, arrival_connection_id=?, opening_stage=?, updated_at=? WHERE id=?',
+                 (location, arrival, opening_stage, utc(), state['save']['id']))
     conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
                  (state['save']['id'], session['id'], player_id, 'location',
-                  json.dumps({'location': location, 'source': source}), utc()))
+                  json.dumps({'location': location, 'source': source,
+                              **({'arrivalConnectionId': arrival} if arrival is not None or previous is not None else {})}), utc()))
 
 
 def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=False):
@@ -906,6 +921,7 @@ def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=
     text, choices = narration_choices.extract(text, state['players'], state['save']['beat'] + 1)
     if combat_started:
         choices = None
+    arrival_marked, arrival = module_context.take_arrival(text)
     text, marked, location = module_context.take_marker(text)
     opening_stage = state['save'].get('opening_stage')
     next_opening_stage = opening_stage
@@ -929,7 +945,7 @@ def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=
     if marked:
         adventure = adventure_for(state)
         if adventure.focused and adventure.valid(location):
-            set_location(conn, state, location, None, 'ai-dm')
+            set_location(conn, state, location, None, 'ai-dm', arrival, arrival_marked)
     text = narration_choices.public_body(text, choices, state['players'])
     stamp = utc()
     message_id = conn.execute(

@@ -6,9 +6,9 @@ import sqlite3
 from pathlib import Path
 
 PROMPT_DIR = Path(__file__).resolve().parent / 'prompts'
-INTEGRATION_VERSION = '1'
+INTEGRATION_VERSION = '2'
 # Digests use UTF-8 text with LF newlines, independent of checkout line endings.
-INTEGRATION_SHA256 = '8d1a4ebf1a3b2621b55279e043991eb994047ac47dc3761a6a2a0e0dbeeedd70'
+INTEGRATION_SHA256 = 'cad84327ce76afe30a2bcf2e2a1f4da52c3a6ec195828da93059618d25e180b6'
 RESOURCE = 'stage3-run-prompt.md'
 LEGACY_INSTRUCTIONS = (
     'You are the AI-DM for TableForge, running an AdventureForge cartridge. '
