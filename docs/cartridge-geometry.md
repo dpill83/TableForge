@@ -62,6 +62,8 @@ clears it; ordinary `[Location: Area 4]` markers remain valid. Save location and
 arrival atomically on successful narration. Staying in a room preserves arrival
 unless explicitly replaced/cleared; moving without valid arrival clears it.
 Pilot location corrections and Approach clear arrival. Save/resume preserves it.
+For authored openings, the arrival stage also receives `geometryVersion` and the
+entrance room's connections, so the first room description can place the way in.
 Existing saved prompt snapshots are not rewritten; new games use the new prompts.
 
 ## Release order

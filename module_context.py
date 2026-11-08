@@ -298,6 +298,11 @@ class Adventure:
             entrance = (sorted(n for n, room in self.rooms.items() if room.get('beat') == 'entrance')
                         or sorted(self.rooms)[:1])
             data['rooms'] = [self.rooms[n] for n in entrance]
+            if self.run_data.get('geometryVersion') == 1:
+                # The entrance's openings (position and width) locate the party on first entry.
+                data['geometryVersion'] = 1
+                data['connections'] = [c for c in self.run_data.get('connections', [])
+                                       if any(e.get('roomNumber') in entrance for e in c['endpoints'])]
         return data
 
     def structured_context(self, focus):

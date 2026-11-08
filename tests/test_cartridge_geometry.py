@@ -60,6 +60,24 @@ class ContractTest(unittest.TestCase):
         self.assertEqual(edge,FIXTURE['connections'][0])
         self.assertIn('Arrival: connection-id',adventure.marker_instructions())
 
+    def test_opening_arrival_includes_entrance_connections(self):
+        data=copy.deepcopy(FIXTURE)
+        data['hook']={'dmSecrets':'Authored opening.'}
+        data['rooms'][0]['beat']='entrance'
+        adventure=module_context.Adventure(MODULE,data)
+        arrival=adventure.opening_data('arrival')
+        self.assertEqual(arrival['geometryVersion'],1)
+        self.assertEqual([r['roomNumber'] for r in arrival['rooms']],[9])
+        self.assertEqual({c['id'] for c in arrival['connections']},
+                         {'south-east-opening','second-opening','site-entrance'})
+        entrance=next(c for c in arrival['connections'] if c['id']=='site-entrance')
+        self.assertEqual(entrance,FIXTURE['connections'][3])
+        for stage in ('establishing','hook','decision','travel'):
+            self.assertNotIn('connections',adventure.opening_data(stage))
+        legacy=module_context.Adventure(MODULE,{'hook':{'dmSecrets':'x'},'rooms':[{'roomNumber':1}]})
+        self.assertNotIn('connections',legacy.opening_data('arrival'))
+        self.assertNotIn('geometryVersion',legacy.opening_data('arrival'))
+
 class GeometryFlowTest(unittest.TestCase):
     setUp=test_flow.FlowTest.setUp
     tearDown=test_flow.FlowTest.tearDown
