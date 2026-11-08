@@ -11,6 +11,7 @@ authored prose, split on its `##`/`###` headings. Sections are matched by conven
 - Current contributions can add named subjects and their explicit cross-references before narration.
 """
 import json
+import cartridge_geometry
 import re
 import zipfile
 from pathlib import Path
@@ -91,6 +92,9 @@ def merge_area_sections(sections):
 
 class Adventure:
     def __init__(self, module_text, run_data, optional_resources=None):
+        errors = cartridge_geometry.validate(run_data)
+        if errors:
+            raise ValueError('Invalid cartridge geometry: ' + '; '.join(errors))
         self.run_data = run_data
         self.module_text = module_text
         self.optional_resources = optional_resources or {}
@@ -294,6 +298,11 @@ class Adventure:
             entrance = (sorted(n for n, room in self.rooms.items() if room.get('beat') == 'entrance')
                         or sorted(self.rooms)[:1])
             data['rooms'] = [self.rooms[n] for n in entrance]
+            if self.run_data.get('geometryVersion') == 1:
+                # The entrance's openings (position and width) locate the party on first entry.
+                data['geometryVersion'] = 1
+                data['connections'] = [c for c in self.run_data.get('connections', [])
+                                       if any(e.get('roomNumber') in entrance for e in c['endpoints'])]
         return data
 
     def structured_context(self, focus):
@@ -310,7 +319,10 @@ class Adventure:
             stats = [block for block in stats if isinstance(block, dict) and stat_name(block.get('name', '')) in creatures]
         elif isinstance(stats, dict):
             stats = {name: block for name, block in stats.items() if stat_name(name) in creatures}
-        return {**{key: value for key, value in self.run_data.items() if key not in ('rooms', 'statBlocks')},
+        connections = [c for c in self.run_data.get('connections', [])
+                       if any(e.get('roomNumber') in areas for e in c['endpoints'])]
+        return {**{key: value for key, value in self.run_data.items() if key not in ('rooms', 'statBlocks', 'connections')},
+                **({'connections': connections} if self.run_data.get('geometryVersion') == 1 else {}),
                 'rooms': [room for room in self.run_data.get('rooms', []) if room.get('roomNumber') in areas],
                 'statBlocks': stats}
 
@@ -318,7 +330,12 @@ class Adventure:
         if not self.focused:
             return ''
         areas = '; '.join(self.area_name(number) for number in sorted(self.rooms))
-        return ('\n\nLocation tracking: end every reply with one final line of the form [Location: Area N], '
+        arrival = (' When you traverse a connection, append its ID in that same marker: '
+                   '[Location: Area N; Arrival: connection-id]. Keep the actual arrival on later '
+                   'beats in that room. If arrival is ambiguous use Arrival: unknown. '
+                   'For Approach omit arrival. This is metadata, never public narration.'
+                   if self.run_data.get('geometryVersion') == 1 else '')
+        return (arrival + '\n\nLocation tracking: end every reply with one final line of the form [Location: Area N], '
                 'naming where the party is when your narration ends, or [Location: Approach] if they have not '
                 'yet entered the site. TableForge removes this line before players see it. Areas: ' + areas + '.')
 
@@ -362,3 +379,17 @@ def take_marker(text):
         return clean, False, None
     label, number = found[-1]
     return clean, True, (int(number) if number else None)
+
+
+ARRIVAL_MARKER = re.compile(r'\[\s*Location\s*:\s*(?:Approach|Area\s*\d+)\s*;\s*Arrival\s*:\s*([^\]\r\n]*)\]', re.I)
+
+def take_arrival(text):
+    """Read arrival only from the final location marker, matching take_marker semantics."""
+    markers = list(MARKER.finditer(text))
+    if not markers:
+        return False, None
+    match = ARRIVAL_MARKER.fullmatch(markers[-1].group())
+    if not match:
+        return False, None
+    value = match.group(1).strip()
+    return True, None if value.lower() == 'unknown' else value

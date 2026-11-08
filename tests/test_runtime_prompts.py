@@ -31,7 +31,7 @@ class PromptAssetsTest(unittest.TestCase):
 
     def test_missing_empty_changed_and_invalid_utf8_assets_fail_clearly(self):
         with tempfile.TemporaryDirectory() as directory, patch.object(runtime_prompts, 'PROMPT_DIR', Path(directory)):
-            path = Path(directory) / 'tableforge-integration-v1.md'
+            path = Path(directory) / f'tableforge-integration-v{runtime_prompts.INTEGRATION_VERSION}.md'
             for data in (None, b'', b'changed', b'\xff'):
                 if data is not None:
                     path.write_bytes(data)
