@@ -14,7 +14,7 @@ const section=(start,end)=>{
 function table({autoReady=false}={}){
   const document={body:{},activeElement:null};
   const elements={};
-  for(const id of ['composer','sendBtn','readyBtn','autoReadyToggle','play','modalRoot']){
+  for(const id of ['composer','sendBtn','readyBtn','play','modalRoot']){
     elements[id]={value:'',disabled:false,childElementCount:0,listeners:{},
       classList:{contains:()=>true,add:()=>{},remove:()=>{}},
       style:{setProperty:()=>{},removeProperty:()=>{}},setPointerCapture:()=>{},
@@ -48,6 +48,7 @@ function table({autoReady=false}={}){
   const storage=new Map(autoReady?[["tableforge-auto-ready:v2:save:first",'true']]:[]);
   const context=vm.createContext({state,document,field,
     localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},
+    performance:{now:()=>100},requestAnimationFrame:()=>1,cancelAnimationFrame:()=>{},
     $:id=>elements[id],TableForgeMessageActions:actions,Event:class{constructor(type){this.type=type;}},
     pendingContribution,combatPending,draftStale,syncDraft,
     storeDraft:()=>{},newRequestId:()=> 'request',typingSentAt:0,
@@ -67,10 +68,10 @@ function table({autoReady=false}={}){
   vm.runInContext([
     section('  const autoReadyKey=',"  const aiNotificationKey="),
     section('  const addChoiceToDraft=','  let dotCount='),
-    section("  $('sendBtn').onclick=","  $('autoReadyToggle').onchange="),
-    section("  $('autoReadyToggle').onchange=","  $('readyOverride').onclick="),
+    section("  $('sendBtn').onclick=","  const readyButton="),
+    section("  const readyButton=","  $('readyOverride').onclick="),
     section('  const sendOnEnter=',"  $('emojiBtn').onclick="),
-    'this.choose=letter=>addChoiceToDraft(10,"first",letter);this.autoReadyEnabled=autoReadyEnabled;',
+    'this.choose=letter=>addChoiceToDraft(10,"first",letter);this.autoReadyEnabled=autoReadyEnabled;this.holdTick=updateReadyHold;',
   ].join('\n'),context);
   const press=async(target,extra={})=>{
     const event={type:'keydown',key:'Enter',shiftKey:false,isComposing:false,repeat:false,
@@ -81,7 +82,7 @@ function table({autoReady=false}={}){
     await target.pending;await elements.sendBtn.pending;
     return event;
   };
-  return {state,field,readyButton,elements,requests,choose:context.choose,press,document,autoReadyEnabled:context.autoReadyEnabled};
+  return {state,field,readyButton,elements,requests,choose:context.choose,press,document,autoReadyEnabled:context.autoReadyEnabled,holdTick:context.holdTick};
 }
 
 test('each choice stays local, focuses the composer, and Enter sends its full action',async()=>{
@@ -177,15 +178,20 @@ test('Ready and Unready remain independent of AUTO without sending',async()=>{
   assert.deepEqual(t.requests.map(r=>r.action),['ready','ready']);
 });
 
-test('AUTO checkbox changes only the preference, preserving readiness and drafts',()=>{
+test('holding toggles AUTO both ways without changing readiness or sending drafts',async()=>{
   for(const ready of [false,true]){
     const t=table();t.state.save.players[0].ready=ready;t.choose('A');
     for(const enabled of [true,false]){
-      t.elements.autoReadyToggle.checked=enabled;t.elements.autoReadyToggle.onchange();
-      assert.equal(t.autoReadyEnabled(),enabled);
+      t.readyButton.dispatchEvent({type:'pointerdown',button:0,pointerId:1});
+      t.holdTick(899);assert.equal(t.autoReadyEnabled(),!enabled);
+      t.holdTick(900);assert.equal(t.autoReadyEnabled(),enabled);
+      t.readyButton.dispatchEvent({type:'pointerup',pointerId:1});
+      t.readyButton.click();await t.readyButton.pending;
       assert.equal(t.state.save.players[0].ready,ready);
       assert.equal(t.requests.length,0);assert.equal(t.field.value,'I help the crew.');
     }
+    t.readyButton.click();await t.readyButton.pending;
+    assert.equal(t.state.save.players[0].ready,!ready);
   }
 });
 
@@ -197,13 +203,18 @@ test('AUTO preference is scoped to player and save and suspended during combat',
   t.state.save.save.mode='normal';assert.equal(t.autoReadyEnabled(),true);
 });
 
-test('AUTO checkbox cannot change the preference while disabled or in combat',()=>{
-  const t=table({autoReady:true});t.elements.autoReadyToggle.checked=false;
-  t.elements.autoReadyToggle.disabled=true;t.elements.autoReadyToggle.onchange();
-  assert.equal(t.autoReadyEnabled(),true);
-  t.elements.autoReadyToggle.disabled=false;t.state.save.save.mode='combat';
-  t.elements.autoReadyToggle.onchange();t.state.save.save.mode='normal';
-  assert.equal(t.autoReadyEnabled(),true);
+test('short holds, canceled gestures, disabled controls and combat cannot toggle AUTO',()=>{
+  for(const block of ['short','cancel','lost','disabled','combat']){
+    const t=table({autoReady:true});
+    if(block==='disabled')t.readyButton.disabled=true;
+    if(block==='combat')t.state.save.save.mode='combat';
+    t.readyButton.dispatchEvent({type:'pointerdown',button:0,pointerId:1});
+    if(block==='short')t.readyButton.dispatchEvent({type:'pointerup',pointerId:1});
+    if(block==='cancel')t.readyButton.dispatchEvent({type:'pointercancel',pointerId:1});
+    if(block==='lost')t.readyButton.dispatchEvent({type:'lostpointercapture',pointerId:1});
+    t.holdTick(1000);t.state.save.save.mode='normal';
+    assert.equal(t.autoReadyEnabled(),true);assert.equal(t.requests.length,0);
+  }
 });
 
 test('silent Ready with AUTO advances when the other player is already Ready',async()=>{

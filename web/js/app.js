@@ -607,11 +607,9 @@
     const readyLabel=combatMode?(current?.ready?'Undo Finished':'Combat Finished'):(current?.ready?'Unready':'Ready');
     $('readyBtn').querySelector('.ready-label').textContent=readyLabel;
     $('readyBtn').classList.toggle('ready',!!current?.ready);
-    $('readyBtn').title=locked?readyLabel:current?.ready?'Click to become Not Ready':'Ready to continue, including without sending a message';
-    $('readyBtn').setAttribute('aria-label',readyLabel);
-    $('autoReadyToggle').checked=autoReadyPreference();
-    $('autoReadyToggle').disabled=!current||busy||locked;
-    $('autoReadyLabel').title=locked?'Auto-ready is paused during combat and aftermath':'When enabled, sending a message also marks you Ready. You can always use Ready without sending.';
+    $('readyBtn').classList.toggle('auto-ready',autoReadyEnabled());
+    $('readyBtn').title=locked?readyLabel:`Click to ${current?.ready?'Unready':'Ready without sending'} · hold to turn auto-ready ${autoReadyEnabled()?'off':'on'} (Ready after sending)`;
+    $('readyBtn').setAttribute('aria-label',`${readyLabel}${autoReadyEnabled()?', auto-ready on':''}`);
     $('combatToggle').classList.toggle('hidden',s.save.mode==='combat');
     $('resumeCombat').classList.toggle('hidden',s.save.mode!=='combat');
     $('combatToggle').disabled=busy||locked;
@@ -739,12 +737,56 @@
          [document.body,field,$('sendBtn')].includes(document.activeElement)) field.focus();
     }
   };
-  $('autoReadyToggle').onchange=()=>{
-    if($('autoReadyToggle').disabled||combatPending())return;
-    setAutoReady($('autoReadyToggle').checked);
-    render();
+  const readyButton=$('readyBtn'),autoReadyHoldMs=800;
+  let readyHoldStarted=0,readyHoldPointer=null,readyHoldFrame=0,readyHoldActivated=false,suppressReadyClick=false;
+  const clearReadyHold=()=>{
+    if(readyHoldFrame)cancelAnimationFrame(readyHoldFrame);
+    readyHoldFrame=0;readyHoldStarted=0;readyHoldPointer=null;
+    readyButton.classList.remove('holding-auto-ready');
+    readyButton.style.removeProperty('--hold-progress');
   };
+  const updateReadyHold=now=>{
+    if(combatPending()||readyButton.disabled){clearReadyHold();return;}
+    if(!readyHoldStarted)return;
+    const progress=Math.min(1,(now-readyHoldStarted)/autoReadyHoldMs);
+    readyButton.style.setProperty('--hold-progress',progress);
+    if(progress>=1){
+      readyHoldActivated=true;
+      setAutoReady(!autoReadyPreference());
+      if(readyHoldFrame)cancelAnimationFrame(readyHoldFrame);
+      readyHoldFrame=0;readyHoldStarted=0;
+      readyButton.classList.remove('holding-auto-ready');
+      readyButton.style.removeProperty('--hold-progress');
+      render();
+      return;
+    }
+    readyHoldFrame=requestAnimationFrame(updateReadyHold);
+  };
+  readyButton.addEventListener('pointerdown',event=>{
+    if(event.button!==0||readyButton.disabled||combatPending())return;
+    readyHoldPointer=event.pointerId;
+    readyHoldStarted=performance.now();
+    readyHoldActivated=false;
+    readyButton.classList.add('holding-auto-ready');
+    readyButton.style.setProperty('--hold-progress',0);
+    readyButton.setPointerCapture(event.pointerId);
+    readyHoldFrame=requestAnimationFrame(updateReadyHold);
+  });
+  readyButton.addEventListener('pointerup',event=>{
+    if(event.pointerId!==readyHoldPointer)return;
+    if(readyHoldActivated)suppressReadyClick=true;
+    readyHoldPointer=null;
+    clearReadyHold();
+  });
+  readyButton.addEventListener('pointercancel',()=>{
+    readyHoldPointer=null;
+    clearReadyHold();
+  });
+  readyButton.addEventListener('lostpointercapture',()=>{
+    if(readyHoldStarted)clearReadyHold();
+  });
   $('readyBtn').onclick=async()=>{
+    if(suppressReadyClick){suppressReadyClick=false;return;}
     const current=state.save.players.find(p=>p.id===state.identity);
     if(!current) return;
     if(await update('ready',{playerId:state.identity,ready:!current.ready,...(state.save.save.mode==='combat'?{handoffId:state.save.combat.id}:{})}) &&
