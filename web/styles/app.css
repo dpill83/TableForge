@@ -707,10 +707,9 @@ textarea{padding:10px;resize:none}
 .ready-btn-large.holding-auto-ready::after{opacity:1}
 .ready-btn-large>*{position:relative;z-index:1}
 .ready-btn-large.holding-auto-ready{user-select:none;-webkit-user-select:none}
-.ready-btn-large.auto-ready::after{display:none}
 .ready-btn-large.holding-auto-ready .auto-ready-indicator{display:inline-block;color:#dce4ff;background:#454078}
 .ready-btn-large.holding-auto-ready::before{
-  content:"Hold to enable auto-ready";
+  content:"Hold to toggle auto-ready";
   position:absolute;
   left:50%;
   bottom:calc(100% + 10px);

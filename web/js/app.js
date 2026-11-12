@@ -8,7 +8,8 @@
   const combatEligible=()=>state.save?.save.mode==='combat'&&!!state.save.players.length&&state.save.players.every(p=>p.ready);
   const outcomeDraftKey=()=>state.save&&state.identity&&state.save.combat?`tableforge-combat:${state.save.save.id}:${state.save.combat.id}:${state.identity}`:null;
   const autoReadyKey=()=>state.save&&state.identity?`tableforge-auto-ready:v2:${state.save.save.id}:${state.identity}`:null;
-  const autoReadyEnabled=()=>{const key=autoReadyKey();try{return !combatPending()&&!!key&&localStorage.getItem(key)==='true';}catch{return false;}};
+  const autoReadyPreference=()=>{const key=autoReadyKey();try{return !!key&&localStorage.getItem(key)==='true';}catch{return false;}};
+  const autoReadyEnabled=()=>!combatPending()&&autoReadyPreference();
   const setAutoReady=enabled=>{const key=autoReadyKey();if(!key)return;try{if(enabled)localStorage.setItem(key,'true');else localStorage.removeItem(key);}catch(error){console.error(error);}};
   const aiNotificationKey='tableforge-ai-dm-notifications';
   const aiNotificationsEnabled=()=>{try{return localStorage.getItem(aiNotificationKey)==='true';}catch{return false;}};
@@ -607,7 +608,7 @@
     $('readyBtn').querySelector('.ready-label').textContent=readyLabel;
     $('readyBtn').classList.toggle('ready',!!current?.ready);
     $('readyBtn').classList.toggle('auto-ready',autoReadyEnabled());
-    $('readyBtn').title=locked?readyLabel:autoReadyEnabled()?'Auto-ready on: sending also marks you Ready · click to turn off and Unready':'Click to toggle Ready · hold to enable Ready after sending';
+    $('readyBtn').title=locked?readyLabel:`Click to ${current?.ready?'Unready':'Ready without sending'} · hold to turn auto-ready ${autoReadyEnabled()?'off':'on'} (Ready after sending)`;
     $('readyBtn').setAttribute('aria-label',`${readyLabel}${autoReadyEnabled()?', auto-ready on':''}`);
     $('combatToggle').classList.toggle('hidden',s.save.mode==='combat');
     $('resumeCombat').classList.toggle('hidden',s.save.mode!=='combat');
@@ -745,13 +746,13 @@
     readyButton.style.removeProperty('--hold-progress');
   };
   const updateReadyHold=now=>{
-    if(combatPending()){clearReadyHold();return;}
+    if(combatPending()||readyButton.disabled){clearReadyHold();return;}
     if(!readyHoldStarted)return;
     const progress=Math.min(1,(now-readyHoldStarted)/autoReadyHoldMs);
     readyButton.style.setProperty('--hold-progress',progress);
     if(progress>=1){
       readyHoldActivated=true;
-      setAutoReady(true);
+      setAutoReady(!autoReadyPreference());
       if(readyHoldFrame)cancelAnimationFrame(readyHoldFrame);
       readyHoldFrame=0;readyHoldStarted=0;
       readyButton.classList.remove('holding-auto-ready');
@@ -762,7 +763,7 @@
     readyHoldFrame=requestAnimationFrame(updateReadyHold);
   };
   readyButton.addEventListener('pointerdown',event=>{
-    if(event.button!==0||readyButton.disabled||autoReadyEnabled()||combatPending())return;
+    if(event.button!==0||readyButton.disabled||combatPending())return;
     readyHoldPointer=event.pointerId;
     readyHoldStarted=performance.now();
     readyHoldActivated=false;
@@ -786,11 +787,9 @@
   });
   $('readyBtn').onclick=async()=>{
     if(suppressReadyClick){suppressReadyClick=false;return;}
-    const wasAutoReady=autoReadyEnabled();
-    if(wasAutoReady){setAutoReady(false);render();}
     const current=state.save.players.find(p=>p.id===state.identity);
     if(!current) return;
-    if(await update('ready',{playerId:state.identity,ready:wasAutoReady?false:!current.ready,...(state.save.save.mode==='combat'?{handoffId:state.save.combat.id}:{})}) &&
+    if(await update('ready',{playerId:state.identity,ready:!current.ready,...(state.save.save.mode==='combat'?{handoffId:state.save.combat.id}:{})}) &&
        state.save.save.mode==='normal' && state.save.players.every(p=>p.ready)) await advanceTable();
   };
   $('readyOverride').onclick=()=>{
@@ -881,16 +880,12 @@
   field.addEventListener('input',()=>{const typing=!!field.value.trim();if(typing&&Date.now()-typingSentAt>2500)sendTyping(true);else if(!typing&&typingSentAt)sendTyping(false);});
   const sendOnEnter=event=>{
     if(event.key!=='Enter'||event.shiftKey||event.isComposing)return;
-    // A focused Ready button must not leave a selected action unsent on Enter.
-    // Its ordinary click still allows contributing nothing, even with a draft.
-    if(event.currentTarget===readyButton&&(!pendingContribution()||combatPending()))return;
     event.preventDefault();
     if(event.repeat||combatPending())return;
     field.focus();
     $('sendBtn').click();
   };
   field.addEventListener('keydown',sendOnEnter);
-  readyButton.addEventListener('keydown',sendOnEnter);
   $('emojiBtn').onclick=()=>{field.value+=' 🙂';resize();field.focus();};
   $('attachmentBtn').onclick=event=>{
     event.stopPropagation();
