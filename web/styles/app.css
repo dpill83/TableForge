@@ -688,42 +688,6 @@ textarea{padding:10px;resize:none}
   gap:8px;
   cursor:pointer;
   font-weight:700;
-  touch-action:none;
-}
-.ready-btn-large::after{
-  content:"";
-  position:absolute;
-  z-index:0;
-  inset:-4px;
-  border-radius:14px;
-  padding:3px;
-  pointer-events:none;
-  background:conic-gradient(from -90deg,#b6a6ff calc(var(--hold-progress,0) * 1turn),transparent 0);
-  -webkit-mask:linear-gradient(#fff 0 0) content-box,linear-gradient(#fff 0 0);
-  -webkit-mask-composite:xor;
-  mask-composite:exclude;
-  opacity:0;
-}
-.ready-btn-large.holding-auto-ready::after{opacity:1}
-.ready-btn-large>*{position:relative;z-index:1}
-.ready-btn-large.holding-auto-ready{user-select:none;-webkit-user-select:none}
-.ready-btn-large.auto-ready::after{display:none}
-.ready-btn-large.holding-auto-ready .auto-ready-indicator{display:inline-block;color:#dce4ff;background:#454078}
-.ready-btn-large.holding-auto-ready::before{
-  content:"Hold to enable auto-ready";
-  position:absolute;
-  left:50%;
-  bottom:calc(100% + 10px);
-  transform:translateX(-50%);
-  z-index:2;
-  white-space:nowrap;
-  padding:5px 8px;
-  border:1px solid #595277;
-  border-radius:6px;
-  background:#171521;
-  color:#e7e2ff;
-  font-size:11px;
-  font-weight:500;
 }
 .ready-btn-large:hover,.ready-btn-large:focus-visible{
   background:#14241e;
@@ -734,8 +698,12 @@ textarea{padding:10px;resize:none}
   border-color:#70e5b7;
   color:#dcfff2;
 }
-.ready-btn-large .auto-ready-indicator{display:none;font-size:9px;letter-spacing:.06em;padding:2px 4px;border-radius:4px;background:#263a66;color:#dce4ff}
-.ready-btn-large.auto-ready .auto-ready-indicator{display:inline-block}
+.ready-controls{display:flex;align-items:center;gap:10px}
+.auto-ready-toggle{display:flex;align-items:center;gap:6px;margin:0;max-width:115px;font-size:11px;line-height:1.35;color:var(--muted);cursor:pointer}
+.auto-ready-toggle input{width:16px;height:16px;flex:none;margin:0;padding:0;accent-color:#3ad99e}
+.auto-ready-toggle:has(input:checked){color:#72e9bb}
+.auto-ready-toggle:has(input:disabled){opacity:.55;cursor:default}
+.ready-controls .ready-btn-large{flex:1}
 .ready-check{font-size:18px;line-height:1}
 .status-strong{color:#d6dbe0}
 
@@ -798,7 +766,7 @@ textarea{padding:10px;resize:none}
   .grid{grid-template-columns:1fr}
   .player-row{grid-template-columns:1fr}
   .composer-body{grid-template-columns:40px minmax(0,1fr) 48px}
-  .ready-btn-large{grid-column:1/-1}
+  .ready-controls{grid-column:1/-1}
   .topbar .mode-pill{display:none}
 }
 

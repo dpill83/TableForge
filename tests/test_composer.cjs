@@ -14,7 +14,7 @@ const section=(start,end)=>{
 function table({autoReady=false}={}){
   const document={body:{},activeElement:null};
   const elements={};
-  for(const id of ['composer','sendBtn','readyBtn','play','modalRoot']){
+  for(const id of ['composer','sendBtn','readyBtn','autoReadyToggle','play','modalRoot']){
     elements[id]={value:'',disabled:false,childElementCount:0,listeners:{},
       classList:{contains:()=>true,add:()=>{},remove:()=>{}},
       style:{setProperty:()=>{},removeProperty:()=>{}},setPointerCapture:()=>{},
@@ -48,7 +48,6 @@ function table({autoReady=false}={}){
   const storage=new Map(autoReady?[["tableforge-auto-ready:v2:save:first",'true']]:[]);
   const context=vm.createContext({state,document,field,
     localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},
-    performance:{now:()=>100},requestAnimationFrame:()=>1,cancelAnimationFrame:()=>{},
     $:id=>elements[id],TableForgeMessageActions:actions,Event:class{constructor(type){this.type=type;}},
     pendingContribution,combatPending,draftStale,syncDraft,
     storeDraft:()=>{},newRequestId:()=> 'request',typingSentAt:0,
@@ -68,10 +67,10 @@ function table({autoReady=false}={}){
   vm.runInContext([
     section('  const autoReadyKey=',"  const aiNotificationKey="),
     section('  const addChoiceToDraft=','  let dotCount='),
-    section("  $('sendBtn').onclick=","  const readyButton="),
-    section("  const readyButton=","  $('readyOverride').onclick="),
+    section("  $('sendBtn').onclick=","  $('autoReadyToggle').onchange="),
+    section("  $('autoReadyToggle').onchange=","  $('readyOverride').onclick="),
     section('  const sendOnEnter=',"  $('emojiBtn').onclick="),
-    'this.choose=letter=>addChoiceToDraft(10,"first",letter);this.holdTick=updateReadyHold;this.autoReadyEnabled=autoReadyEnabled;',
+    'this.choose=letter=>addChoiceToDraft(10,"first",letter);this.autoReadyEnabled=autoReadyEnabled;',
   ].join('\n'),context);
   const press=async(target,extra={})=>{
     const event={type:'keydown',key:'Enter',shiftKey:false,isComposing:false,repeat:false,
@@ -82,7 +81,7 @@ function table({autoReady=false}={}){
     await target.pending;await elements.sendBtn.pending;
     return event;
   };
-  return {state,field,readyButton,elements,requests,choose:context.choose,press,document,holdTick:context.holdTick,autoReadyEnabled:context.autoReadyEnabled};
+  return {state,field,readyButton,elements,requests,choose:context.choose,press,document,autoReadyEnabled:context.autoReadyEnabled};
 }
 
 test('each choice stays local, focuses the composer, and Enter sends its full action',async()=>{
@@ -102,17 +101,17 @@ test('each choice stays local, focuses the composer, and Enter sends its full ac
   }
 });
 
-test('Enter on Ready with a selected action only sends when AUTO is off',async()=>{
+test('Enter on Ready readies without sending or discarding a draft',async()=>{
   const t=table();t.state.save.players[1].ready=true;t.choose('B');t.readyButton.focus();
   await t.press(t.readyButton);
-  assert.deepEqual(t.requests.map(r=>r.action),['messages']);
-  assert.equal(t.requests[0].payload.text,'I discuss the blade.');
+  assert.deepEqual(t.requests.map(r=>r.action),['ready','advance']);
+  assert.equal(t.field.value,'I discuss the blade.');
 });
 
 test('choice appends to a draft and preserves an attachment',async()=>{
   const t=table();t.field.value='I greet the crew.';
   t.state.pendingImage={mime:'image/png',data:'test-image'};t.choose('C');
-  await t.press(t.readyButton);
+  await t.press(t.field);
   assert.equal(t.requests[0].payload.text,'I greet the crew.\nI keep watch.');
   assert.equal(t.requests[0].payload.image.data,'test-image');
 });
@@ -130,16 +129,16 @@ test('Shift+Enter and IME Enter keep editing; held Enter cannot send repeatedly'
     const t=table();t.choose('A');await t.press(t.field,extra);
     assert.equal(t.requests.length,0);assert.equal(t.field.value,'I help the crew.');
   }
-  const t=table();t.choose('A');const event=await t.press(t.readyButton,{repeat:true});
+  const t=table();t.choose('A');const event=await t.press(t.field,{repeat:true});
   assert.equal(event.prevented,true);assert.equal(t.requests.length,0);
 });
 
-test('stale or disabled drafts cannot become Ready through Enter',async()=>{
+test('stale or disabled drafts cannot send or become Ready through composer Enter',async()=>{
   for(const block of ['stale','disabled']){
     const t=table();t.choose('C');
     if(block==='stale')t.state.save.save.beat=3;
     else t.elements.sendBtn.disabled=true;
-    await t.press(t.readyButton);
+    await t.press(t.field);
     assert.equal(t.requests.length,0);assert.equal(t.field.value,'I keep watch.');
     assert.equal(t.state.save.players[0].ready,false);
   }
@@ -167,21 +166,26 @@ test('sending with AUTO off preserves an explicit Ready',async()=>{
   assert.equal(t.state.save.players[0].ready,true);
 });
 
-test('holding for 800ms enables AUTO without marking Ready or sending',()=>{
-  const t=table();
-  t.readyButton.dispatchEvent({type:'pointerdown',button:0,pointerId:1});
-  t.holdTick(899);assert.equal(t.autoReadyEnabled(),false);
-  t.holdTick(900);assert.equal(t.autoReadyEnabled(),true);
-  t.readyButton.dispatchEvent({type:'pointerup',pointerId:1});t.readyButton.click();
-  assert.equal(t.requests.length,0);assert.equal(t.state.save.players[0].ready,false);
+test('Ready and Unready remain independent of AUTO without sending',async()=>{
+  const t=table({autoReady:true});
+  await t.press(t.readyButton);
+  assert.equal(t.state.save.players[0].ready,true);
+  assert.equal(t.autoReadyEnabled(),true);
+  await t.press(t.readyButton);
+  assert.equal(t.state.save.players[0].ready,false);
+  assert.equal(t.autoReadyEnabled(),true);
+  assert.deepEqual(t.requests.map(r=>r.action),['ready','ready']);
 });
 
-test('clicking AUTO disables it and leaves the player Unready',async()=>{
+test('AUTO checkbox changes only the preference, preserving readiness and drafts',()=>{
   for(const ready of [false,true]){
-    const t=table({autoReady:true});t.state.save.players[0].ready=ready;
-    t.readyButton.click();await t.readyButton.pending;
-    assert.equal(t.autoReadyEnabled(),false);assert.equal(t.state.save.players[0].ready,false);
-    assert.equal(t.requests[0].payload.ready,false);
+    const t=table();t.state.save.players[0].ready=ready;t.choose('A');
+    for(const enabled of [true,false]){
+      t.elements.autoReadyToggle.checked=enabled;t.elements.autoReadyToggle.onchange();
+      assert.equal(t.autoReadyEnabled(),enabled);
+      assert.equal(t.state.save.players[0].ready,ready);
+      assert.equal(t.requests.length,0);assert.equal(t.field.value,'I help the crew.');
+    }
   }
 });
 
@@ -193,11 +197,18 @@ test('AUTO preference is scoped to player and save and suspended during combat',
   t.state.save.save.mode='normal';assert.equal(t.autoReadyEnabled(),true);
 });
 
-test('short holds and canceled gestures do not enable AUTO',async()=>{
-  for(const type of ['pointerup','pointercancel','lostpointercapture']){
-    const t=table();t.readyButton.dispatchEvent({type:'pointerdown',button:0,pointerId:1});
-    t.holdTick(500);t.readyButton.dispatchEvent({type,pointerId:1});t.holdTick(1000);
-    assert.equal(t.autoReadyEnabled(),false);
-    assert.equal(t.requests.length,0);
-  }
+test('AUTO checkbox cannot change the preference while disabled or in combat',()=>{
+  const t=table({autoReady:true});t.elements.autoReadyToggle.checked=false;
+  t.elements.autoReadyToggle.disabled=true;t.elements.autoReadyToggle.onchange();
+  assert.equal(t.autoReadyEnabled(),true);
+  t.elements.autoReadyToggle.disabled=false;t.state.save.save.mode='combat';
+  t.elements.autoReadyToggle.onchange();t.state.save.save.mode='normal';
+  assert.equal(t.autoReadyEnabled(),true);
+});
+
+test('silent Ready with AUTO advances when the other player is already Ready',async()=>{
+  const t=table({autoReady:true});t.state.save.players[1].ready=true;
+  t.readyButton.click();await t.readyButton.pending;
+  assert.deepEqual(t.requests.map(r=>r.action),['ready','advance']);
+  assert.equal(t.autoReadyEnabled(),true);
 });

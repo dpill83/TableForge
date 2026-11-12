@@ -281,11 +281,16 @@
           </svg>
         </button>
 
-        <button class="ready-btn-large" id="readyBtn" type="button">
-          <span class="ready-check">✓</span>
-          <span class="ready-label">Ready</span>
-          <span class="auto-ready-indicator" aria-hidden="true">AUTO</span>
-        </button>
+        <div class="ready-controls">
+          <button class="ready-btn-large" id="readyBtn" type="button">
+            <span class="ready-check">✓</span>
+            <span class="ready-label">Ready</span>
+          </button>
+          <label class="auto-ready-toggle" id="autoReadyLabel">
+            <input id="autoReadyToggle" type="checkbox">
+            <span>Auto-ready after sending</span>
+          </label>
+        </div>
       </div>
     </footer>
   </div>

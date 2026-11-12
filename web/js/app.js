@@ -8,7 +8,8 @@
   const combatEligible=()=>state.save?.save.mode==='combat'&&!!state.save.players.length&&state.save.players.every(p=>p.ready);
   const outcomeDraftKey=()=>state.save&&state.identity&&state.save.combat?`tableforge-combat:${state.save.save.id}:${state.save.combat.id}:${state.identity}`:null;
   const autoReadyKey=()=>state.save&&state.identity?`tableforge-auto-ready:v2:${state.save.save.id}:${state.identity}`:null;
-  const autoReadyEnabled=()=>{const key=autoReadyKey();try{return !combatPending()&&!!key&&localStorage.getItem(key)==='true';}catch{return false;}};
+  const autoReadyPreference=()=>{const key=autoReadyKey();try{return !!key&&localStorage.getItem(key)==='true';}catch{return false;}};
+  const autoReadyEnabled=()=>!combatPending()&&autoReadyPreference();
   const setAutoReady=enabled=>{const key=autoReadyKey();if(!key)return;try{if(enabled)localStorage.setItem(key,'true');else localStorage.removeItem(key);}catch(error){console.error(error);}};
   const aiNotificationKey='tableforge-ai-dm-notifications';
   const aiNotificationsEnabled=()=>{try{return localStorage.getItem(aiNotificationKey)==='true';}catch{return false;}};
@@ -606,9 +607,11 @@
     const readyLabel=combatMode?(current?.ready?'Undo Finished':'Combat Finished'):(current?.ready?'Unready':'Ready');
     $('readyBtn').querySelector('.ready-label').textContent=readyLabel;
     $('readyBtn').classList.toggle('ready',!!current?.ready);
-    $('readyBtn').classList.toggle('auto-ready',autoReadyEnabled());
-    $('readyBtn').title=locked?readyLabel:autoReadyEnabled()?'Auto-ready on: sending also marks you Ready · click to turn off and Unready':'Click to toggle Ready · hold to enable Ready after sending';
-    $('readyBtn').setAttribute('aria-label',`${readyLabel}${autoReadyEnabled()?', auto-ready on':''}`);
+    $('readyBtn').title=locked?readyLabel:current?.ready?'Click to become Not Ready':'Ready to continue, including without sending a message';
+    $('readyBtn').setAttribute('aria-label',readyLabel);
+    $('autoReadyToggle').checked=autoReadyPreference();
+    $('autoReadyToggle').disabled=!current||busy||locked;
+    $('autoReadyLabel').title=locked?'Auto-ready is paused during combat and aftermath':'When enabled, sending a message also marks you Ready. You can always use Ready without sending.';
     $('combatToggle').classList.toggle('hidden',s.save.mode==='combat');
     $('resumeCombat').classList.toggle('hidden',s.save.mode!=='combat');
     $('combatToggle').disabled=busy||locked;
@@ -736,61 +739,15 @@
          [document.body,field,$('sendBtn')].includes(document.activeElement)) field.focus();
     }
   };
-  const readyButton=$('readyBtn'),autoReadyHoldMs=800;
-  let readyHoldStarted=0,readyHoldPointer=null,readyHoldFrame=0,readyHoldActivated=false,suppressReadyClick=false;
-  const clearReadyHold=()=>{
-    if(readyHoldFrame)cancelAnimationFrame(readyHoldFrame);
-    readyHoldFrame=0;readyHoldStarted=0;readyHoldPointer=null;
-    readyButton.classList.remove('holding-auto-ready');
-    readyButton.style.removeProperty('--hold-progress');
+  $('autoReadyToggle').onchange=()=>{
+    if($('autoReadyToggle').disabled||combatPending())return;
+    setAutoReady($('autoReadyToggle').checked);
+    render();
   };
-  const updateReadyHold=now=>{
-    if(combatPending()){clearReadyHold();return;}
-    if(!readyHoldStarted)return;
-    const progress=Math.min(1,(now-readyHoldStarted)/autoReadyHoldMs);
-    readyButton.style.setProperty('--hold-progress',progress);
-    if(progress>=1){
-      readyHoldActivated=true;
-      setAutoReady(true);
-      if(readyHoldFrame)cancelAnimationFrame(readyHoldFrame);
-      readyHoldFrame=0;readyHoldStarted=0;
-      readyButton.classList.remove('holding-auto-ready');
-      readyButton.style.removeProperty('--hold-progress');
-      render();
-      return;
-    }
-    readyHoldFrame=requestAnimationFrame(updateReadyHold);
-  };
-  readyButton.addEventListener('pointerdown',event=>{
-    if(event.button!==0||readyButton.disabled||autoReadyEnabled()||combatPending())return;
-    readyHoldPointer=event.pointerId;
-    readyHoldStarted=performance.now();
-    readyHoldActivated=false;
-    readyButton.classList.add('holding-auto-ready');
-    readyButton.style.setProperty('--hold-progress',0);
-    readyButton.setPointerCapture(event.pointerId);
-    readyHoldFrame=requestAnimationFrame(updateReadyHold);
-  });
-  readyButton.addEventListener('pointerup',event=>{
-    if(event.pointerId!==readyHoldPointer)return;
-    if(readyHoldActivated)suppressReadyClick=true;
-    readyHoldPointer=null;
-    clearReadyHold();
-  });
-  readyButton.addEventListener('pointercancel',()=>{
-    readyHoldPointer=null;
-    clearReadyHold();
-  });
-  readyButton.addEventListener('lostpointercapture',()=>{
-    if(readyHoldStarted)clearReadyHold();
-  });
   $('readyBtn').onclick=async()=>{
-    if(suppressReadyClick){suppressReadyClick=false;return;}
-    const wasAutoReady=autoReadyEnabled();
-    if(wasAutoReady){setAutoReady(false);render();}
     const current=state.save.players.find(p=>p.id===state.identity);
     if(!current) return;
-    if(await update('ready',{playerId:state.identity,ready:wasAutoReady?false:!current.ready,...(state.save.save.mode==='combat'?{handoffId:state.save.combat.id}:{})}) &&
+    if(await update('ready',{playerId:state.identity,ready:!current.ready,...(state.save.save.mode==='combat'?{handoffId:state.save.combat.id}:{})}) &&
        state.save.save.mode==='normal' && state.save.players.every(p=>p.ready)) await advanceTable();
   };
   $('readyOverride').onclick=()=>{
@@ -881,16 +838,12 @@
   field.addEventListener('input',()=>{const typing=!!field.value.trim();if(typing&&Date.now()-typingSentAt>2500)sendTyping(true);else if(!typing&&typingSentAt)sendTyping(false);});
   const sendOnEnter=event=>{
     if(event.key!=='Enter'||event.shiftKey||event.isComposing)return;
-    // A focused Ready button must not leave a selected action unsent on Enter.
-    // Its ordinary click still allows contributing nothing, even with a draft.
-    if(event.currentTarget===readyButton&&(!pendingContribution()||combatPending()))return;
     event.preventDefault();
     if(event.repeat||combatPending())return;
     field.focus();
     $('sendBtn').click();
   };
   field.addEventListener('keydown',sendOnEnter);
-  readyButton.addEventListener('keydown',sendOnEnter);
   $('emojiBtn').onclick=()=>{field.value+=' 🙂';resize();field.focus();};
   $('attachmentBtn').onclick=event=>{
     event.stopPropagation();
