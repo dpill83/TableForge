@@ -11,12 +11,13 @@ const section=(start,end)=>{
   assert.ok(from>=0&&to>from,`Missing app handler: ${start}`);
   return source.slice(from,to);
 };
-function table(){
+function table({autoReady=false}={}){
   const document={body:{},activeElement:null};
   const elements={};
   for(const id of ['composer','sendBtn','readyBtn','play','modalRoot']){
     elements[id]={value:'',disabled:false,childElementCount:0,listeners:{},
-      classList:{contains:()=>true},
+      classList:{contains:()=>true,add:()=>{},remove:()=>{}},
+      style:{setProperty:()=>{},removeProperty:()=>{}},setPointerCapture:()=>{},
       addEventListener(type,handler){this.listeners[type]=handler;},
       dispatchEvent(event){event.currentTarget=this;this.listeners[event.type]?.(event);},
       focus(){document.activeElement=this;},
@@ -44,29 +45,33 @@ function table(){
     else state.draft||={saveId:'save',beat:2,requestId:null};
   };
   field.addEventListener('input',syncDraft);
-  const context=vm.createContext({state,document,field,readyButton,
+  const storage=new Map(autoReady?[["tableforge-auto-ready:v2:save:first",'true']]:[]);
+  const context=vm.createContext({state,document,field,
+    localStorage:{getItem:key=>storage.get(key),setItem:(key,value)=>storage.set(key,value),removeItem:key=>storage.delete(key)},
+    performance:{now:()=>100},requestAnimationFrame:()=>1,cancelAnimationFrame:()=>{},
     $:id=>elements[id],TableForgeMessageActions:actions,Event:class{constructor(type){this.type=type;}},
     pendingContribution,combatPending,draftStale,syncDraft,
-    storeDraft:()=>{},newRequestId:()=> 'request',typingSentAt:0,suppressReadyClick:false,
-    autoReadyEnabled:()=>false,setAutoReady:()=>{},render:()=>{},
+    storeDraft:()=>{},newRequestId:()=> 'request',typingSentAt:0,
+    render:()=>{},
     notify:error=>{throw error;},
     clearDraft:()=>{field.value='';state.draft=null;state.pendingImage=null;},
     update:async(action,payload)=>{
       requests.push({action,payload});
       if(action==='messages'){
         state.save.messages.push({kind:'player',body:payload.text,request_id:payload.requestId});
-        state.save.players[0].ready=true;
+        if(payload.autoReady===true)state.save.players[0].ready=true;
       }else if(action==='ready')state.save.players[0].ready=payload.ready;
       return true;
     },
     advanceTable:async()=>{requests.push({action:'advance'});},
   });
   vm.runInContext([
+    section('  const autoReadyKey=',"  const aiNotificationKey="),
     section('  const addChoiceToDraft=','  let dotCount='),
     section("  $('sendBtn').onclick=","  const readyButton="),
-    section("  $('readyBtn').onclick=","  $('readyOverride').onclick="),
+    section("  const readyButton=","  $('readyOverride').onclick="),
     section('  const sendOnEnter=',"  $('emojiBtn').onclick="),
-    'this.choose=letter=>addChoiceToDraft(10,"first",letter);',
+    'this.choose=letter=>addChoiceToDraft(10,"first",letter);this.holdTick=updateReadyHold;this.autoReadyEnabled=autoReadyEnabled;',
   ].join('\n'),context);
   const press=async(target,extra={})=>{
     const event={type:'keydown',key:'Enter',shiftKey:false,isComposing:false,repeat:false,
@@ -77,7 +82,7 @@ function table(){
     await target.pending;await elements.sendBtn.pending;
     return event;
   };
-  return {state,field,readyButton,elements,requests,choose:context.choose,press,document};
+  return {state,field,readyButton,elements,requests,choose:context.choose,press,document,holdTick:context.holdTick,autoReadyEnabled:context.autoReadyEnabled};
 }
 
 test('each choice stays local, focuses the composer, and Enter sends its full action',async()=>{
@@ -93,14 +98,14 @@ test('each choice stays local, focuses the composer, and Enter sends its full ac
     assert.equal(t.requests[0].payload.beat,2);
     assert.equal(t.requests[0].payload.requestId,'request');
     assert.equal(t.field.value,'');
-    assert.equal(t.state.save.players[0].ready,true);
+    assert.equal(t.state.save.players[0].ready,false);
   }
 });
 
-test('Enter on Ready with a selected action sends it before any advancement',async()=>{
+test('Enter on Ready with a selected action only sends when AUTO is off',async()=>{
   const t=table();t.state.save.players[1].ready=true;t.choose('B');t.readyButton.focus();
   await t.press(t.readyButton);
-  assert.deepEqual(t.requests.map(r=>r.action),['messages','advance']);
+  assert.deepEqual(t.requests.map(r=>r.action),['messages']);
   assert.equal(t.requests[0].payload.text,'I discuss the blade.');
 });
 
@@ -146,4 +151,53 @@ test('combat Enter still marks Finished and preserves the unsent action',async()
   assert.equal(t.requests[0].action,'ready');assert.equal(t.requests[0].payload.handoffId,'combat');
   assert.equal(t.field.value,'I help the crew.');
   await t.press(t.field);assert.equal(t.requests.length,1);
+});
+
+test('AUTO send marks Ready and advances only when everyone is Ready',async()=>{
+  const t=table({autoReady:true});t.state.save.players[1].ready=true;t.choose('A');
+  await t.press(t.field);
+  assert.equal(t.requests[0].payload.autoReady,true);
+  assert.equal(t.state.save.players[0].ready,true);
+  assert.deepEqual(t.requests.map(r=>r.action),['messages','advance']);
+});
+
+test('sending with AUTO off preserves an explicit Ready',async()=>{
+  const t=table();t.state.save.players[0].ready=true;t.choose('A');await t.press(t.field);
+  assert.equal(t.requests[0].payload.autoReady,false);
+  assert.equal(t.state.save.players[0].ready,true);
+});
+
+test('holding for 800ms enables AUTO without marking Ready or sending',()=>{
+  const t=table();
+  t.readyButton.dispatchEvent({type:'pointerdown',button:0,pointerId:1});
+  t.holdTick(899);assert.equal(t.autoReadyEnabled(),false);
+  t.holdTick(900);assert.equal(t.autoReadyEnabled(),true);
+  t.readyButton.dispatchEvent({type:'pointerup',pointerId:1});t.readyButton.click();
+  assert.equal(t.requests.length,0);assert.equal(t.state.save.players[0].ready,false);
+});
+
+test('clicking AUTO disables it and leaves the player Unready',async()=>{
+  for(const ready of [false,true]){
+    const t=table({autoReady:true});t.state.save.players[0].ready=ready;
+    t.readyButton.click();await t.readyButton.pending;
+    assert.equal(t.autoReadyEnabled(),false);assert.equal(t.state.save.players[0].ready,false);
+    assert.equal(t.requests[0].payload.ready,false);
+  }
+});
+
+test('AUTO preference is scoped to player and save and suspended during combat',()=>{
+  const t=table({autoReady:true});assert.equal(t.autoReadyEnabled(),true);
+  t.state.identity='second';assert.equal(t.autoReadyEnabled(),false);t.state.identity='first';
+  t.state.save.save.id='other';assert.equal(t.autoReadyEnabled(),false);t.state.save.save.id='save';
+  t.state.save.save.mode='combat';assert.equal(t.autoReadyEnabled(),false);
+  t.state.save.save.mode='normal';assert.equal(t.autoReadyEnabled(),true);
+});
+
+test('short holds and canceled gestures do not enable AUTO',async()=>{
+  for(const type of ['pointerup','pointercancel','lostpointercapture']){
+    const t=table();t.readyButton.dispatchEvent({type:'pointerdown',button:0,pointerId:1});
+    t.holdTick(500);t.readyButton.dispatchEvent({type,pointerId:1});t.holdTick(1000);
+    assert.equal(t.autoReadyEnabled(),false);
+    assert.equal(t.requests.length,0);
+  }
 });

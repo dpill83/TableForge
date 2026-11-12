@@ -118,7 +118,7 @@ class ChoiceFlowTest(unittest.TestCase):
         again = self.api(f'/api/saves/{save_id}/messages', request)
         self.assertEqual(sent['messages'], again['messages'])
         self.assertEqual(sent['messages'][-1]['body'], request['text'])
-        self.assertTrue(sent['players'][0]['ready'])
+        self.assertFalse(sent['players'][0]['ready'])
         self.assertIsNone(sent['messages'][-1]['choices'])
         with patch.object(ai, 'current_provider', return_value=test_flow.FakeProvider('Next beat.')):
             self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
