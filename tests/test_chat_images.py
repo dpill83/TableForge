@@ -39,10 +39,10 @@ class ChatImageFlowTest(unittest.TestCase):
             payload.update(extra)
         return self.api(f'/api/saves/{self.save_id}/messages', payload)
 
-    def test_image_only_send_stores_bytes_and_marks_ready(self):
+    def test_image_only_send_with_auto_ready_stores_bytes_and_marks_ready(self):
         before = self.prepare()
         self.api(f'/api/saves/{self.save_id}/ready', {'playerId': self.first, 'ready': False})
-        posted = self.send()
+        posted = self.send(extra={'autoReady': True})
         message = posted['messages'][-1]
         self.assertEqual(message['kind'], 'player')
         self.assertEqual(message['body'], '')

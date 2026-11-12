@@ -607,7 +607,7 @@
     $('readyBtn').querySelector('.ready-label').textContent=readyLabel;
     $('readyBtn').classList.toggle('ready',!!current?.ready);
     $('readyBtn').classList.toggle('auto-ready',autoReadyEnabled());
-    $('readyBtn').title=locked?readyLabel:autoReadyEnabled()?'Auto-ready on · click to turn off':'Press and hold to turn on auto-ready';
+    $('readyBtn').title=locked?readyLabel:autoReadyEnabled()?'Auto-ready on: sending also marks you Ready · click to turn off and Unready':'Click to toggle Ready · hold to enable Ready after sending';
     $('readyBtn').setAttribute('aria-label',`${readyLabel}${autoReadyEnabled()?', auto-ready on':''}`);
     $('combatToggle').classList.toggle('hidden',s.save.mode==='combat');
     $('resumeCombat').classList.toggle('hidden',s.save.mode!=='combat');
@@ -721,7 +721,7 @@
       }).catch(()=>notify(error));
       return true;
     };
-    const payload={playerId:state.identity,text:body,beat:state.draft.beat,requestId};
+    const payload={playerId:state.identity,text:body,beat:state.draft.beat,requestId,autoReady:autoReadyEnabled()};
     if(image) payload.image={mime:image.mime,data:image.data};
     try {
       if(await update('messages',payload,landed)) {
@@ -786,10 +786,11 @@
   });
   $('readyBtn').onclick=async()=>{
     if(suppressReadyClick){suppressReadyClick=false;return;}
-    if(autoReadyEnabled()){setAutoReady(false);render();}
+    const wasAutoReady=autoReadyEnabled();
+    if(wasAutoReady){setAutoReady(false);render();}
     const current=state.save.players.find(p=>p.id===state.identity);
     if(!current) return;
-    if(await update('ready',{playerId:state.identity,ready:!current.ready,...(state.save.save.mode==='combat'?{handoffId:state.save.combat.id}:{})}) &&
+    if(await update('ready',{playerId:state.identity,ready:wasAutoReady?false:!current.ready,...(state.save.save.mode==='combat'?{handoffId:state.save.combat.id}:{})}) &&
        state.save.save.mode==='normal' && state.save.players.every(p=>p.ready)) await advanceTable();
   };
   $('readyOverride').onclick=()=>{

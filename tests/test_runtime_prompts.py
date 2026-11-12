@@ -98,7 +98,7 @@ class PromptFlowTest(unittest.TestCase):
         with patch.object(ai, 'current_provider', return_value=fake):
             self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
         self.assertEqual(preview['messages'], ai.chat_messages(fake.context))
-        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'At the market.'})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'At the market.', 'autoReady': True})
         with patch.object(ai, 'current_provider', return_value=fake):
             self.api(f'/api/saves/{save_id}/advance', {'beat': 2})
         self.assertFalse(fake.context['opening'])

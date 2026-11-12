@@ -534,7 +534,7 @@ textarea{padding:10px;resize:none}
   max-width:1100px;
   margin:0 auto;
   display:grid;
-  grid-template-columns:44px minmax(0,1fr) 56px 100px;
+  grid-template-columns:44px minmax(0,1fr) 56px max-content;
   gap:8px;
   align-items:end;
 }
@@ -676,6 +676,8 @@ textarea{padding:10px;resize:none}
   position:relative;
   isolation:isolate;
   height:48px;
+  padding:0 12px;
+  white-space:nowrap;
   border:2px solid #3ad99e;
   border-radius:10px;
   background:#101916;
@@ -788,7 +790,7 @@ textarea{padding:10px;resize:none}
   .sidebar{position:fixed;top:58px;bottom:0;width:260px;z-index:10;box-shadow:var(--shadow)}
   .sidebar.left{left:0}.sidebar.right{right:0}
   .sidebar.collapsed{display:none}
-  .composer-body{grid-template-columns:42px minmax(0,1fr) 52px 92px}
+  .composer-body{grid-template-columns:42px minmax(0,1fr) 52px max-content}
 }
 @media(max-width:620px){
   .app-version,.top-title{display:none}

@@ -298,6 +298,26 @@ class FlowTest(unittest.TestCase):
         self.assertEqual(advanced['save']['beat'], 2)
         self.assertEqual([m['kind'] for m in advanced['messages']], ['player', 'player', 'ai'])
 
+    def test_sending_without_auto_ready_preserves_readiness(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        self.api(f'/api/saves/{save_id}/ready', {'playerId': first, 'ready': False})
+        for flag in (None, False, 'true'):
+            payload = {'playerId': first, 'text': 'Another thought.'}
+            if flag is not None:
+                payload['autoReady'] = flag
+            sent = self.api(f'/api/saves/{save_id}/messages', payload)
+            self.assertFalse(sent['players'][0]['ready'])
+        payload = {'playerId': first, 'text': 'Done.', 'autoReady': True, 'requestId': str(uuid.uuid4())}
+        sent = self.api(f'/api/saves/{save_id}/messages', payload)
+        self.assertTrue(sent['players'][0]['ready'])
+        self.api(f'/api/saves/{save_id}/ready', {'playerId': first, 'ready': False})
+        retried = self.api(f'/api/saves/{save_id}/messages', payload)
+        self.assertFalse(retried['players'][0]['ready'])
+        self.api(f'/api/saves/{save_id}/ready', {'playerId': first, 'ready': True})
+        sent = self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'One detail.', 'autoReady': False})
+        self.assertTrue(sent['players'][0]['ready'])
+
     def test_sending_marks_player_ready_atomically(self):
         cartridge = self.cartridge_zip({'manifest.json': json.dumps({'format':'tableforge-adventure',
             'formatVersion':1,'title':'Test','resources':{}}),
@@ -309,12 +329,12 @@ class FlowTest(unittest.TestCase):
         rejected = self.api_error(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': '  '})
         self.assertIn('Message must contain', rejected['error'])
         self.assertFalse(self.api(f'/api/saves/{save_id}')['players'][0]['ready'])
-        sent = self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'I open the door.'})
+        sent = self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'I open the door.', 'autoReady': True})
         self.assertEqual([bool(p['ready']) for p in sent['players']], [True, False])
         self.api(f'/api/saves/{save_id}/ready', {'playerId': first, 'ready': False})
-        resent = self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'Carefully.'})
+        resent = self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'Carefully.', 'autoReady': True})
         self.assertTrue(resent['players'][0]['ready'])
-        last = self.api(f'/api/saves/{save_id}/messages', {'playerId': second, 'text': 'I follow.'})
+        last = self.api(f'/api/saves/{save_id}/messages', {'playerId': second, 'text': 'I follow.', 'autoReady': True})
         self.assertTrue(all(p['ready'] for p in last['players']))
         self.assertEqual(last['save']['beat'], 1)
 
@@ -361,7 +381,7 @@ class FlowTest(unittest.TestCase):
             before = self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
             first, second = [p['id'] for p in before['players']]
             self.api(f'/api/saves/{save_id}/messages',
-                     {'playerId': first, 'text': 'I keep watch.', 'beat': 2, 'requestId': str(uuid.uuid4())})
+                     {'playerId': first, 'text': 'I keep watch.', 'autoReady': True, 'beat': 2, 'requestId': str(uuid.uuid4())})
             self.api(f'/api/saves/{save_id}/ready', {'playerId': second, 'ready': True})
             self.api(f'/api/saves/{save_id}/advance', {'beat': 2})
         messages = ai.chat_messages(fake.context)
@@ -536,7 +556,7 @@ Flyman block.
         from test_module_context import MODULE, ROOMS
         save_id, player = self.focused_save(MODULE, {'rooms': ROOMS})
         self.api(f'/api/saves/{save_id}/location', {'playerId': player, 'location': 5})
-        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'I read the prompt-book.'})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'I read the prompt-book.', 'autoReady': True})
         preview = self.api(f'/api/saves/{save_id}/context')
         fake = FakeProvider('You study the book. [Location: Area 5]')
         with patch.object(ai, 'current_provider', return_value=fake):
@@ -568,7 +588,7 @@ Flyman block.
         from test_module_context import MODULE, ROOMS
         save_id, player = self.focused_save(MODULE, {'rooms': ROOMS})
         self.api(f'/api/saves/{save_id}/location', {'playerId': player, 'location': 5})
-        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'Look around.'})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'Look around.', 'autoReady': True})
         fake = FakeProvider('The prompt-book lies open on the chair. [Location: Area 5]')
         with patch.object(ai, 'current_provider', return_value=fake):
             self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
@@ -591,7 +611,7 @@ Flyman block.
         self.assertEqual([item['label'] for item in preview['report']['locations']],
                          ['Approach (not yet at the site)', 'Area 1: Gate', 'Area 2: Hall', 'Area 3: Stage'])
 
-        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'We go in.'})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'We go in.', 'autoReady': True})
         with patch.object(ai, 'current_provider', return_value=FakeProvider('You pass the gate into the hall.\n\n[Location: Area 2]')):
             advanced = self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
         self.assertEqual(advanced['messages'][-1]['body'], 'You pass the gate into the hall.')
@@ -604,7 +624,7 @@ Flyman block.
             self.assertIn(text, system)
         self.assertNotIn('Sybil hires you', system)
 
-        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'Wait.'})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'Wait.', 'autoReady': True})
         with patch.object(ai, 'current_provider', return_value=FakeProvider('Nothing moves. [Location: Area 9]')):
             advanced = self.api(f'/api/saves/{save_id}/advance', {'beat': 2})
         self.assertEqual(advanced['messages'][-1]['body'], 'Nothing moves.')
@@ -628,7 +648,7 @@ Flyman block.
     def test_mock_ai_dm_keeps_location_and_hides_marker(self):
         save_id, player = self.focused_save()
         self.api(f'/api/saves/{save_id}/location', {'playerId': player, 'location': 1})
-        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'Look around.'})
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': player, 'text': 'Look around.', 'autoReady': True})
         advanced = self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
         self.assertNotIn('[Location', advanced['messages'][-1]['body'])
         self.assertEqual(advanced['save']['location'], 1)

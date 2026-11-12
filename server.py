@@ -1357,7 +1357,10 @@ class Handler(BaseHTTPRequestHandler):
                         conn.execute(
                             'INSERT INTO chat_images (id,save_id,message_id,player_id,mime,image,created_at) VALUES (?,?,?,?,?,?,?)',
                             (str(uuid.uuid4()), save_id, inserted.lastrowid, player['id'], mime, data, utc()))
-                    conn.execute('UPDATE players SET ready=1 WHERE id=?', (player['id'],))
+                    # Sending only opts into readiness when this client has auto-ready on.
+                    # Otherwise preserve readiness, including an earlier explicit Ready.
+                    if payload.get('autoReady') is True:
+                        conn.execute('UPDATE players SET ready=1 WHERE id=?', (player['id'],))
                     TYPING.get(save_id, {}).pop(player['id'], None)
                 elif action == 'ready':
                     player = require_player(state, payload.get('playerId'))
