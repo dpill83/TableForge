@@ -194,7 +194,7 @@ Any number of players may have Pilot Mode enabled simultaneously.
 
 Pilot Mode exposes supervisory controls such as:
 
-- Ask AI-DM
+- Ask AI-DM privately
 - provide correction/context
 - review context being sent
 - Force Advance / Ready Override
@@ -383,11 +383,14 @@ This conversation:
 - does not affect Ready state
 - does not automatically become public roleplay narration
 - should be saved
-- may be visible to other users who also have Pilot Mode enabled
+- is visible only to the player who asked, including its saved history and replies
 
-Initially, direct Ask AI-DM access remains Pilot-only.
-
-Do not expand it to all players unless later playtesting justifies it.
+The private operational conversation remains Pilot-only. Every player may also ask
+public OOC questions from the main composer. Public questions and answers appear
+together in shared history, preserve Ready and pending IC contributions, and never
+advance narration or combat. They explain rules and possible attempts without
+performing actions or exposing hidden cartridge facts. Public answers and narration
+must not consume private Pilot exchanges.
 
 ---
 
@@ -403,7 +406,7 @@ TableForge should not become a full VTT by default.
 
 Do not add initiative tracking, automated monster turns, character-sheet management, dice engines, HP automation, or tactical automation unless specifically requested later.
 
-During combat, humans resolve the fight in person. The composer, Send, attachments, suggested replies, normal Ready, and auto-ready are paused; chat history remains readable and unsent drafts are preserved.
+During combat, humans resolve the fight in person. IC composing, IC Send/attachments, suggested replies, normal Ready, and auto-ready are paused; chat history remains readable and unsent drafts are preserved. The composer may switch to OOC for public questions, including attachments, without changing combat reporting or resuming play.
 
 Any player may click **Report combat outcome**; the first accepted claim assigns one reporter. No Finished votes, count, or Pilot waiting override is used. Everyone else sees “[Name] is recording the combat outcome” and may **Take over outcome**.
 

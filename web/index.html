@@ -232,7 +232,7 @@
             <label id="pilotLocationWrap" class="pilot-location hidden">Party location
               <select id="pilotLocation" title="Where the party is. The AI-DM updates this; correct it if it is wrong."></select>
             </label>
-            <button class="btn" id="askAi">Ask AI-DM</button>
+            <button class="btn" id="askAi">Ask AI-DM privately</button>
             <button class="btn" id="illustrateScene">Illustrate Scene</button>
             <button class="btn" id="reviewContext">Review Context</button>
             <button class="btn" id="aiRequestLog">AI Request Log</button>
@@ -267,18 +267,26 @@
               <span class="paperclip">⌕</span>
               <span>Add photo</span>
             </button>
+            <button id="emojiBtn" type="button"><span aria-hidden="true">☺</span><span>Emoji</span></button>
           </div>
           <input id="attachmentInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp" title="Attach a photo" aria-label="Attach a photo">
         </div>
 
+        <div class="composer-mode-control">
+          <button id="composerMode" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Message mode: In Character">IC ▾</button>
+          <div id="composerModeMenu" class="attachment-menu hidden" role="menu" aria-label="Message mode">
+            <button id="modeIC" type="button" role="menuitemradio" aria-checked="true">✓ In Character</button>
+            <button id="modeOOC" type="button" role="menuitemradio" aria-checked="false">Out of Character</button>
+          </div>
+        </div>
+        <span class="composer-divider" aria-hidden="true"></span>
         <div class="message-box">
-          <textarea id="composer" placeholder="Message #table..."></textarea>
-          <button class="emoji-btn" id="emojiBtn" type="button" title="Emoji" aria-label="Emoji">☺</button>
+          <textarea id="composer" rows="1" aria-label="Table message" placeholder="Message #table..."></textarea>
         </div>
 
         <button class="composer-square send-icon-btn" id="sendBtn" type="button" title="Send message" aria-label="Send message">
           <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M3 5.5 21 12 3 18.5l3.2-5.1L14 12l-7.8-1.4L3 5.5Z"></path>
+            <path d="M11 20V7l-5 5-1.4-1.4L12 3l7.4 7.6L18 12l-5-5v13Z"></path>
           </svg>
         </button>
 

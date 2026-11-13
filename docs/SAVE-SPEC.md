@@ -1207,6 +1207,14 @@ Implementation should preserve flexibility around these questions.
 
 ## 43. Core Invariants
 
+Public OOC exchanges are saved as `messages.kind = ooc` questions with a related
+`public_questions` record holding the original session, beat, source narration,
+immutable public context, status and answer. The request ID deduplicates retries.
+Each answer stays with its question even after narration advances. A worker token
+fences timed-out/interrupted attempts; restart marks pending questions retryable.
+Attached images use the existing save-owned attachment storage. Private Pilot
+exchanges remain in their player-owned thread and never enter public narration or OOC context.
+
 Unless explicitly changed later:
 
 1. **The save is separate from the cartridge.**

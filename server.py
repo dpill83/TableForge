@@ -31,6 +31,7 @@ import narration_choices
 import narration_pacing
 import opening_flow
 import runtime_prompts
+import public_questions
 from local_config import load_env
 
 ROOT = Path(__file__).resolve().parent
@@ -232,6 +233,7 @@ def initialize():
                 conn.execute(f'ALTER TABLE party_notes ADD COLUMN {name} {definition}')
         conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS party_note_client ON party_notes(save_id,client_key) '
                      'WHERE client_key IS NOT NULL')
+        public_questions.initialize(conn, utc())
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(pilot_messages)')}
         if 'thread_player_id' not in columns:
             # NULL retains the old shared archive without guessing reply ownership.
@@ -617,8 +619,11 @@ def snapshot(conn, save_id, pilot_player_id=None):
         player['portraitUrl'] = (f'/api/saves/{save_id}/players/{player["id"]}/portrait?v={quote(portraits[player["id"]], safe="")}'
                                  if player['id'] in portraits else None)
     messages = [dict(row) for row in conn.execute('SELECT * FROM messages WHERE save_id=? ORDER BY id', (save_id,))]
+    questions = public_questions.visible(conn, save_id)
     for message in messages:
         message['choices'] = json.loads(message.pop('choices_json') or 'null')
+        if message['id'] in questions:
+            message['ooc'] = questions[message['id']]
     return {
         'save': dict(save),
         'combat': combat.current(conn, save_id),
@@ -1014,6 +1019,54 @@ def publish_ask(conn, save_id, text, player_id):
     return snapshot(conn, save_id, player_id)
 
 
+def answer_public_question(save_id, request_id, token, context, session_id):
+    """A question never owns the narration lock or publishes through advance."""
+    results = queue.Queue(maxsize=1)
+    audit_id = str(uuid.uuid4())
+    def generate():
+        try:
+            provider = ai.current_provider()
+            results.put((provider.generate(context), None))
+        except Exception as error:
+            results.put((None, error))
+    try:
+        runtime = ai.runtime_status()
+        with LOCK, db() as conn:
+            conn.execute('''INSERT INTO ai_requests
+                (id,save_id,session_id,purpose,provider,configured_model,status,started_at)
+                VALUES (?,?,?,?,?,?,?,?)''',
+                (audit_id, save_id, session_id, 'ooc', runtime['provider'], runtime['model'], 'sending', utc()))
+        threading.Thread(target=generate, daemon=True).start()
+        generated, error = results.get(timeout=public_questions.TIMEOUT)
+        if error:
+            raise error
+        text = str(generated or '').strip()
+        if not text:
+            raise ValueError('Empty answer')
+        with LOCK, db() as conn:
+            if not public_questions.finish(conn, request_id, token, text):
+                return
+            conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+            if isinstance(generated, ai.GeneratedText):
+                values = metering.record(generated.model or 'unknown', generated.usage, generated.service_tier)
+                conn.execute('''INSERT INTO ai_usage
+                    (save_id,session_id,purpose,model,input_tokens,cached_tokens,cache_write_tokens,
+                     output_tokens,total_tokens,estimated_cost_usd,service_tier,created_at,request_id)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                    (save_id, session_id, 'ooc', *values, utc(), audit_id))
+                conn.execute('''UPDATE ai_requests SET configured_model=COALESCE(?,configured_model),
+                    requested_model=?,reported_model=?,routing=? WHERE id=?''',
+                    (generated.configured_model, generated.requested_model, generated.reported_model,
+                     json.dumps(generated.routing) if generated.routing is not None else None, audit_id))
+            conn.execute("UPDATE ai_requests SET status='complete',finished_at=? WHERE id=?", (utc(), audit_id))
+    except Exception:
+        with LOCK, db() as conn:
+            public_questions.finish(conn, request_id, token)
+            conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+            conn.execute("UPDATE ai_requests SET status='failed',finished_at=?,error=? WHERE id=?",
+                         (utc(), 'Public question failed; retry is available', audit_id))
+
+
 class Handler(BaseHTTPRequestHandler):
     def respond(self, value, code=200):
         body = json.dumps(value).encode()
@@ -1182,6 +1235,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.handle_combat_correction(parts[2], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'ask':
                 return self.handle_ask(parts[2], payload)
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'public-question':
+                return self.handle_public_question(parts[2], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'summary-draft':
                 return self.handle_summary_draft(parts[2], payload)
             if path == '/api/backups':
@@ -1790,6 +1845,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('The playthrough name changed. Close this dialog and select it again.')
                 if conn.execute("SELECT 1 FROM scene_images WHERE save_id=? AND status='generating'", (save_id,)).fetchone():
                     raise ValueError('Wait for the scene illustration to finish before deleting this playthrough')
+                if conn.execute("SELECT 1 FROM public_questions WHERE save_id=? AND status='pending'", (save_id,)).fetchone():
+                    raise ValueError('Wait for public AI-DM answers before deleting this playthrough')
             try:
                 backup = backups.create(DATA, label='before-delete')
                 with db() as conn:
@@ -1798,7 +1855,7 @@ class Handler(BaseHTTPRequestHandler):
                     # All save-owned tables use save_id. Unknown future tables fail closed.
                     known = {'players', 'player_portraits', 'messages', 'chat_images', 'pilot_messages',
                              'sessions', 'session_events', 'checkpoints', 'summaries', 'ai_usage',
-                             'ai_requests', 'party_notes', 'revealed_assets', 'scene_images', 'combat_handoffs'}
+                             'ai_requests', 'party_notes', 'revealed_assets', 'scene_images', 'combat_handoffs', 'public_questions'}
                     for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
                         table = row['name']
                         quoted = '"' + table.replace('"', '""') + '"'
@@ -1930,6 +1987,48 @@ class Handler(BaseHTTPRequestHandler):
             return publish_ask(conn, save_id, text, payload['playerId'])
 
         return self.run_generation(save_id, begin_ask, publish, payload)
+
+    def handle_public_question(self, save_id, payload):
+        with LOCK, db() as conn:
+            state = snapshot(conn, save_id)
+            player = require_player(state, payload.get('playerId'))
+            request_id = str(uuid.UUID(str(payload.get('requestId'))))
+            existing = conn.execute('SELECT * FROM public_questions WHERE id=?', (request_id,)).fetchone()
+            body = re.sub(r'^OOC:\s*', '', str(payload.get('text') or '').strip(), flags=re.I).strip()
+            image = decode_chat_image(payload)
+            if existing:
+                message = conn.execute('SELECT body FROM messages WHERE id=?', (existing['message_id'],)).fetchone()
+                if existing['save_id'] != save_id or existing['player_id'] != player['id']:
+                    raise ValueError('This question belongs to another player')
+                # Transcript retries need only the ID. Draft retries must match the accepted content.
+                if 'text' in payload:
+                    stored = conn.execute('SELECT mime,image FROM chat_images WHERE message_id=?', (existing['message_id'],)).fetchone()
+                    if body != message['body'] or image != ((stored['mime'], stored['image']) if stored else None):
+                        raise ValueError('This request ID was already used for another question')
+            else:
+                session = active_session(conn, save_id)
+                if not session:
+                    raise ValueError('Start a session before asking a question')
+                if not body or len(body) > 20000:
+                    raise ValueError('Question must contain 1 to 20,000 characters')
+                source = next((m['id'] for m in reversed(state['messages']) if m['kind'] == 'ai'), None)
+                question_context = public_questions.context(state, body, payload.get('image'))
+                inserted = conn.execute('INSERT INTO messages (save_id,session_id,player_id,kind,name,body,created_at,request_id) VALUES (?,?,?,?,?,?,?,?)',
+                    (save_id, session['id'], player['id'], 'ooc', player['character'], body, utc(), request_id))
+                if image:
+                    conn.execute('INSERT INTO chat_images (id,save_id,message_id,player_id,mime,image,created_at) VALUES (?,?,?,?,?,?,?)',
+                        (str(uuid.uuid4()), save_id, inserted.lastrowid, player['id'], *image, utc()))
+                conn.execute('''INSERT INTO public_questions
+                    (id,save_id,player_id,message_id,session_id,beat,source_message_id,context,status)
+                    VALUES (?,?,?,?,?,?,?,?,?)''',
+                    (request_id, save_id, player['id'], inserted.lastrowid, session['id'], state['save']['beat'], source,
+                     json.dumps(question_context), 'failed'))
+            work = public_questions.claim(conn, request_id)
+            conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+            result = snapshot(conn, save_id)
+        if work:
+            threading.Thread(target=answer_public_question, args=(save_id, request_id, *work), daemon=True).start()
+        return self.respond(result)
 
     def handle_summary_draft(self, save_id, payload):
         # Drafts are returned for Pilot review; nothing is saved until they choose to keep it.
