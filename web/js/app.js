@@ -1103,10 +1103,6 @@
     catch(error){try{state.save=await request('saves/'+state.save.save.id);}catch(refreshError){console.error(refreshError);}notify(error);}
     finally{state.generating=false;render();}
   };
-  $('sessionMenu').onclick=()=>{
-    if(!state.save)return;
-    modal(`<h3>Session</h3><p>${esc(state.save.save.name)} · Session ${state.save.sessions.at(-1)?.number||1}</p><p>Download the full public conversation across all saved sessions as Markdown.</p><div class="actions"><a class="btn" href="/api/saves/${encodeURIComponent(state.save.save.id)}/chat.md" download>Download Chat</a><button class="btn" data-close>Close</button></div>`);
-  };
   $('endSession').onclick=()=>{
     modal('<h3>End Session</h3><p>Save a checkpoint and close this session. Continuing later opens the next session.</p><label>Session note (optional)<textarea id="sessionNote" rows="4" maxlength="10000" placeholder="Where did the table leave off?"></textarea></label><div class="actions"><button class="btn" data-close>Cancel</button><button class="btn warn" id="submitEndSession">End Session</button></div>');
     $('submitEndSession').onclick=async()=>{
@@ -1298,7 +1294,7 @@
     try {
       const info = await showRuntime();
       const usage=state.save?.usage;
-      modal(`<h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge v2.0</p><div class="binding notification-setting"><label class="context-option" for="aiMessageNotifications"><input id="aiMessageNotifications" data-ai-notification-toggle type="checkbox"><span><strong>AI-DM message notifications</strong><span>Play a sound and show a browser notification when a new AI-DM message arrives while TableForge is in a background tab.</span></span></label><div data-ai-notification-status class="muted" role="status" aria-live="polite">Notifications are off.</div></div>${usage?`<p>AI usage this session: ${esc(usageLine(usage.session))}<br>Playthrough: ${esc(usageLine(usage.save))}<br>Estimates use <a href="${esc(usage.pricingUrl)}" target="_blank" rel="noopener">standard text rates</a> from ${esc(usage.pricingAsOf)}. Earlier activity is unavailable.</p>`:''}<div class="actions"><button class="btn" data-close>Close</button></div>`);
+      modal(`<h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge v2.0</p><div class="binding notification-setting"><label class="context-option" for="aiMessageNotifications"><input id="aiMessageNotifications" data-ai-notification-toggle type="checkbox"><span><strong>AI-DM message notifications</strong><span>Play a sound and show a browser notification when a new AI-DM message arrives while TableForge is in a background tab.</span></span></label><div data-ai-notification-status class="muted" role="status" aria-live="polite">Notifications are off.</div></div>${usage?`<p>AI usage this session: ${esc(usageLine(usage.session))}<br>Playthrough: ${esc(usageLine(usage.save))}<br>Estimates use <a href="${esc(usage.pricingUrl)}" target="_blank" rel="noopener">standard text rates</a> from ${esc(usage.pricingAsOf)}. Earlier activity is unavailable.</p>`:''}<div class="actions">${state.save?`<a class="btn" href="/api/saves/${encodeURIComponent(state.save.save.id)}/chat.md" download title="Download the full public conversation across all saved sessions as Markdown">Download Chat</a>`:''}<button class="btn" data-close>Close</button></div>`);
       renderAINotificationOption();
     } catch(error) { notify(error); }
   };
