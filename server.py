@@ -23,6 +23,7 @@ import ai
 import combat
 import build_info
 import backups
+import chat_export
 import metering
 import scene_images
 import module_context
@@ -1037,6 +1038,17 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         try:
             parts = path.strip('/').split('/')
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'chat.md':
+                with LOCK, db() as conn:
+                    filename, content = chat_export.export_chat(conn, parts[2])
+                self.send_response(200)
+                self.send_header('Content-Type', 'text/markdown; charset=utf-8')
+                self.send_header('Content-Disposition', "attachment; filename=\"TableForge-chat.md\"; filename*=UTF-8''" + quote(filename, safe=''))
+                self.send_header('Content-Length', str(len(content)))
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                return self.wfile.write(content)
             if len(parts) in (4, 5) and parts[:2] == ['api', 'saves'] and parts[3] == 'image-references':
                 return self.get_image_references(parts)
             if len(parts) in (4, 5) and parts[:2] == ['api', 'saves'] and parts[3] == 'images':
