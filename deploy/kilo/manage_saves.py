@@ -13,7 +13,7 @@ SAVE_TABLES = {
     'players', 'player_portraits', 'messages', 'chat_images', 'pilot_messages',
     'sessions', 'session_events', 'checkpoints', 'summaries', 'ai_usage',
     'ai_requests', 'party_notes', 'revealed_assets', 'scene_images', 'combat_handoffs',
-    'map_tokens',
+    'map_tokens', 'public_questions',
 }
 
 

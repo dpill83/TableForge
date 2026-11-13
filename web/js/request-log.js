@@ -19,7 +19,7 @@ const TableForgeRequestLog = (() => {
     const badge = tier || 'unknown';
     const fallbackLabel = [internalFallback === true ? 'Laya/router fallback' : '',
       tableforgeFallback === true ? 'TableForge router fallback' : ''].filter(Boolean).join(' · ');
-    const purpose = {advance: 'Table advance', ask: 'Pilot Ask', summary: 'Campaign summary'}[entry.purpose] || entry.purpose;
+    const purpose = {advance: 'Table advance', ask: 'Private Pilot Ask', ooc: 'Public OOC question', summary: 'Campaign summary'}[entry.purpose] || entry.purpose;
     const row = (label, value) => `<dt>${esc(label)}</dt><dd>${esc(value)}</dd>`;
     const scores = route?.scores && Object.entries(route.scores)
       .filter(([key, value]) => ['cheap', 'standard', 'heavy'].includes(key) && typeof value === 'number' && Number.isFinite(value))
