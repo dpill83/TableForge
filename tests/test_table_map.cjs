@@ -1,6 +1,6 @@
 const {test}=require('node:test');
 const assert=require('node:assert/strict');
-const {fitView,toImage,toStage,zoomAt}=require('../web/js/table-map.js');
+const {fitView,toImage,toStage,zoomAt,pinchView}=require('../web/js/table-map.js');
 
 const close=(actual,expected)=>assert.ok(Math.abs(actual-expected)<1e-9,`${actual} != ${expected}`);
 
@@ -32,4 +32,15 @@ test('zooming keeps the spot under the cursor in place and respects limits',()=>
   close(after.x,image.x);close(after.y,image.y);
   close(zoomAt(view,0,0,100,0.5,4).scale,4);
   close(zoomAt(view,0,0,0.01,0.5,4).scale,0.5);
+});
+
+test('pinching keeps the map point between the fingers under them as they move',()=>{
+  // Midpoint moves 100 -> 150 while the fingers spread to double the distance.
+  const view=pinchView({scale:1,x:0,y:0},{x:100,y:100,distance:50},{x:150,y:150,distance:100},0.5,4);
+  close(view.scale,2);close(view.x,-50);close(view.y,-50);
+  const under=toStage(view,1000,1000,{x:0.1,y:0.1});
+  close(under.x,150);close(under.y,150);
+  // At the zoom limit the point still follows the fingers.
+  const capped=pinchView({scale:4,x:0,y:0},{x:100,y:100,distance:50},{x:120,y:90,distance:100},0.5,4);
+  close(capped.scale,4);close(capped.x,20);close(capped.y,-10);
 });

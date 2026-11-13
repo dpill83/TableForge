@@ -490,7 +490,7 @@
   const scrollFeedToLatest=()=>{$('feed').scrollTop=$('feed').scrollHeight;state.followLatest=true;$('jumpLatest').classList.add('hidden');};
   // Shared table map: a panel beside chat. Pan and zoom stay on this screen;
   // the chosen map and the party token are shared through the save.
-  const mapUi={assets:[],assetsFor:null,triedFor:null,loading:null,loadError:'',queued:null,sending:false,pending:false,timer:null,status:'',error:false,selectKey:'',restoredFor:null};
+  const mapUi={assets:[],assetsFor:null,triedFor:null,loading:null,loadError:'',queued:null,sending:false,pending:false,timer:null,status:'',error:false,selectKey:'',restoredFor:null,revealsFor:null};
   const mapAssetName=asset=>asset.path.split('/').at(-1);
   const mapOpen=()=>!$('mapPanel').classList.contains('hidden');
   const setMapOpen=open=>{
@@ -501,7 +501,7 @@
   };
   const restoreTableMap=()=>{
     const saveId=state.save?.save.id;if(!saveId||mapUi.restoredFor===saveId)return;
-    mapUi.restoredFor=saveId;mapUi.assets=[];mapUi.assetsFor=null;mapUi.triedFor=null;mapUi.status='';mapView.setImage(null);
+    mapUi.restoredFor=saveId;mapUi.assets=[];mapUi.assetsFor=null;mapUi.triedFor=null;mapUi.revealsFor=null;mapUi.status='';mapView.setImage(null);
     let open=false;try{open=localStorage.getItem(`tableforge-map-open:${saveId}`)==='true';}catch{/* Starts closed. */}
     setMapOpen(open);
   };
@@ -557,10 +557,12 @@
     const s=state.save;if(!s||!state.identity||!mapOpen())return;
     const shared=s.tableMap||{assetId:null},key=`${s.save.id}|${state.identity}`;
     const missing=!!shared.assetId&&!(mapUi.assetsFor===key&&mapUi.assets.some(asset=>asset.id===shared.assetId))&&mapUi.triedFor!==shared.assetId;
-    if(refresh||mapUi.assetsFor!==key||missing){
+    // A Pilot revealing another map adds a session event; refresh the list then.
+    const reveals=(s.events||[]).filter(event=>event.kind==='asset_revealed').map(event=>event.id).join(',');
+    if(refresh||mapUi.assetsFor!==key||missing||mapUi.revealsFor!==reveals){
       if(missing)mapUi.triedFor=shared.assetId;
       mapUi.loading??=request(`saves/${s.save.id}/assets?playerId=${encodeURIComponent(state.identity)}`)
-        .then(result=>{mapUi.assets=result.assets;mapUi.assetsFor=key;mapUi.loadError='';})
+        .then(result=>{mapUi.assets=result.assets;mapUi.assetsFor=key;mapUi.revealsFor=reveals;mapUi.loadError='';})
         .catch(error=>{mapUi.loadError=`Couldn’t load maps: ${error.message}`;})
         .finally(()=>{mapUi.loading=null;});
       await mapUi.loading;

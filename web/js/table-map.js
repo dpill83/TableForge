@@ -18,6 +18,12 @@
     const scale=clamp(view.scale*factor,minScale,maxScale),ratio=scale/view.scale;
     return {scale,x:stageX-(stageX-view.x)*ratio,y:stageY-(stageY-view.y)*ratio};
   };
+  // Two-finger gesture step: zoom around where the fingers were, then follow
+  // them, so the map point between the fingers stays under them.
+  const pinchView=(view,from,to,minScale,maxScale)=>{
+    const zoomed=zoomAt(view,from.x,from.y,to.distance/from.distance,minScale,maxScale);
+    return {...zoomed,x:zoomed.x+to.x-from.x,y:zoomed.y+to.y-from.y};
+  };
 
   class TableMapView {
     constructor({stage,layer,image,token,onMove,onViewChange=()=>{}}){
@@ -82,8 +88,8 @@
       if(this.dragging){
         this.position=toImage(this.view,this.size().w,this.size().h,now.x,now.y);this.moved=true;this.paint();
       }else if(this.pointers.size===2&&this.pinch){
-        const next=this.pinchState(),zoomed=zoomAt(this.view,next.x,next.y,next.distance/this.pinch.distance,...this.limits());
-        this.setView({...zoomed,x:zoomed.x+next.x-this.pinch.x,y:zoomed.y+next.y-this.pinch.y});this.pinch=next;
+        const next=this.pinchState();
+        this.setView(pinchView(this.view,this.pinch,next,...this.limits()));this.pinch=next;
       }else if(this.pointers.size===1){
         this.setView({...this.view,x:this.view.x+now.x-last.x,y:this.view.y+now.y-last.y});
       }
@@ -112,6 +118,6 @@
       this.paint();this.onMove({...this.position},before);
     }
   }
-  const api={TableMapView,fitView,toImage,toStage,zoomAt};
+  const api={TableMapView,fitView,toImage,toStage,zoomAt,pinchView};
   if(typeof module==='object'&&module.exports)module.exports=api;else root.TableForgeMap=api;
 })(typeof window==='undefined'?globalThis:window);
