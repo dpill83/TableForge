@@ -638,6 +638,12 @@ When revealed:
 
 Pilot access may remain available separately.
 
+The current implementation records reveals in `revealed_assets`. The shared
+table map adds `saves.table_map_asset_id` (the map everyone is viewing, or
+NULL) and `map_tokens` (one party-token position per revealed map, stored as
+0..1 image coordinates with who moved it and when). Both reference revealed
+assets only; see `MINIMAL-VTT-EXPLORATION.md`.
+
 ---
 
 ## 21. World Notes
