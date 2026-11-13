@@ -39,7 +39,7 @@ test('shared illustrations do not expire the latest narration choices',()=>{
 });
 
 test('combat and pending aftermath pause choice buttons',()=>{
-  for(const phase of ['fighting','outcome_pending','resuming','failed']){
+  for(const phase of ['fighting','reporting','outcome_pending','resuming','failed']){
     const state=makeState();state.save.combat={phase};
     assert.equal(canChoose(state,message),false);
   }

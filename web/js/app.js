@@ -5,8 +5,9 @@
   const screens = [...document.querySelectorAll('.screen')];
   const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, draft:null, pendingImage:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0};
   const combatPending=()=>state.save?.save.mode==='combat'||!!(state.save?.combat&&state.save.combat.phase!=='complete');
-  const combatEligible=()=>state.save?.save.mode==='combat'&&!!state.save.players.length&&state.save.players.every(p=>p.ready);
-  const outcomeDraftKey=()=>state.save&&state.identity&&state.save.combat?`tableforge-combat:${state.save.save.id}:${state.save.combat.id}:${state.identity}`:null;
+  const combatTokenKey=()=>`tableforge-combat-editor:${state.save?.save.id}:${state.save?.combat?.id}`;
+  const combatToken=()=>sessionStorage.getItem(combatTokenKey());
+  const ownsCombat=()=>state.save?.combat?.phase==='reporting'&&state.save.combat.reporter_id===state.identity&&state.save.combat.editor_token===combatToken();
   const autoReadyKey=()=>state.save&&state.identity?`tableforge-auto-ready:v2:${state.save.save.id}:${state.identity}`:null;
   const autoReadyPreference=()=>{const key=autoReadyKey();try{return !!key&&localStorage.getItem(key)==='true';}catch{return false;}};
   const autoReadyEnabled=()=>!combatPending()&&autoReadyPreference();
@@ -84,7 +85,7 @@
   window.addEventListener('focus', checkBuild);
   const request = async (path, body) => {
     const controller=new AbortController();
-    const generating=body!==undefined&&/\/(images|advance|ask|summary-draft|combat-outcome|combat-retry)$/.test(path);
+    const generating=body!==undefined&&/\/(images|advance|ask|summary-draft|combat-outcome|combat-retry|combat-correction)$/.test(path);
     const bulky=!!body?.image;
     const timer=setTimeout(()=>controller.abort(),generating?210000:bulky?120000:15000);
     try{
@@ -482,7 +483,7 @@
       el.classList.toggle('ai',who==='AI-DM');
       el.innerHTML=text?`<strong>${esc(who)}</strong>${esc(text.slice(who.length))} ${dots()}`:'';
     }
-    $('tableStatus').textContent=aiDmBusy('advance')?'The AI-DM is typing':`Session ${s.sessions.at(-1)?.number || 1} · ${s.save.mode==='combat'?'Combat Mode · ':''}${s.players.filter(p=>p.ready).length} of ${s.players.length} ${s.save.mode==='combat'?'finished':'Ready'}`;
+    $('tableStatus').textContent=aiDmBusy('advance')?'The AI-DM is typing':`Session ${s.sessions.at(-1)?.number || 1} · ${combatPending()?'Combat paused':`${s.players.filter(p=>p.ready).length} of ${s.players.length} Ready`}`;
     const status=$('pilotAskStatus');
     if(status) status.innerHTML=aiDmBusy('ask')?'The AI-DM is typing '+dots():'';
   };
@@ -491,13 +492,13 @@
   const render=()=>{
     const s=state.save;if(!s)return;
     $('play').querySelector('.top-title strong').textContent=s.cartridge.title;
-    $('partyList').innerHTML=s.players.map(p=>`<div class="party-card" style="${p.id===state.identity?'border-color:var(--accent2)':''}"><div class="party-top">${p.id===state.identity?`<button class="portrait-button" type="button" title="Edit ${esc(p.character)} portrait" aria-label="Edit ${esc(p.character)} portrait">${avatar(p,'party-avatar')}</button>`:avatar(p,'party-avatar')}<div class="party-name"><strong>${esc(p.character)}</strong><span>${esc(p.name)}</span></div><span class="ready-badge ${p.ready?'ready':''}">${s.save.mode==='combat'?(p.ready?'Finished':'Not Finished'):(p.ready?'Ready':'Not Ready')}</span></div></div>`).join('');
+    $('partyList').innerHTML=s.players.map(p=>`<div class="party-card" style="${p.id===state.identity?'border-color:var(--accent2)':''}"><div class="party-top">${p.id===state.identity?`<button class="portrait-button" type="button" title="Edit ${esc(p.character)} portrait" aria-label="Edit ${esc(p.character)} portrait">${avatar(p,'party-avatar')}</button>`:avatar(p,'party-avatar')}<div class="party-name"><strong>${esc(p.character)}</strong><span>${esc(p.name)}</span></div><span class="ready-badge ${p.ready?'ready':''}">${combatPending()?'Combat':(p.ready?'Ready':'Not Ready')}</span></div></div>`).join('');
     $('partyList').querySelector('.portrait-button')?.addEventListener('click',openPortraitEditor);
     $('usageSummary').innerHTML=s.usage?`<strong>AI usage</strong><div>This session: ${esc(usageLine(s.usage.session))}</div><div>Playthrough: ${esc(usageLine(s.usage.save))}</div><div>${tokenLabel(s.usage.save.inputTokens)} input · ${tokenLabel(s.usage.save.outputTokens)} output</div><div>Estimated USD · <a href="${esc(s.usage.pricingUrl)}" target="_blank" rel="noopener">rates ${esc(s.usage.pricingAsOf)}</a></div>`:'<strong>AI usage</strong><div>Restart the TableForge server to enable tracking.</div>';
     if(s.imageUsage) $('usageSummary').insertAdjacentHTML('beforeend',`<div class="image-usage"><strong>Scene images (separate)</strong><div>Session: ${esc(imageUsageLine(s.imageUsage.session))}</div><div>Playthrough: ${esc(imageUsageLine(s.imageUsage.save))}</div></div>`);
     $('illustrateScene').disabled=!state.identity||!s.messages.some(m=>m.kind==='ai');
     // Rebuild the feed only when its content changes, so Ready/typing updates keep the reading position.
-    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,s.messages.map(m=>[m.id,m.body.length,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl]),s.events.filter(e=>['combat_outcome','combat_skipped','combat_override'].includes(e.kind))]);
+    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,s.messages.map(m=>[m.id,m.body.length,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl]),s.events.filter(e=>['combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind))]);
     const feedChanged=feedKey!==state.feedKey,sameSave=state.feedSaveId===s.save.id,previousIds=new Set(state.feedKey?[...$('feedInner').children].map(el=>el.id):[]);
     const followLatest=state.followLatest!==false;
     if(feedChanged){
@@ -510,13 +511,13 @@
       try{const detail=JSON.parse(e.body);overrides.set(detail.messageId,{...detail,playerId:e.player_id});}catch(error){console.error(error);}
     }
     const character=id=>s.players.find(p=>p.id===id)?.character||'A player';
-    const combatEvents=(s.events||[]).filter(e=>['combat_outcome','combat_skipped','combat_override'].includes(e.kind));
+    const combatEvents=(s.events||[]).filter(e=>['combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind));
     let combatEventIndex=0;
     const appendCombatEvent=e=>{
       const row=document.createElement('div');row.className='message combat-event';row.id='event-'+e.id;
-      const label=e.kind==='combat_outcome'?'reported the combat outcome':e.kind==='combat_skipped'?'skipped the combat outcome':'used Combat Finished Override';
+      const label=e.kind==='combat_correction'?'corrected the combat outcome':e.kind==='combat_outcome'?'reported the combat outcome':e.kind==='combat_skipped'?'skipped the combat outcome':'used Combat Finished Override';
       row.innerHTML=`<div class="avatar">✓</div><div><div class="message-head"><strong>${esc(character(e.player_id))} ${label}</strong><span class="time">${new Date(e.created_at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</span></div><div class="message-body markdown-body"></div></div>`;
-      if(e.kind==='combat_outcome')row.querySelector('.message-body').innerHTML=TableForgeMarkdown.render(e.body);
+      if(['combat_outcome','combat_correction'].includes(e.kind))row.querySelector('.message-body').innerHTML=TableForgeMarkdown.render(e.body);
       row.dataset.searchText=(character(e.player_id)+' '+label+' '+(e.kind==='combat_outcome'?e.body:'')).toLowerCase();
       $('feedInner').append(row);
     };
@@ -598,28 +599,33 @@
     }
     const current=s.players.find(p=>p.id===state.identity);
     const locked=combatPending(),combatMode=s.save.mode==='combat',busy=state.generating||state.updating||!!s.activity?.aiDm;
-    $('readyBtn').disabled=!current||busy||(locked&&!combatMode);
+    $('readyBtn').disabled=!current||busy||locked;
+    $('readyBtn').classList.toggle('hidden',locked);
     $('sendBtn').disabled=!current||busy||locked;
     $('composer').disabled=!current||busy||locked;
     $('emojiBtn').disabled=$('composer').disabled;
     $('attachmentBtn').disabled=!current||busy||locked;
     if($('attachmentBtn').disabled)$('attachmentMenu').classList.add('hidden');
-    const readyLabel=combatMode?(current?.ready?'Undo Finished':'Combat Finished'):(current?.ready?'Unready':'Ready');
+    const readyLabel=current?.ready?'Unready':'Ready';
     $('readyBtn').querySelector('.ready-label').textContent=readyLabel;
     $('readyBtn').classList.toggle('ready',!!current?.ready);
     $('readyBtn').classList.toggle('auto-ready',autoReadyEnabled());
     $('readyBtn').title=locked?readyLabel:`Click to ${current?.ready?'Unready':'Ready without sending'} · hold to turn auto-ready ${autoReadyEnabled()?'off':'on'} (Ready after sending)`;
     $('readyBtn').setAttribute('aria-label',`${readyLabel}${autoReadyEnabled()?', auto-ready on':''}`);
     $('combatToggle').classList.toggle('hidden',s.save.mode==='combat');
-    $('resumeCombat').classList.toggle('hidden',s.save.mode!=='combat');
+    $('correctCombat').classList.toggle('hidden',s.combat?.phase!=='complete');
+    $('correctCombat').disabled=busy||locked;
     $('combatToggle').disabled=busy||locked;
-    $('resumeCombat').disabled=busy;
     $('readyOverride').disabled=busy||locked;
     $('readyOverride').classList.toggle('hidden',locked);
     $('combatStatus').classList.toggle('hidden',!locked);
-    $('combatExplanation').textContent=combatMode?'Combat is at the table. Enable Pilot Mode to ask AI-DM a question.':s.combat?.phase==='failed'?'The combat outcome is saved. Aftermath narration failed; retry when ready.':'The AI-DM is narrating the aftermath.';
-    $('combatOutcomeOpen').classList.toggle('hidden',!combatMode);
-    $('combatOutcomeOpen').disabled=!current||!combatEligible()||busy;
+    const reporting=s.combat?.phase==='reporting',reporter=s.players.find(p=>p.id===s.combat?.reporter_id);
+    $('combatExplanation').textContent=state.generating&&combatPending()?'The AI-DM is narrating the aftermath.':s.combat?.phase==='failed'?'The outcome is saved. Aftermath narration failed or stalled; anyone can retry.':s.combat?.phase==='resuming'?'The AI-DM is narrating the aftermath.':reporting?`${reporter?.name||'A player'} is recording the combat outcome.`:'Combat is at the table. Report the outcome when the fight is resolved.';
+    $('combatOutcomeOpen').classList.toggle('hidden',!['fighting','reporting'].includes(s.combat?.phase)||reporting&&!ownsCombat());
+    $('combatOutcomeOpen').textContent=ownsCombat()?'Reopen outcome':'Report combat outcome';
+    $('combatOutcomeOpen').disabled=!current||busy;
+    $('combatTakeover').classList.toggle('hidden',!reporting||ownsCombat());
+    $('combatTakeover').disabled=!current||busy;
     $('combatRetry').classList.toggle('hidden',s.combat?.phase!=='failed');
     $('combatRetry').disabled=!current||busy;
     $('endSession').disabled=state.generating||state.updating;
@@ -788,7 +794,7 @@
   $('readyBtn').onclick=async()=>{
     if(suppressReadyClick){suppressReadyClick=false;return;}
     const current=state.save.players.find(p=>p.id===state.identity);
-    if(!current) return;
+    if(!current||combatPending()) return;
     if(await update('ready',{playerId:state.identity,ready:!current.ready,...(state.save.save.mode==='combat'?{handoffId:state.save.combat.id}:{})}) &&
        state.save.save.mode==='normal' && state.save.players.every(p=>p.ready)) await advanceTable();
   };
@@ -799,63 +805,121 @@
       ()=>advanceTable({override:true,playerId:state.identity}));
   };
   $('combatToggle').onclick=()=>update('mode',{mode:'combat',playerId:state.identity});
-  const saveOutcomeDraft=()=>{
-    const field=$('combatOutcome'),key=outcomeDraftKey();
-    if(field&&key)try{localStorage.setItem(key,field.value);}catch(error){console.error(error);}
+  let outcomeEditor=null;
+  const outcomeStatus=message=>{if($('combatOutcomeSave'))$('combatOutcomeSave').textContent=message;};
+  const editorPayload=editor=>({playerId:editor.playerId,handoffId:editor.id,editorToken:editor.token,revision:editor.revision});
+  const saveOutcomeDraft=async(editor=outcomeEditor)=>{
+    if(!editor||editor.closed||editor.conflict)return false;
+    clearTimeout(editor.timer);
+    if(editor.saving){const saved=await editor.saving;if(!saved)return false;return saveOutcomeDraft(editor);}
+    if(editor.text===editor.saved)return true;
+    const text=editor.text;
+    outcomeStatus('Saving…');
+    editor.saving=(async()=>{
+      try{
+        const next=await request(`saves/${editor.saveId}/combat-report`,{...editorPayload(editor),action:'draft',text});
+        editor.revision=next.combat.revision;editor.saved=text;editor.error=null;
+        if(state.save?.save.id===editor.saveId){state.save=next;render();}
+        outcomeStatus(editor.text===text?'Saved':'Unsaved changes');
+        return true;
+      }catch(error){
+        // A lost response may still have committed. Reconcile before retrying.
+        try{
+          const next=await request('saves/'+editor.saveId),h=next.combat;
+          if(h?.id===editor.id&&h.editor_token===editor.token&&h.reporter_id===editor.playerId&&h.phase==='reporting'){
+            if(h.draft===text){editor.revision=h.revision;editor.saved=text;editor.error=null;outcomeStatus('Saved');return true;}
+            if(h.revision!==editor.revision)editor.conflict=true;
+          }else editor.conflict=true;
+          if(state.save?.save.id===editor.saveId){state.save=next;render();}
+        }catch(refreshError){console.error(refreshError);}
+        editor.error='Not saved: '+error.message+(editor.conflict?' Close and reopen the saved draft.':'');
+        outcomeStatus(editor.error);syncCombatDialog();return false;
+      }
+    })();
+    const saved=await editor.saving;editor.saving=null;
+    if(saved&&editor.text!==editor.saved)return saveOutcomeDraft(editor);
+    return saved;
   };
-  const openCombatOutcome=(override=false)=>{
-    if(!state.identity||state.save?.save.mode!=='combat'||(override&&!state.pilot))return;
-    const handoff=state.save.combat;if(!handoff)return;
-    modal('<div id="combatOutcomeDialog"><h3>Combat Outcome</h3><p>Optionally describe what happened. Anyone can submit one report or skip it to resume the AI-DM.</p><p id="combatOutcomeEligibility" class="muted"></p><label>Combat outcome (optional)<textarea id="combatOutcome" rows="5" maxlength="20000" placeholder="Who won, who fled, and anything the AI-DM should know?"></textarea></label><div class="actions"><button class="btn" data-close>Close</button><button class="btn" id="skipCombatOutcome">Skip &amp; Resume AI-DM</button><button class="btn good" id="submitCombatOutcome">Send outcome &amp; Resume AI-DM</button></div></div>');
-    $('combatOutcomeDialog').dataset.handoffId=handoff.id;
-    $('combatOutcomeDialog').dataset.override=override?'true':'false';
-    try{$('combatOutcome').value=localStorage.getItem(outcomeDraftKey())||'';}catch(error){console.error(error);}
-    $('combatOutcome').oninput=()=>{saveOutcomeDraft();syncCombatDialog();};
-    $('submitCombatOutcome').onclick=()=>submitCombatOutcome(false);
-    $('skipCombatOutcome').onclick=()=>submitCombatOutcome(true);
+  const closeOutcome=()=>{
+    saveOutcomeDraft();
+    $('modalRoot').replaceChildren();
+  };
+  const openCombatOutcome=()=>{
+    if(!ownsCombat())return;
+    const h=state.save.combat;
+    if(!outcomeEditor||outcomeEditor.closed||outcomeEditor.conflict||outcomeEditor.id!==h.id||outcomeEditor.token!==combatToken())
+      outcomeEditor={id:h.id,saveId:state.save.save.id,playerId:state.identity,token:combatToken(),revision:h.revision,text:h.draft,saved:h.draft,closed:false};
+    modal('<div id="combatOutcomeDialog"><h3>Combat outcome</h3><label>How did the fight end, and what’s still unresolved?<textarea id="combatOutcome" rows="5" maxlength="20000"></textarea></label><p id="combatOutcomeSave" role="status" aria-live="polite"></p><div class="actions"><button class="btn" id="closeCombatOutcome">Close</button><button class="btn" id="returnCombat">Return to combat</button><button class="btn good" id="submitCombatOutcome">Send outcome &amp; Continue</button></div></div>');
+    $('combatOutcome').value=outcomeEditor.text;
+    outcomeStatus(outcomeEditor.error||(outcomeEditor.text===outcomeEditor.saved?'Saved':'Unsaved changes'));
+    $('combatOutcome').oninput=()=>{
+      const editor=outcomeEditor;editor.text=$('combatOutcome').value;outcomeStatus('Unsaved changes');
+      clearTimeout(editor.timer);editor.timer=setTimeout(()=>saveOutcomeDraft(editor),350);syncCombatDialog();
+    };
+    $('closeCombatOutcome').onclick=closeOutcome;
+    $('modalRoot').querySelector('.overlay').onclick=e=>{if(e.target.classList.contains('overlay'))closeOutcome();};
+    $('returnCombat').onclick=async()=>{
+      const editor=outcomeEditor;if(!editor||editor.busy)return;editor.busy=true;syncCombatDialog();
+      try{
+        if(!await saveOutcomeDraft(editor))return;
+        state.save=await request(`saves/${editor.saveId}/combat-report`,{...editorPayload(editor),action:'return',text:editor.text});
+        editor.closed=true;$('modalRoot').replaceChildren();render();
+      }catch(error){outcomeStatus(error.message);}finally{editor.busy=false;syncCombatDialog();}
+    };
+    $('submitCombatOutcome').onclick=submitCombatOutcome;
     syncCombatDialog();
   };
-  const submitCombatOutcome=async skip=>{
-    const dialog=$('combatOutcomeDialog');if(!dialog)return;
-    const override=dialog.dataset.override==='true'&&state.pilot;
-    if((!combatEligible()&&!override)||state.generating||state.save.activity?.aiDm)return;
-    const text=$('combatOutcome').value.trim();if(!skip&&!text)return;
-    saveOutcomeDraft();
-    const saveId=state.save.save.id,handoffId=dialog.dataset.handoffId;
-    const payload={playerId:state.identity,handoffId,requestId:newRequestId(),text,skip,override,pilot:state.pilot};
-    state.generating=true;
-    // The server owns acceptance; refresh after any error to distinguish failure from a lost reply.
-    render();
+  const claimCombat=async takeover=>{
+    if(state.updating||!state.identity)return;
+    const h=state.save.combat,saveId=state.save.save.id,token=newRequestId();
+    state.updating=true;render();
     try{
-      state.save=await request('saves/'+saveId+'/combat-outcome',payload);
-      if($('combatOutcomeDialog')?.dataset.handoffId===handoffId)$('modalRoot').replaceChildren();
+      const next=await request(`saves/${saveId}/combat-report`,{playerId:state.identity,handoffId:h.id,revision:h.revision,editorToken:token,action:takeover?'takeover':'claim'});
+      sessionStorage.setItem(combatTokenKey(),token);state.save=next;outcomeEditor=null;openCombatOutcome();
+    }catch(error){notify(error);state.save=await request('saves/'+saveId);}
+    finally{state.updating=false;render();}
+  };
+  const submitCombatOutcome=async()=>{
+    const editor=outcomeEditor;
+    if(!editor||editor.busy||!ownsCombat()||!editor.text.trim())return;
+    editor.busy=true;syncCombatDialog();
+    try{
+      // Submission carries the latest text itself, after queued saves settle.
+      if(!await saveOutcomeDraft(editor))return;
+      state.generating=true;render();
+      state.save=await request(`saves/${editor.saveId}/combat-outcome`,{...editorPayload(editor),requestId:newRequestId(),text:editor.text});
+      editor.closed=true;$('modalRoot').replaceChildren();
     }catch(error){
-      try{state.save=await request('saves/'+saveId);}catch(refreshError){console.error(refreshError);}
+      try{state.save=await request('saves/'+editor.saveId);}catch(refreshError){console.error(refreshError);}
       notify(error);
-    }finally{state.generating=false;render();}
+    }finally{editor.busy=false;state.generating=false;render();}
   };
   const syncCombatDialog=()=>{
-    const handoff=state.save?.combat,dialog=$('combatOutcomeDialog');
-    if(dialog){
-      if(!handoff||dialog.dataset.handoffId!==handoff.id||state.save.save.mode!=='combat'){
-        $('modalRoot').replaceChildren();return;
-      }
-      const override=dialog.dataset.override==='true'&&state.pilot;
-      const eligible=combatEligible()||override;
-      const busy=state.generating||state.updating||!!state.save.activity?.aiDm;
-      $('combatOutcome').disabled=busy;
-      $('combatOutcomeEligibility').textContent=override?'Pilot override: resume without waiting for everyone.':eligible?'Everyone has finished combat.':'Waiting for everyone to finish combat. You can keep drafting.';
-      $('submitCombatOutcome').disabled=!eligible||busy||!$('combatOutcome').value.trim();
-      $('skipCombatOutcome').disabled=!eligible||busy;
-      return;
+    if(!$('combatOutcomeDialog'))return;
+    if(!ownsCombat()||outcomeEditor?.id!==state.save.combat?.id){
+      if(outcomeEditor)outcomeEditor.closed=true;
+      $('modalRoot').replaceChildren();return;
     }
-    if(!handoff||!state.identity||!combatEligible()||$('modalRoot').childElementCount)return;
-    const seenKey='tableforge-combat-dialog:'+handoff.id+':'+state.identity;
-    try{if(sessionStorage.getItem(seenKey))return;sessionStorage.setItem(seenKey,'true');}catch(error){console.error(error);}
-    openCombatOutcome();
+    const busy=!!outcomeEditor?.busy||!!outcomeEditor?.conflict||state.generating||!!state.save.activity?.aiDm;
+    $('combatOutcome').disabled=busy;
+    $('submitCombatOutcome').disabled=busy||!outcomeEditor.text.trim();
+    $('returnCombat').disabled=busy;
   };
-  $('resumeCombat').onclick=()=>openCombatOutcome(true);
-  $('combatOutcomeOpen').onclick=()=>openCombatOutcome();
+  document.addEventListener('keydown',event=>{if(event.key==='Escape'&&$('combatOutcomeDialog')){event.preventDefault();closeOutcome();}});
+  $('combatOutcomeOpen').onclick=()=>ownsCombat()?openCombatOutcome():claimCombat(false);
+  $('combatTakeover').onclick=()=>claimCombat(true);
+  $('correctCombat').onclick=()=>{
+    const handoffId=state.save.combat.id;
+    modal('<h3>Correct combat outcome</h3><p>The original report stays saved. This sends a labeled correction to the AI-DM without replaying the aftermath.</p><label>Correction<textarea id="combatCorrection" rows="4" maxlength="19000"></textarea></label><p id="combatCorrectionStatus" role="status"></p><div class="actions"><button class="btn" data-close>Close</button><button class="btn good" id="sendCombatCorrection" disabled>Send correction</button></div>');
+    $('combatCorrection').oninput=()=>{$('sendCombatCorrection').disabled=!$('combatCorrection').value.trim();};
+    $('sendCombatCorrection').onclick=async()=>{
+      const text=$('combatCorrection').value.trim();if(!text)return;
+      $('sendCombatCorrection').disabled=true;$('combatCorrection').disabled=true;
+      $('combatCorrectionStatus').textContent='Sending correction…';
+      try{state.save=await request(`saves/${state.save.save.id}/combat-correction`,{handoffId,playerId:state.identity,pilot:state.pilot,text});$('modalRoot').replaceChildren();render();}
+      catch(error){if($('combatCorrectionStatus'))$('combatCorrectionStatus').textContent='Could not complete the AI-DM acknowledgment. Check saved history before sending again. '+error.message;}
+    };
+  };
   $('combatRetry').onclick=async()=>{
     if(state.generating||state.save?.combat?.phase!=='failed')return;
     state.generating=true;render();

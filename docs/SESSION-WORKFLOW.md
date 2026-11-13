@@ -520,47 +520,27 @@ TableForge is not intended to become a full VTT or automated combat engine merel
 
 ---
 
-## 16. Combat Finished
+## 16. Combat Reporting
 
-Combat entry resets everyone to Not Finished. The main composer, Send, and attachments pause while preserving drafts. Ready becomes **Combat Finished**, meaning “combat is over; I am ready for the aftermath.” Players may undo this until a handoff is accepted. Auto-ready is suspended.
+Combat pauses public contributions, attachments, suggested replies, Ready, and auto-ready. Chat history remains readable and unsent drafts are preserved. Pilot Ask AI-DM remains separate.
 
-When all current players finish, a dismissible optional outcome dialog opens for everyone. Closing it does not resume play; a Combat Outcome button reopens it. Players keep separate local report drafts rather than editing a shared document. Undo Finished withdraws ordinary submission eligibility without losing drafts.
+Any player may click **Report combat outcome**; the first accepted claim assigns one reporter. No Finished votes, count, or Pilot waiting override is used. Everyone else sees “[Name] is recording the combat outcome” and may **Take over outcome**.
+
+Only the reporter can edit or submit. The form asks “How did the fight end, and what’s still unresolved?” Its encounter-specific draft autosaves to the server and displays Unsaved changes, Saving, Saved, or a save error. The assignment and saved text survive refresh and restart. Each new encounter starts blank.
+
+**Close**, Escape, and clicking outside hide the form while reporting remains active. The reporter can **Reopen outcome**. **Return to combat** releases reporting for everyone, preserves the draft, and restores Report combat outcome. Takeover transfers the saved draft, even if the reporter disconnects. Encounter identity, an editor token, and a draft revision reject stale saves, old tabs, and submissions for another encounter.
+
+**Send outcome & Continue** requires nonblank text and submits the latest text in the box. There is no Skip action. The AI-DM treats the report as the result and leaves unresolved player decisions open. The report is durably attributed before generation. Everyone sees generation status; chat stays locked until the aftermath is saved and received by that client. Duplicate submissions/retries publish only one aftermath.
+
+Failures, startup recovery of interrupted narration, and a 180-second generation deadline preserve the accepted outcome and expose **Retry aftermath** to any player. A timed-out worker cannot publish a late response. Normal readiness resets after successful publication; preserved composer drafts require review.
+
+Afterward, Pilot Mode offers **Correct combat outcome**. It appends a labeled correction to shared history and future AI context, sends it through the separate operational conversation, and preserves the original report and aftermath. It does not advance the beat or replay aftermath. If acknowledgment fails, the correction remains saved.
 
 ---
 
 ## 17. Resume AI-DM After Combat
 
-Any player may submit one optional report or choose Skip & Resume AI-DM once everyone finishes. Pilot Mode may open the same dialog and override waiting. The first accepted handoff is durable and attributed; it immediately requests aftermath narration once.
-
-Working concept:
-
-```text
-RESUME AI-DM
-```
-
-Before resuming, the group may provide or select relevant combat outcome information.
-
-Examples:
-
-- enemies defeated
-- enemies escaped
-- NPC deaths
-- party HP
-- conditions
-- resources spent
-- loot obtained
-- important tactical or narrative events
-
-TableForge sends the relevant outcome/context to the AI-DM.
-
-The AI-DM then:
-
-1. interprets the completed combat outcome
-2. updates narrative state
-3. narrates the aftermath
-4. resumes normal adventure play
-
-Normal Ready-based advancement becomes active again after successful aftermath publication. Readiness resets and preserved composer drafts require review for the new beat. If narration fails, retain the accepted outcome and offer Retry aftermath; restart recovery provides the same retry. A skipped report tells the AI-DM to use recorded facts and ask for necessary missing results, not invent combat outcomes.
+The accepted report supplies the result for aftermath narration. TableForge adds relevant saved context and resumes ordinary play only after successful publication.
 
 ---
 
@@ -670,12 +650,12 @@ COMBAT MODE
         ↓
 Humans run combat
         ↓
-Players mark Combat Finished
+Any player claims Report combat outcome
         ↓
-Everyone receives an optional outcome dialog
-(Pilot may override waiting)
+One reporter writes an autosaved outcome
+(others may take over the saved draft)
         ↓
-One player submits or skips the report
+Reporter sends a nonblank outcome
         ↓
 AI-DM narrates aftermath
         ↓

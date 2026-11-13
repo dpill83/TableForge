@@ -674,7 +674,7 @@ Examples of conflicts to prevent:
 
 - two users triggering Force Advance simultaneously
 - all-Ready auto-advance firing while a Pilot presses Force Advance
-- two Pilots pressing Resume AI-DM
+- two players retrying combat aftermath
 - a second generation starting before the first finishes
 
 The server, not the browser, must enforce this.
@@ -969,34 +969,22 @@ mode = combat
 Effects:
 
 - disable normal all-Ready auto-advance
-- reset Ready indicators and present Combat Finished / Undo Finished
-- keep Pilot AI-DM questions available
-- all Finished offers an optional outcome dialog to every player
-- expose Resume AI-DM waiting override to Pilot users
-- pause public contributions and auto-ready while preserving drafts
+- reset and hide Ready; there is no Finished vote
+- keep separate Pilot AI-DM questions available
+- pause public contributions, suggested replies, and auto-ready while preserving drafts
+- let any player claim one shared, persistent outcome draft
 
-TableForge does not need to model initiative or individual combat turns.
+TableForge does not model initiative or individual combat turns.
 
 ---
 
 # 29. Combat Resume
 
-Resume AI-DM should route through the same Advance Service with a different context source.
+Combat follows fighting → reporting → resuming → complete, with failed → resuming for retries and reporting → fighting for Return to combat. Claim/takeover and autosave use the shared SQLite transaction lock. Every edit/submission checks the encounter, reporter, editor token, and revision; takeover rotates ownership and increments the revision. Return preserves the draft while clearing ownership.
 
-Conceptually:
+Persist a nonblank report with attribution before using the existing Advance Service. Keep mode=combat and the shared generation guard until aftermath publication; save the message, mark completion, and switch to normal atomically. A 180-second deadline makes a stalled attempt failed/retryable. Abandoned provider workers return to an isolated queue and cannot publish. Concurrent retries or late duplicate submissions cannot publish twice. Startup marks interrupted resuming records failed.
 
-```text
-combat outcome
-+
-relevant state
-+
-Pilot notes
-+
-recent transcript
-→ AI-DM
-```
-
-Persist the first accepted report or skip in a combat_handoffs record before generation. A submission uses the current handoff identity and a request identity to reject stale work and recognize retries. Keep the existing shared generation guard. Completion and aftermath publication are atomic; failures and interrupted requests remain retryable. The resulting AI-DM aftermath response reopens normal play.
+Pilot corrections use the operational AI conversation, append a public combat_correction event, and enter future AI context without mutating the original or generating public aftermath again.
 
 ---
 

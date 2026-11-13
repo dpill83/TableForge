@@ -288,10 +288,9 @@ class OpeningFlowTest(unittest.TestCase):
                                 '[Opening: arrival]\n' + combat.MARKER)
         self.assertEqual(fighting['save']['opening_stage'], 'arrival')
         self.assertEqual(fighting['save']['mode'], 'combat')
-        for participant in fighting['players']:
-            fighting = self.api(f'/api/saves/{save_id}/ready', {
-                'playerId': participant['id'], 'ready': True,
-                'handoffId': fighting['combat']['id']})
+        fighting = self.api(f'/api/saves/{save_id}/combat-report', {
+            'playerId': player, 'handoffId': fighting['combat']['id'], 'action': 'claim',
+            'revision': 0, 'editorToken': 'opening-editor'})
         return save_id, fighting
 
     def test_combat_outcome_is_player_input_for_arrival_to_exploration(self):
@@ -304,7 +303,8 @@ class OpeningFlowTest(unittest.TestCase):
             try:
                 result = self.api(f'/api/saves/{save_id}/combat-outcome', {
                     'handoffId': fighting['combat']['id'], 'requestId': str(uuid.uuid4()),
-                    'playerId': fighting['players'][0]['id'], 'text': report})
+                    'playerId': fighting['players'][0]['id'], 'text': report,
+                    'revision': fighting['combat']['revision'], 'editorToken': 'opening-editor'})
             except urllib.error.HTTPError as error:
                 self.fail(error.read().decode())
         self.assertEqual(result['save']['opening_stage'], 'exploration')
@@ -314,25 +314,16 @@ class OpeningFlowTest(unittest.TestCase):
         self.assertNotIn('There are no new player contributions this beat',
                          ai.chat_messages(provider.context)[0]['content'])
 
-    def test_skipped_combat_report_cannot_authorize_site_entry(self):
+    def test_skipped_combat_report_is_rejected(self):
         save_id, fighting = self.arrival_combat()
         payload = {'handoffId': fighting['combat']['id'], 'requestId': str(uuid.uuid4()),
-                   'playerId': fighting['players'][0]['id'], 'skip': True}
-        with patch.object(ai, 'current_provider', return_value=test_flow.FakeProvider(
-                'You step into the mine.\n[Opening: exploration]\n[Location: Area 1]')):
-            error = self.api_error(f'/api/saves/{save_id}/combat-outcome', payload)
-        self.assertIn('No player entered the site', error['error'])
+                   'playerId': fighting['players'][0]['id'], 'skip': True,
+                   'revision': fighting['combat']['revision'], 'editorToken': 'opening-editor'}
+        error = self.api_error(f'/api/saves/{save_id}/combat-outcome', payload)
+        self.assertIn('skipping is unavailable', error['error'])
         unchanged = self.api(f'/api/saves/{save_id}')
         self.assertEqual(unchanged['save']['opening_stage'], 'arrival')
-        self.assertIsNone(unchanged['save']['location'])
-        self.assertEqual(unchanged['combat']['phase'], 'failed')
-        provider = test_flow.FakeProvider('The mine entrance is quiet. What do you do?\n[Opening: arrival]')
-        with patch.object(ai, 'current_provider', return_value=provider):
-            retried = self.api(f'/api/saves/{save_id}/combat-retry', payload)
-        self.assertEqual(retried['save']['opening_stage'], 'arrival')
-        self.assertEqual(retried['combat']['phase'], 'complete')
-        self.assertIn('There are no new player contributions this beat',
-                      ai.chat_messages(provider.context)[0]['content'])
+        self.assertEqual(unchanged['combat']['phase'], 'reporting')
 
 
 if __name__ == '__main__':

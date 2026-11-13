@@ -403,19 +403,19 @@ TableForge should not become a full VTT by default.
 
 Do not add initiative tracking, automated monster turns, character-sheet management, dice engines, HP automation, or tactical automation unless specifically requested later.
 
-During combat:
+During combat, humans resolve the fight in person. The composer, Send, attachments, suggested replies, normal Ready, and auto-ready are paused; chat history remains readable and unsent drafts are preserved.
 
-- main composer, Send, and attachments are disabled; unsent drafts are preserved
-- readiness resets; Ready becomes Combat Finished, with an Undo Finished action
-- auto-ready is suspended and the UI shows how many players have finished
-- all Finished opens a dismissible optional combat-outcome dialog for everyone, without generating narration
-- anyone may send one outcome or skip it to resume aftermath narration
-- AI-DM questions remain in the separate Pilot-only operational conversation
-- Pilot Resume AI-DM may bypass waiting for every Finished state
-- accepted outcomes/skips and override initiators are saved; conflicting submissions cannot generate twice
-- failed aftermath narration preserves the report and offers retry, including after restart
+Any player may click **Report combat outcome**; the first accepted claim assigns one reporter. No Finished votes, count, or Pilot waiting override is used. Everyone else sees “[Name] is recording the combat outcome” and may **Take over outcome**.
 
-On resume, send the relevant combat outcome/context and let the AI-DM narrate the aftermath. If the optional report is skipped, do not invent missing combat results. Restore ordinary contributions only after successful aftermath publication; preserved drafts require review for the new beat.
+Only the reporter can edit or submit. The form asks “How did the fight end, and what’s still unresolved?” Its encounter-specific draft autosaves to the server and displays Unsaved changes, Saving, Saved, or a save error. The assignment and saved text survive refresh and restart. Each new encounter starts blank.
+
+**Close**, Escape, and clicking outside hide the form while reporting remains active. The reporter can **Reopen outcome**. **Return to combat** releases reporting for everyone, preserves the draft, and restores Report combat outcome. Takeover transfers the saved draft, even if the reporter disconnects. Encounter identity, an editor token, and a draft revision reject stale saves, old tabs, and submissions for another encounter.
+
+**Send outcome & Continue** requires nonblank text and submits the latest text in the box. There is no Skip action. The AI-DM treats the report as the result and leaves unresolved player decisions open. The report is durably attributed before generation. Everyone sees generation status; chat stays locked until the aftermath is saved and received by that client. Duplicate submissions/retries publish only one aftermath.
+
+Failures, startup recovery of interrupted narration, and a 180-second generation deadline preserve the accepted outcome and expose **Retry aftermath** to any player. A timed-out worker cannot publish a late response. Normal readiness resets after successful publication; preserved composer drafts require review.
+
+Afterward, Pilot Mode offers **Correct combat outcome**. It appends a labeled correction to shared history and future AI context, sends it through the separate operational conversation, and preserves the original report and aftermath. It does not advance the beat or replay aftermath. If acknowledgment fails, the correction remains saved.
 
 ---
 

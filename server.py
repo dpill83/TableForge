@@ -7,6 +7,7 @@ import io
 import json
 import os
 import re
+import queue
 import sqlite3
 import threading
 import time
@@ -44,6 +45,7 @@ TYPING = {}
 TYPING_SECONDS = 6
 # save_id -> temporary full payload captures; audit metadata is persisted separately.
 AI_REQUEST_LOGS = {}
+COMBAT_GENERATION_TIMEOUT = 180
 MAX_REQUEST = 32 * 1024 * 1024
 MAX_PORTRAIT_BYTES = 5 * 1024 * 1024
 MAX_CHAT_IMAGE_BYTES = 20 * 1024 * 1024
@@ -1167,6 +1169,17 @@ class Handler(BaseHTTPRequestHandler):
                 return self.handle_advance(parts[2], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] in ('combat-outcome', 'combat-retry'):
                 return self.handle_combat_resume(parts[2], payload, parts[3] == 'combat-retry')
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'combat-report':
+                with LOCK, db() as conn:
+                    state = snapshot(conn, parts[2])
+                    require_player(state, payload.get('playerId'))
+                    if not active_session(conn, parts[2]):
+                        raise ValueError('Start a session before reporting')
+                    combat.edit(conn, parts[2], payload)
+                    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), parts[2]))
+                    return self.respond(snapshot(conn, parts[2]))
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'combat-correction':
+                return self.handle_combat_correction(parts[2], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'ask':
                 return self.handle_ask(parts[2], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'summary-draft':
@@ -1403,8 +1416,8 @@ class Handler(BaseHTTPRequestHandler):
                 elif action == 'ready':
                     player = require_player(state, payload.get('playerId'))
                     handoff = state.get('combat')
-                    if state['save']['mode'] == 'combat' and payload.get('handoffId') != handoff['id']:
-                        raise ValueError('Combat has changed; refresh before marking it finished')
+                    if combat.pending(handoff):
+                        raise ValueError('Combat reporting replaces Ready during combat')
                     conn.execute('UPDATE players SET ready=? WHERE id=?', (int(bool(payload.get('ready'))), player['id']))
                     combat.sync_ready(conn, save_id)
                 elif action == 'mode':
@@ -1683,14 +1696,31 @@ class Handler(BaseHTTPRequestHandler):
                         request_entry['payload'] = body
                         AI_REQUEST_LOGS.setdefault(save_id, []).append(request_entry)
 
-            if isinstance(provider, ai.OpenAIProvider):
-                generated = provider.generate(context, on_request=capture_request, on_metadata=capture_metadata)
-            elif isinstance(provider, ai.MockProvider):
-                capture_metadata({'configuredModel': configured_model, 'requestedModel': configured_model,
-                                  'routing': ai.routing_state(False)})
-                generated = provider.generate(context, on_request=capture_request)
+            def generate():
+                if isinstance(provider, ai.OpenAIProvider):
+                    return provider.generate(context, on_request=capture_request, on_metadata=capture_metadata)
+                elif isinstance(provider, ai.MockProvider):
+                    capture_metadata({'configuredModel': configured_model, 'requestedModel': configured_model,
+                                      'routing': ai.routing_state(False)})
+                    return provider.generate(context, on_request=capture_request)
+                else:
+                    return provider.generate(context)
+            if context.get('combatResume'):
+                results = queue.Queue(maxsize=1)
+                def worker():
+                    try:
+                        results.put((generate(), None))
+                    except Exception as error:
+                        results.put((None, error))
+                threading.Thread(target=worker, daemon=True).start()
+                try:
+                    generated, generation_error = results.get(timeout=COMBAT_GENERATION_TIMEOUT)
+                except queue.Empty:
+                    raise ValueError('Aftermath narration stalled; the outcome is saved. Retry aftermath.')
+                if generation_error:
+                    raise generation_error
             else:
-                generated = provider.generate(context)
+                generated = generate()
             text = str(generated or '').strip()
             if not text:
                 raise ValueError('The AI-DM returned an empty response')
@@ -1838,30 +1868,19 @@ class Handler(BaseHTTPRequestHandler):
                     request_id = str(uuid.UUID(str(payload.get('requestId'))))
                 except ValueError as error:
                     raise ValueError('A valid combat request ID is required') from error
-                skipped = payload.get('skip') is True
-                outcome = '' if skipped else str(payload.get('text') or '').strip()
-                override = payload.get('override') is True
-                if override and payload.get('pilot') is not True:
-                    raise ValueError('Enable Pilot Mode to override combat readiness')
-                if not skipped and (not outcome or len(outcome) > 20000):
-                    raise ValueError('Combat outcome must contain 1 to 20,000 characters, or choose Skip')
                 if handoff['request_id']:
-                    if (handoff['request_id'] == request_id and
-                        (handoff['player_id'] != player['id'] or handoff['outcome'] != outcome or
-                         bool(handoff['skipped']) != skipped or bool(handoff['override']) != override)):
-                        raise ValueError('This request was already used for a different combat outcome')
+                    if handoff['request_id'] == request_id and handoff['player_id'] != player['id']:
+                        raise ValueError('This combat request belongs to another player')
                     return None
-                if not override and not (state['players'] and all(p['ready'] for p in state['players'])):
-                    raise ValueError('Waiting for everyone to finish combat')
-                conn.execute("""UPDATE combat_handoffs SET outcome=?,skipped=?,player_id=?,
-                    request_id=?,override=? WHERE id=?""",
-                    (outcome, int(skipped), player['id'], request_id, int(override), handoff['id']))
+                combat.require_editor(handoff, payload)
+                outcome = str(payload.get('text') or '').strip()
+                if payload.get('skip') or not outcome or len(outcome) > 20000:
+                    raise ValueError('Combat outcome must contain 1 to 20,000 characters; skipping is unavailable')
+                conn.execute("""UPDATE combat_handoffs SET outcome=?,draft=?,skipped=0,player_id=?,
+                    request_id=?,override=0,revision=revision+1 WHERE id=?""",
+                    (outcome, outcome, player['id'], request_id, handoff['id']))
                 conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
-                    (save_id, session['id'], player['id'], 'combat_skipped' if skipped else 'combat_outcome', outcome, utc()))
-                if override:
-                    conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
-                        (save_id, session['id'], player['id'], 'combat_override', handoff['id'], utc()))
-                conn.execute("UPDATE saves SET mode='normal',updated_at=? WHERE id=?", (utc(), save_id))
+                    (save_id, session['id'], player['id'], 'combat_outcome', outcome, utc()))
                 conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
             if save_id in GENERATING:
                 raise ValueError('The AI-DM is already responding')
@@ -1877,12 +1896,33 @@ class Handler(BaseHTTPRequestHandler):
         def publish(conn, save_id, text):
             # Commit completion and narration together; a new handoff may start in this response.
             conn.execute("UPDATE combat_handoffs SET phase='complete' WHERE id=?", (handoff_id['id'],))
+            conn.execute("UPDATE saves SET mode='normal' WHERE id=?", (save_id,))
             result = publish_advance(conn, save_id, text,
                                      accepted_combat_outcome=handoff_id['accepted_outcome'])
             message_id = result['messages'][-1]['id']
             conn.execute('UPDATE combat_handoffs SET message_id=? WHERE id=?', (message_id, handoff_id['id']))
             return snapshot(conn, save_id)
 
+        return self.run_generation(save_id, begin, publish, payload)
+
+    def handle_combat_correction(self, save_id, payload):
+        def begin(conn, save_id, payload):
+            state = snapshot(conn, save_id)
+            handoff = state.get('combat')
+            if not handoff or handoff['id'] != payload.get('handoffId') or handoff['phase'] != 'complete':
+                raise ValueError('Choose the completed combat outcome to correct')
+            text = str(payload.get('text') or '').strip()
+            if not text or len(text) > 19000:
+                raise ValueError('Enter a correction of 1 to 19,000 characters')
+            labeled = 'Combat outcome correction (keep the original report; do not replay the aftermath): ' + text
+            context = begin_ask(conn, save_id, {**payload, 'text': labeled})
+            session = active_session(conn, save_id)
+            conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
+                         (save_id, session['id'], payload['playerId'], 'combat_correction', labeled, utc()))
+            # Rebuild after recording so this correction is also in operational context.
+            return ai.build_context(snapshot(conn, save_id, payload['playerId']), DATA, purpose='ask')
+        def publish(conn, save_id, text):
+            return publish_ask(conn, save_id, text, payload['playerId'])
         return self.run_generation(save_id, begin, publish, payload)
 
     def handle_ask(self, save_id, payload):
