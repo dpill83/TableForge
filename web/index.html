@@ -221,6 +221,22 @@
         <iframe id="sceneViewer" class="tool-frame hidden" title="Scene Viewer" referrerpolicy="no-referrer"></iframe>
       </main>
 
+      <section id="mapPanel" class="map-panel hidden" aria-label="Table map">
+        <div id="mapResize" class="map-resize" role="separator" aria-orientation="vertical" aria-label="Resize table map" title="Drag to resize"></div>
+        <header class="map-head">
+          <select id="mapSelect" aria-label="Shared table map"></select>
+          <button class="btn small" id="mapPlace" type="button">Place party token</button>
+          <button class="btn small" id="mapFit" type="button" title="Fit the whole map in view">Fit</button>
+          <button class="btn small" id="mapClose" type="button" title="Close the map" aria-label="Close the map">✕</button>
+        </header>
+        <div id="mapStage" class="map-stage">
+          <div id="mapLayer" class="map-layer"><img id="mapImage" alt="Shared table map" draggable="false"></div>
+          <button id="mapToken" class="map-token hidden" type="button" aria-label="Party token. Drag, or use the arrow keys, to move it for everyone."><span aria-hidden="true">◆</span></button>
+          <div id="mapEmpty" class="map-empty hidden"></div>
+        </div>
+        <div id="mapStatus" class="map-status" aria-live="polite"></div>
+      </section>
+
       <aside id="rightSidebar" class="sidebar right">
         <div class="sidebar-inner">
           <div class="section-title" style="margin-top:2px">Party</div>
@@ -300,6 +316,7 @@
 <script src="/js/request-log.js" defer></script>
 <script src="/js/message-actions.js" defer></script>
 <script src="/js/notes.js" defer></script>
+<script src="/js/table-map.js" defer></script>
 <script src="/js/app.js" defer></script>
 </body>
 </html>

@@ -31,6 +31,7 @@ import narration_choices
 import narration_pacing
 import opening_flow
 import runtime_prompts
+import table_map
 from local_config import load_env
 
 ROOT = Path(__file__).resolve().parent
@@ -300,6 +301,7 @@ def initialize():
             conn.execute('UPDATE messages SET session_id=? WHERE save_id=? AND session_id IS NULL', (session_id, save['id']))
 
         combat.initialize(conn, utc())
+        table_map.initialize(conn)
 
 
 def package_manifest(files):
@@ -622,6 +624,7 @@ def snapshot(conn, save_id, pilot_player_id=None):
     return {
         'save': dict(save),
         'combat': combat.current(conn, save_id),
+        'tableMap': table_map.current(conn, save_id),
         'cartridge': {'id': cartridge['id'], 'title': save['adventure_title'] or cartridge['title'],
                       'resources': resources, 'available': (DATA / 'cartridges' / (cartridge['id'] + '.zip')).is_file()},
         'players': players,
@@ -1320,6 +1323,12 @@ class Handler(BaseHTTPRequestHandler):
                 if action == 'notes':
                     save_note(conn, state, payload)
                     return self.respond(snapshot(conn, save_id))
+                if action == 'table-map':
+                    # A visual aid: allowed during generation and combat.
+                    player = require_player(state, payload.get('playerId'))
+                    session = active_session(conn, save_id)
+                    table_map.update(conn, save_id, player['id'], session['id'] if session else None, payload, utc())
+                    return self.respond(snapshot(conn, save_id))
                 if save_id in GENERATING:
                     raise ValueError('The AI-DM is already responding')
                 if action == 'locate-cartridge':
@@ -1798,7 +1807,8 @@ class Handler(BaseHTTPRequestHandler):
                     # All save-owned tables use save_id. Unknown future tables fail closed.
                     known = {'players', 'player_portraits', 'messages', 'chat_images', 'pilot_messages',
                              'sessions', 'session_events', 'checkpoints', 'summaries', 'ai_usage',
-                             'ai_requests', 'party_notes', 'revealed_assets', 'scene_images', 'combat_handoffs'}
+                             'ai_requests', 'party_notes', 'revealed_assets', 'scene_images', 'combat_handoffs',
+                             'map_tokens'}
                     for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
                         table = row['name']
                         quoted = '"' + table.replace('"', '""') + '"'

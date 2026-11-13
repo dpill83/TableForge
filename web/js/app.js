@@ -489,8 +489,120 @@
   };
   const feedAtBottom=()=>{const feed=$('feed');return feed.scrollHeight-feed.scrollTop-feed.clientHeight<48;};
   const scrollFeedToLatest=()=>{$('feed').scrollTop=$('feed').scrollHeight;state.followLatest=true;$('jumpLatest').classList.add('hidden');};
+  // Shared table map: a panel beside chat. Pan and zoom stay on this screen;
+  // the chosen map and the party token are shared through the save.
+  const mapUi={assets:[],assetsFor:null,triedFor:null,loading:null,loadError:'',queued:null,sending:false,pending:false,timer:null,status:'',error:false,selectKey:'',restoredFor:null,revealsFor:null};
+  const mapAssetName=asset=>asset.path.split('/').at(-1);
+  const mapOpen=()=>!$('mapPanel').classList.contains('hidden');
+  const setMapOpen=open=>{
+    $('mapPanel').classList.toggle('hidden',!open);$('workarea').classList.toggle('map-open',open);
+    document.querySelector('.ref-open[data-ref="map"]')?.classList.toggle('active',open);
+    if(state.save)try{const key=`tableforge-map-open:${state.save.save.id}`;if(open)localStorage.setItem(key,'true');else localStorage.removeItem(key);}catch{/* Per-viewer convenience only. */}
+    if(open){mapView.fit();syncTableMap(true);}
+  };
+  const restoreTableMap=()=>{
+    const saveId=state.save?.save.id;if(!saveId||mapUi.restoredFor===saveId)return;
+    mapUi.restoredFor=saveId;mapUi.assets=[];mapUi.assetsFor=null;mapUi.triedFor=null;mapUi.revealsFor=null;mapUi.status='';mapView.setImage(null);
+    let open=false;try{open=localStorage.getItem(`tableforge-map-open:${saveId}`)==='true';}catch{/* Starts closed. */}
+    setMapOpen(open);
+  };
+  const sendTokenMove=async()=>{
+    if(mapUi.sending)return;
+    const job=mapUi.queued;mapUi.queued=null;if(!job){mapUi.pending=false;$('mapToken').classList.remove('pending');return;}
+    mapUi.sending=true;
+    try{
+      const next=await request(`saves/${job.saveId}/table-map`,{playerId:job.playerId,op:'move',assetId:job.assetId,x:job.point.x,y:job.point.y});
+      mapUi.status='';mapUi.error=false;
+      if(state.save?.save.id===job.saveId)state.save=next;
+    }catch(error){
+      // Fall back to the last position the server confirmed.
+      mapUi.status=`Couldn’t move the party token: ${error.message}`;mapUi.error=true;mapUi.queued=null;
+    }finally{mapUi.sending=false;}
+    if(mapUi.queued)return sendTokenMove();
+    mapUi.pending=false;$('mapToken').classList.remove('pending');render();
+  };
+  const moveToken=point=>{
+    const saveId=state.save?.save.id,assetId=state.save?.tableMap?.assetId;
+    if(!saveId||!assetId||!state.identity)return;
+    // Arrow-key presses are batched briefly; the last position wins.
+    mapUi.queued={saveId,assetId,point,playerId:state.identity};mapUi.pending=true;$('mapToken').classList.add('pending');
+    clearTimeout(mapUi.timer);mapUi.timer=setTimeout(sendTokenMove,150);
+  };
+  const mapView=new TableForgeMap.TableMapView({stage:$('mapStage'),layer:$('mapLayer'),image:$('mapImage'),token:$('mapToken'),onMove:point=>moveToken(point)});
+  const renderTableMap=()=>{
+    const s=state.save;if(!s)return;
+    const shared=s.tableMap||{assetId:null,tokens:{}},key=`${s.save.id}|${state.identity}`;
+    const assets=mapUi.assetsFor===key?mapUi.assets:[],current=assets.find(asset=>asset.id===shared.assetId)||null;
+    const selectKey=JSON.stringify([assets.map(asset=>asset.id),current?.id]);
+    if(selectKey!==mapUi.selectKey){
+      mapUi.selectKey=selectKey;
+      $('mapSelect').innerHTML=(current?'':`<option value="">${assets.length?'Choose a map for the table…':'No maps revealed yet'}</option>`)+
+        assets.map(asset=>`<option value="${esc(asset.id)}"${asset.id===current?.id?' selected':''}>${esc(mapAssetName(asset))}</option>`).join('');
+    }
+    $('mapSelect').disabled=!assets.length;
+    mapView.setImage(current?.url||null);
+    const token=current?shared.tokens?.[current.id]||null:null;
+    if(!mapUi.pending)mapView.setPosition(token);
+    $('mapPlace').classList.toggle('hidden',!current);
+    $('mapPlace').textContent=token||mapUi.pending?'Find party':'Place party token';
+    $('mapFit').disabled=!current;
+    $('mapEmpty').classList.toggle('hidden',!!current);
+    if(!current)$('mapEmpty').innerHTML=mapUi.loadError?`<p class="binding-issue">${esc(mapUi.loadError)}</p>`:
+      assets.length?'<p>Choose a map above to share it with the table.</p>':
+      `<p>No maps have been revealed to the party yet.</p><p>${state.pilot?'Reveal one from <strong>GM Map</strong> in Pilot Controls.':'A player in Pilot Mode can reveal one.'}</p>`;
+    const mover=token?.movedBy&&s.players.find(p=>p.id===token.movedBy)?.character;
+    $('mapStatus').textContent=mapUi.status||(current?(token?(mover?`Party token last moved by ${mover}.`:'Party token placed.'):'Place the party token where the party is.'):'');
+    $('mapStatus').classList.toggle('error',mapUi.error&&!!mapUi.status);
+  };
+  const syncTableMap=async(refresh=false)=>{
+    const s=state.save;if(!s||!state.identity||!mapOpen())return;
+    const shared=s.tableMap||{assetId:null},key=`${s.save.id}|${state.identity}`;
+    const missing=!!shared.assetId&&!(mapUi.assetsFor===key&&mapUi.assets.some(asset=>asset.id===shared.assetId))&&mapUi.triedFor!==shared.assetId;
+    // A Pilot revealing another map adds a session event; refresh the list then.
+    const reveals=(s.events||[]).filter(event=>event.kind==='asset_revealed').map(event=>event.id).join(',');
+    if(refresh||mapUi.assetsFor!==key||missing||mapUi.revealsFor!==reveals){
+      if(missing)mapUi.triedFor=shared.assetId;
+      mapUi.loading??=request(`saves/${s.save.id}/assets?playerId=${encodeURIComponent(state.identity)}`)
+        .then(result=>{mapUi.assets=result.assets;mapUi.assetsFor=key;mapUi.revealsFor=reveals;mapUi.loadError='';})
+        .catch(error=>{mapUi.loadError=`Couldn’t load maps: ${error.message}`;})
+        .finally(()=>{mapUi.loading=null;});
+      await mapUi.loading;
+      if(state.save?.save.id!==s.save.id)return;
+    }
+    renderTableMap();
+  };
+  const showOnTableMap=async assetId=>{
+    if(!state.save||!state.identity)return;
+    try{state.save=await request(`saves/${state.save.save.id}/table-map`,{playerId:state.identity,op:'select',assetId});}
+    catch(error){notify(error);}
+    if(!mapOpen())setMapOpen(true);
+    render();
+  };
+  $('mapSelect').onchange=()=>{if($('mapSelect').value)showOnTableMap($('mapSelect').value);};
+  $('mapFit').onclick=()=>mapView.fit();
+  $('mapClose').onclick=()=>setMapOpen(false);
+  $('mapPlace').onclick=()=>{
+    if(mapView.position)return mapView.focusToken();
+    const point=mapView.center();if(!point)return;
+    mapView.setPosition(point);moveToken(point);renderTableMap();
+  };
+  try{const width=Number(localStorage.getItem('tableforge-map-width'));if(width>0)$('workarea').style.setProperty('--map-size',`${width}px`);}catch{/* Default width. */}
+  $('mapResize').onpointerdown=event=>{
+    const handle=$('mapResize');try{handle.setPointerCapture(event.pointerId);}catch{/* Resizes while over the handle. */}handle.classList.add('active');
+    const resize=move=>{
+      const box=$('workarea').getBoundingClientRect(),right=box.right-$('rightSidebar').getBoundingClientRect().width;
+      const width=Math.round(Math.min(Math.max(right-move.clientX,280),box.width*0.7));
+      $('workarea').style.setProperty('--map-size',`${width}px`);return width;
+    };
+    handle.onpointermove=resize;
+    handle.onpointerup=handle.onpointercancel=up=>{
+      const width=resize(up);handle.onpointermove=handle.onpointerup=handle.onpointercancel=null;handle.classList.remove('active');
+      try{localStorage.setItem('tableforge-map-width',String(width));}catch{/* Not remembered. */}
+    };
+  };
   const render=()=>{
     const s=state.save;if(!s)return;
+    restoreTableMap();syncTableMap();
     $('play').querySelector('.top-title strong').textContent=s.cartridge.title;
     $('partyList').innerHTML=s.players.map(p=>`<div class="party-card" style="${p.id===state.identity?'border-color:var(--accent2)':''}"><div class="party-top">${p.id===state.identity?`<button class="portrait-button" type="button" title="Edit ${esc(p.character)} portrait" aria-label="Edit ${esc(p.character)} portrait">${avatar(p,'party-avatar')}</button>`:avatar(p,'party-avatar')}<div class="party-name"><strong>${esc(p.character)}</strong><span>${esc(p.name)}</span></div><span class="ready-badge ${p.ready?'ready':''}">${combatPending()?'Combat':(p.ready?'Ready':'Not Ready')}</span></div></div>`).join('');
     $('partyList').querySelector('.portrait-button')?.addEventListener('click',openPortraitEditor);
@@ -1445,8 +1557,11 @@
     let result;
     try{result=await request(`saves/${state.save.save.id}/assets?playerId=${encodeURIComponent(state.identity)}${pilot?'&pilot=true':''}`);}
     catch(error){return notify(error);}
-    const items=result.assets.map(asset=>`<section class="note-card" data-asset="${esc(asset.id)}"><div class="row"><strong>${esc(asset.path.split('/').at(-1))}</strong><span>${asset.revealed?'Revealed':pilot?'Pilot only':''}</span></div><img src="${esc(asset.url)}" alt="${esc(asset.path.split('/').at(-1))}" style="display:block;max-width:100%;max-height:65vh;margin:12px auto">${pilot&&!asset.revealed?'<div class="actions"><button class="btn primary reveal-asset">Reveal to players</button></div>':''}</section>`).join('');
+    const items=result.assets.map(asset=>`<section class="note-card" data-asset="${esc(asset.id)}"><div class="row"><strong>${esc(asset.path.split('/').at(-1))}</strong><span>${asset.revealed?'Revealed':pilot?'Pilot only':''}</span></div><img src="${esc(asset.url)}" alt="${esc(asset.path.split('/').at(-1))}" style="display:block;max-width:100%;max-height:65vh;margin:12px auto">${pilot&&!asset.revealed?'<div class="actions"><button class="btn primary reveal-asset">Reveal to players</button></div>':''}${asset.revealed?'<div class="actions"><button class="btn table-map-asset">Show on table map</button></div>':''}</section>`).join('');
     modal(`<h3>${pilot?'Cartridge Maps':'Maps'}</h3><p class="muted">${pilot?'Cartridge images stay hidden until a Pilot reveals them.':'Only maps revealed to the party appear here.'}</p><div class="note-list">${items||`<p>${pilot?'This cartridge has no packaged image assets.':'No maps have been revealed to the party.'}</p>`}</div><div class="actions"><button class="btn" data-close>Close</button></div>`,'wide');
+    $('modalRoot').querySelectorAll('.table-map-asset').forEach(button=>button.onclick=()=>{
+      const assetId=button.closest('[data-asset]').dataset.asset;$('modalRoot').replaceChildren();showOnTableMap(assetId);
+    });
     $('modalRoot').querySelectorAll('.reveal-asset').forEach(button=>button.onclick=async()=>{
       const assetId=button.closest('[data-asset]').dataset.asset;
       if(!confirm('Reveal this cartridge image to every player in this save?'))return;
@@ -1605,7 +1720,7 @@
     showTool('showModuleViewer');
     if(frame.dataset.ready==='true')send();
   };
-  document.querySelectorAll('.ref-open').forEach(b=>b.onclick=()=>noteCategories[b.dataset.ref]?openNotes(b.dataset.ref):b.dataset.ref==='map'?openMaps():b.dataset.ref==='module'?openModuleViewer():modal(`<h3>${esc(b.textContent)}</h3><p>Player-safe reference entries will appear here after discovery tracking is built.</p><div class="actions"><button class="btn" data-close>Close</button></div>`));
+  document.querySelectorAll('.ref-open').forEach(b=>b.onclick=()=>noteCategories[b.dataset.ref]?openNotes(b.dataset.ref):b.dataset.ref==='map'?setMapOpen(!mapOpen()):b.dataset.ref==='module'?openModuleViewer():modal(`<h3>${esc(b.textContent)}</h3><p>Player-safe reference entries will appear here after discovery tracking is built.</p><div class="actions"><button class="btn" data-close>Close</button></div>`));
   const toolFrames=[
     {id:'castViewer',url:()=>{
       const params=new URLSearchParams({saveId:state.save?.save.id||'',playerId:state.identity||''});
