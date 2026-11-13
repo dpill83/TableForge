@@ -168,6 +168,15 @@ code never loads it. No provider call is needed to inspect or select instruction
 
 ## Combat runtime contract
 
+Public OOC questions use a separate `ooc` provider request. Its context contains
+published narration, completed public rulings, shared notes and combat reports,
+plus any image attached to that question. It excludes cartridge content, private
+Pilot exchanges, summaries and pending IC declarations. The server-owned prompt
+permits rules explanations and hypothetical attempts, forbids actions, outcomes
+and hidden facts, and cannot invoke runtime narration/combat transitions.
+Completed rulings enter later narration as explicitly hypothetical explanations.
+Private Pilot questions continue through the separate `ask` request.
+
 Public narration requests append server-owned combat instructions without altering the pinned Stage 3 snapshot. The AI-DM calls initiative, stops, and emits `[[TABLEFORGE_COMBAT:START]]` as the exact final line after other metadata. The server strips that signal and atomically enters Combat Mode with the published narration. Prose matching, quoted/code examples, Ask AI-DM, and summary responses cannot activate combat. Combat handoffs omit action choices.
 
 A single reporter submits a required nonblank outcome through the existing generation pipeline. The AI-DM treats it as the combat result, narrates aftermath, and leaves unresolved player decisions open. Context review includes the accepted outcome and the same instructions. Pilot corrections are labeled, saved separately from the original report, included in future context, and acknowledged through the operational conversation without replaying aftermath. Historical skipped outcomes retain their missing-results safeguards for old saves.

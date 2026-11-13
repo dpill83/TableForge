@@ -534,6 +534,15 @@ George: Not Ready     [ Ready ]
 - Send
 - Ready / Unready
 
+Use one rounded container, ordered: + menu, fixed-width IC/OOC selector,
+divider, expanding text field, Send arrow, Ready. The + menu contains attachments
+and emoji. Keep Ready inside the container and all controls reachable on narrow
+screens. Longer drafts grow upward. The selector opens upward with checked
+In Character / Out of Character choices. Default to IC; preserve independent
+text and attachment drafts. OOC uses “Ask the AI-DM in table chat…”. A leading
+`OOC:` visibly selects OOC; a prefix alone cannot send. Successful OOC submission
+returns to IC and restores its draft; failed submissions retain the question for retry.
+
 ## Optional status text
 
 Examples:
@@ -673,7 +682,16 @@ Pilot controls should be visually separated from normal party/reference controls
 
 # 18. Ask AI-DM
 
-Initially, Ask AI-DM is Pilot-only.
+Every player may ask a public OOC question from the main composer, including
+during combat. The question and answer appear together in shared history,
+labeled OOC and attached to the original beat. Questions bypass AUTO, preserve
+Ready and pending IC contributions, and never narrate actions or change combat.
+The AI explains rules and possible attempts using published table information;
+“Could I open the door?” cannot open it or reveal hidden facts. Completed public
+rulings may inform later narration, always as explanations rather than declarations.
+Retries reuse a durable request ID, including after timeouts or restart.
+
+The separate Pilot action is **Ask AI-DM privately**.
 
 The interaction opens or switches to an operational AI-DM console.
 
@@ -691,9 +709,9 @@ This conversation should:
 - not automatically advance the scene
 - be saved in the playthrough
 
-Multiple users with Pilot Mode may view/use the same operational console.
-
-A future version may allow non-Pilot direct AI-DM questions, but this should not be included initially.
+Only the player who asked may view that private conversation and its saved replies.
+Public answers and shared narration never consume private Pilot exchanges.
+Corrections, context adjustment, and regeneration remain Pilot controls.
 
 ---
 
@@ -754,7 +772,10 @@ Do not use confirmation for normal all-Ready auto-advance.
 
 An explicit AI-DM handoff signal or manual Pilot entry activates Combat Mode. Humans run combat; TableForge does not track turns, HP, dice, or tactical mechanics.
 
-The main composer, Send, attachments, and normal Force Advance are disabled. Show “Combat is at the table. Enable Pilot Mode to ask AI-DM a question.” Preserve unsent drafts. Ask AI-DM remains a separate saved conversation visible to Pilot-enabled players.
+IC composing, IC Send/attachments, and normal Force Advance are disabled. Preserve
+unsent IC drafts. Players can switch to OOC to ask public questions and attach
+images. Asking never reports an outcome or resumes combat. Private Ask AI-DM
+remains a separate, saved, player-private conversation in Pilot Mode.
 
 Normal Ready is hidden during combat; there are no Finished votes or counts. Suggested replies are disabled too.
 

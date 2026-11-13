@@ -511,6 +511,7 @@ textarea{padding:10px;resize:none}
 
 /* composer */
 .composer-wrap{
+  position:relative;z-index:12;
   border-top:1px solid var(--border);background:#111419;padding:10px 14px;
 }
 .draft-notice{
@@ -534,10 +535,29 @@ textarea{padding:10px;resize:none}
   max-width:1100px;
   margin:0 auto;
   display:grid;
-  grid-template-columns:44px minmax(0,1fr) 56px max-content;
-  gap:8px;
-  align-items:end;
+  grid-template-columns:40px 64px 1px minmax(0,1fr) 40px max-content;
+  gap:10px;
+  align-items:center;
+  padding:7px 12px;
+  border:1px solid #626974;
+  border-radius:30px;
+  background:#10141a;
 }
+.composer-mode-control{position:relative;align-self:end;margin-bottom:4px}
+#composerMode{width:64px;height:40px;border:0;background:transparent;color:var(--text);cursor:pointer;white-space:nowrap;font-size:16px}
+#composerModeMenu{width:210px;bottom:50px}
+#composerModeMenu button{white-space:nowrap}
+.composer-divider{height:30px;background:#626974;align-self:end;margin-bottom:9px}
+.composer-body .composer-square{height:40px;width:40px;align-self:end;margin-bottom:4px;border:0;border-radius:50%}
+.composer-body .attachment-btn{background:transparent}
+.composer-body .message-box textarea{display:block;padding:12px 4px 10px;border:0;border-radius:0;background:transparent;box-shadow:none}
+.composer-body .message-box textarea:focus{outline:none;border:0;box-shadow:none}
+.composer-body:focus-within{border-color:#86909e}
+.composer-body .send-icon-btn{background:#087bff;color:white}
+.composer-body .ready-btn-large{height:40px;align-self:end;margin-bottom:4px;border-radius:14px}
+.ooc-label{font-size:11px;border:1px solid #859ac1;color:#b9cdf3;border-radius:5px;padding:1px 5px}
+.ooc-answer{margin-top:12px;padding:10px 12px;border-left:2px solid #859ac1;background:rgba(100,130,180,.06)}
+.ooc-answer>strong{font-size:13px;color:#b9cdf3}
 .composer-square{
   height:48px;
   border:1px solid var(--border2);
@@ -789,15 +809,19 @@ textarea{padding:10px;resize:none}
   .sidebar{position:fixed;top:58px;bottom:0;width:260px;z-index:10;box-shadow:var(--shadow)}
   .sidebar.left{left:0}.sidebar.right{right:0}
   .sidebar.collapsed{display:none}
-  .composer-body{grid-template-columns:42px minmax(0,1fr) 52px max-content}
+  .composer-body{gap:7px}
 }
 @media(max-width:620px){
   .app-version,.top-title{display:none}
   .top-search{width:130px}
   .grid{grid-template-columns:1fr}
   .player-row{grid-template-columns:1fr}
-  .composer-body{grid-template-columns:40px minmax(0,1fr) 48px}
-  .ready-btn-large{grid-column:1/-1}
+  .composer-wrap{padding:8px}
+  .composer-body{grid-template-columns:30px 54px 1px minmax(20px,1fr) 32px max-content;gap:4px;padding:5px 7px;border-radius:24px}
+  .composer-body .composer-square{width:30px;height:36px}
+  #composerMode{width:54px;font-size:14px}
+  .composer-body .ready-btn-large{padding:0 7px;gap:4px;font-size:12px}
+  .composer-body .ready-check{display:none}
   .topbar .mode-pill{display:none}
 }
 

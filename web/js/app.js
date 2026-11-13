@@ -3,7 +3,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const avatar = (player, className, fallback) => `<div class="${className}">${esc(fallback ?? player?.character?.[0] ?? '?')}${player?.portraitUrl?`<img src="${esc(player.portraitUrl)}" alt="">`:''}</div>`;
   const screens = [...document.querySelectorAll('.screen')];
-  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, draft:null, pendingImage:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0};
+  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, draft:null, pendingImage:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0,composerMode:'ic',publicSending:false};
   const combatPending=()=>state.save?.save.mode==='combat'||!!(state.save?.combat&&state.save.combat.phase!=='complete');
   const combatTokenKey=()=>`tableforge-combat-editor:${state.save?.save.id}:${state.save?.combat?.id}`;
   const combatToken=()=>sessionStorage.getItem(combatTokenKey());
@@ -458,11 +458,14 @@
     }
   };
   const addChoiceToDraft=(messageId,playerId,letter)=>{
+    if(state.publicSending)return;
     const message=state.save?.messages.find(item=>item.id===messageId);
     if(!TableForgeMessageActions.canChoose(state,message,draftStale()))return;
     const group=TableForgeMessageActions.groupsFor(message.choices,state.identity).find(item=>item.playerId===playerId);
     const option=group?.options.find(item=>item.letter===letter);
     if(!option)return;
+    if(state.composerMode==='ooc')switchComposerMode('ic');
+    if(draftStale())return;
     const composer=$('composer'),text=TableForgeMessageActions.appendText(composer.value,option.text);
     if(text.length>20000){notify(Error('This choice would exceed the 20,000-character message limit.'));return;}
     composer.value=text;
@@ -498,7 +501,7 @@
     if(s.imageUsage) $('usageSummary').insertAdjacentHTML('beforeend',`<div class="image-usage"><strong>Scene images (separate)</strong><div>Session: ${esc(imageUsageLine(s.imageUsage.session))}</div><div>Playthrough: ${esc(imageUsageLine(s.imageUsage.save))}</div></div>`);
     $('illustrateScene').disabled=!state.identity||!s.messages.some(m=>m.kind==='ai');
     // Rebuild the feed only when its content changes, so Ready/typing updates keep the reading position.
-    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,s.messages.map(m=>[m.id,m.body.length,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl]),s.events.filter(e=>['combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind))]);
+    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,s.messages.map(m=>[m.id,m.body.length,m.ooc,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl]),s.events.filter(e=>['combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind))]);
     const feedChanged=feedKey!==state.feedKey,sameSave=state.feedSaveId===s.save.id,previousIds=new Set(state.feedKey?[...$('feedInner').children].map(el=>el.id):[]);
     const followLatest=state.followLatest!==false;
     if(feedChanged){
@@ -527,6 +530,23 @@
       row.innerHTML=`${avatar(s.players.find(p=>p.id===m.player_id),'avatar',m.kind==='ai'?'AI':m.name[0])}<div><div class="message-head"><strong>${esc(m.name)}</strong><span class="time">${new Date(m.created_at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</span></div><div class="message-body"></div><div class="message-actions"><button class="copy-message" type="button" title="Copy message" aria-label="Copy message">${TableForgeMessageActions.copyIcon}</button></div></div>`;
       row.querySelector('.message-body').innerHTML=TableForgeMarkdown.render(m.body);
       row.querySelector('.message-body').classList.add('markdown-body');
+      if(m.ooc){
+        row.classList.add('ooc-exchange');
+        const label=document.createElement('span');label.className='ooc-label';label.textContent='OOC';
+        row.querySelector('.message-head').prepend(label);
+        const answer=document.createElement('div');answer.className='ooc-answer';
+        const heading=document.createElement('strong');heading.textContent='AI-DM · OOC';answer.append(heading);
+        const body=document.createElement('div');body.className='markdown-body';
+        if(m.ooc.status==='complete')body.innerHTML=TableForgeMarkdown.render(m.ooc.answer);
+        else body.textContent=m.ooc.status==='pending'?'Answering…':m.ooc.error;
+        answer.append(body);
+        if(m.ooc.status==='failed'&&m.player_id===state.identity){
+          const retry=document.createElement('button');retry.className='btn small';retry.textContent='Retry question';
+          retry.onclick=async()=>{retry.disabled=true;try{await request(`saves/${s.save.id}/public-question`,{playerId:state.identity,requestId:m.ooc.id});await refreshPublicQuestions(s.save.id);}catch(error){notify(error);}finally{retry.disabled=false;}};
+          answer.append(retry);
+        }
+        row.querySelector('.message-body').after(answer);
+      }
       row.id='message-'+m.id;
       const choices=m.kind==='ai'?TableForgeMessageActions.groupsFor(m.choices,state.identity):[];
       for(const group of choices){
@@ -601,10 +621,19 @@
     const locked=combatPending(),combatMode=s.save.mode==='combat',busy=state.generating||state.updating||!!s.activity?.aiDm;
     $('readyBtn').disabled=!current||busy||locked;
     $('readyBtn').classList.toggle('hidden',locked);
-    $('sendBtn').disabled=!current||busy||locked;
-    $('composer').disabled=!current||busy||locked;
+    const ooc=state.composerMode==='ooc';
+    $('sendBtn').disabled=!current||(ooc?state.publicSending:busy||locked);
+    $('composer').disabled=!current||(ooc?state.publicSending:busy||locked);
     $('emojiBtn').disabled=$('composer').disabled;
-    $('attachmentBtn').disabled=!current||busy||locked;
+    $('attachmentBtn').disabled=$('composer').disabled;
+    $('composerMode').disabled=state.publicSending;
+    $('composerMode').textContent=ooc?'OOC ▾':'IC ▾';
+    $('composerMode').setAttribute('aria-label',`Message mode: ${ooc?'Out of Character':'In Character'}`);
+    $('modeIC').textContent=ooc?'In Character':'✓ In Character';
+    $('modeOOC').textContent=ooc?'✓ Out of Character':'Out of Character';
+    $('modeIC').setAttribute('aria-checked',String(!ooc));
+    $('modeOOC').setAttribute('aria-checked',String(ooc));
+    $('composer').placeholder=ooc?'Ask the AI-DM in table chat…':'Message #table...';
     if($('attachmentBtn').disabled)$('attachmentMenu').classList.add('hidden');
     const readyLabel=current?.ready?'Unready':'Ready';
     $('readyBtn').querySelector('.ready-label').textContent=readyLabel;
@@ -638,14 +667,14 @@
   };
   // A draft belongs to the beat it was started in. If the table moves on, keep the
   // text but hold it until the player confirms it still fits the new beat.
-  const draftStale=()=>!!state.draft&&!!state.save&&(state.draft.saveId!==state.save.save.id||state.draft.beat!==state.save.save.beat);
+  const draftStale=()=>state.composerMode!=='ooc'&&!!state.draft&&!!state.save&&(state.draft.saveId!==state.save.save.id||state.draft.beat!==state.save.save.beat);
   const pendingContribution=()=>!!$('composer').value.trim()||!!state.pendingImage;
   const renderPending=()=>{
     const tray=$('attachmentTray'),pending=state.pendingImage;
     tray.classList.toggle('hidden',!pending);
     if(!pending){tray.replaceChildren();return;}
     tray.innerHTML=`<div class="attachment-chip"><span>${esc(pending.name)}</span><button type="button" id="removeAttachment" aria-label="Remove attachment">×</button></div>`;
-    $('removeAttachment').onclick=()=>{state.pendingImage=null;renderPending();syncDraft();};
+    $('removeAttachment').onclick=()=>{state.pendingImage=null;if(state.draft)state.draft.requestId=null;renderPending();syncDraft();};
   };
   const clearPendingImage=()=>{state.pendingImage=null;renderPending();};
   const syncDraft=()=>{
@@ -656,33 +685,67 @@
   };
   // Drafts survive a refresh in this browser, keyed by save and player. The stored beat
   // keeps the review requirement: a draft from an earlier beat comes back held for review.
-  const draftKey=()=>state.save&&state.identity?`tableforge-draft:${state.save.save.id}:${state.identity}`:null;
+  const draftKey=()=>state.save&&state.identity?`tableforge-draft:${state.save.save.id}:${state.identity}${state.composerMode==='ooc'?':ooc':''}`:null;
+  const draftCache=new Map();
   const storeDraft=()=>{
     const key=draftKey();if(!key)return;
+    const saved=state.draft&&state.draft.saveId===state.save.save.id&&pendingContribution()
+      ?{text:$('composer').value,image:state.pendingImage,beat:state.draft.beat,requestId:state.draft.requestId}:null;
+    draftCache.set(key,saved);
     try{
-      if(state.draft&&state.draft.saveId===state.save.save.id&&$('composer').value.trim())
-        localStorage.setItem(key,JSON.stringify({text:$('composer').value,beat:state.draft.beat,requestId:state.draft.requestId}));
+      if(saved)
+        localStorage.setItem(key,JSON.stringify(saved));
       else localStorage.removeItem(key);
     }catch(error){console.error(error);}
   };
-  const restoreDraft=()=>{
+  const restoreDraft=(modeOnly=false)=>{
+    if(!modeOnly)state.composerMode='ic';
     const key=draftKey();if(!key)return;
     let saved=null;
-    try{saved=JSON.parse(localStorage.getItem(key)||'null');}catch(error){console.error(error);}
+    try{saved=draftCache.has(key)?draftCache.get(key):JSON.parse(localStorage.getItem(key)||'null');}catch(error){console.error(error);}
     // A send whose reply was lost may have landed; the save is the record of what was sent.
     if(saved?.requestId&&state.save.messages.some(m=>m.request_id===saved.requestId)) saved=null;
-    const usable=saved&&typeof saved.text==='string'&&saved.text.trim()&&Number.isInteger(saved.beat);
+    const usable=saved&&typeof saved.text==='string'&&(saved.text.trim()||saved.image)&&Number.isInteger(saved.beat);
     $('composer').value=usable?saved.text:'';
     state.draft=usable?{saveId:state.save.save.id,beat:saved.beat,requestId:saved.requestId||null}:null;
-    clearPendingImage();
+    state.pendingImage=usable?saved.image||null:null;renderPending();
     storeDraft();resize();renderDraft();
   };
   const clearDraft=()=>{$('composer').value='';state.draft=null;clearPendingImage();storeDraft();resize();renderDraft();};
+  const switchComposerMode=mode=>{
+    if(state.publicSending||mode===state.composerMode)return;
+    storeDraft();state.composerMode=mode;restoreDraft(true);render();$('composer').focus();
+  };
+  const refreshPublicQuestions=async saveId=>{
+    const next=await request('saves/'+saveId);
+    if(state.save?.save.id===saveId){state.save=next;render();}
+  };
+  const sendPublicQuestion=async()=>{
+    const body=$('composer').value.replace(/^\s*OOC:\s*/i,'').trim();
+    if(!body||state.publicSending)return;
+    syncDraft();state.draft.requestId||=newRequestId();storeDraft();
+    const saveId=state.save.save.id,playerId=state.identity,requestId=state.draft.requestId;
+    const payload={playerId,requestId,text:body};
+    if(state.pendingImage)payload.image={mime:state.pendingImage.mime,data:state.pendingImage.data};
+    state.publicSending=true;render();
+    let sent=false;
+    try{await request(`saves/${saveId}/public-question`,payload);sent=true;}
+    catch(error){notify(error);}
+    finally{
+      state.publicSending=false;
+      if(state.save?.save.id===saveId&&state.identity===playerId){
+        if(sent&&state.draft?.requestId===requestId){clearDraft();switchComposerMode('ic');}
+        render();
+        refreshPublicQuestions(saveId).catch(console.error);
+      }
+    }
+  };
   const renderDraft=()=>{
     const stale=draftStale();
     $('draftNotice').classList.toggle('hidden',!stale);
     $('keepDraft').disabled=combatPending();
     $('composerWrap').classList.toggle('draft-stale',stale);
+    if(state.composerMode==='ooc')$('sendBtn').disabled=!state.identity||state.publicSending||!$('composer').value.replace(/^\s*OOC:\s*/i,'').trim();
     refreshChoiceButtons();
   };
   $('keepDraft').onclick=()=>{if(combatPending())return;state.draft=null;syncDraft();$('composer').focus();};  const advanceTable = async (extra={}) => {
@@ -700,6 +763,7 @@
   $('feed').addEventListener('scroll',()=>{state.followLatest=feedAtBottom();if(state.followLatest)$('jumpLatest').classList.add('hidden');},{passive:true});
   $('jumpLatest').onclick=()=>$('feed').scrollTo({top:$('feed').scrollHeight,behavior:'smooth'});
   $('sendBtn').onclick=async()=>{
+    if(state.composerMode==='ooc'){if(!$('sendBtn').disabled)await sendPublicQuestion();return;}
     if(combatPending()||$('sendBtn').disabled)return;
     const field=$('composer'),body=field.value.trim(),image=state.pendingImage;if(!body&&!image)return;
     syncDraft();
@@ -937,20 +1001,35 @@
   const field=$('composer');
   function resize(){field.style.height='auto';field.style.height=(field.value?Math.min(Math.max(field.scrollHeight,48),184):48)+'px';field.style.overflowY=field.scrollHeight>184?'auto':'hidden';}
   // Editing makes it a different contribution, so a later send gets a fresh request ID.
-  field.addEventListener('input',()=>{if(state.draft)state.draft.requestId=null;resize();syncDraft();});
+  field.addEventListener('input',()=>{
+    if(state.composerMode!=='ooc'&&/^\s*OOC:/i.test(field.value)){
+      const text=field.value.replace(/^\s*OOC:\s*/i,''),image=state.pendingImage;
+      clearDraft();switchComposerMode('ooc');field.value=text;state.pendingImage=image;state.draft=null;renderPending();
+    }
+    if(state.draft)state.draft.requestId=null;resize();syncDraft();
+  });
   // Heartbeat while composing; the server forgets a typist after a few quiet seconds.
   let typingSentAt=0;
   const sendTyping=typing=>{if(!state.save||!state.identity)return;typingSentAt=typing?Date.now():0;request('saves/'+state.save.save.id+'/typing',{playerId:state.identity,typing}).catch(()=>{});};
-  field.addEventListener('input',()=>{const typing=!!field.value.trim();if(typing&&Date.now()-typingSentAt>2500)sendTyping(true);else if(!typing&&typingSentAt)sendTyping(false);});
+  field.addEventListener('input',()=>{if(state.composerMode==='ooc')return;const typing=!!field.value.trim();if(typing&&Date.now()-typingSentAt>2500)sendTyping(true);else if(!typing&&typingSentAt)sendTyping(false);});
   const sendOnEnter=event=>{
     if(event.key!=='Enter'||event.shiftKey||event.isComposing)return;
     event.preventDefault();
-    if(event.repeat||combatPending())return;
+    if(event.repeat||(combatPending()&&state.composerMode!=='ooc'))return;
     field.focus();
     $('sendBtn').click();
   };
   field.addEventListener('keydown',sendOnEnter);
-  $('emojiBtn').onclick=()=>{field.value+=' 🙂';resize();field.focus();};
+  $('emojiBtn').onclick=()=>{$('attachmentMenu').classList.add('hidden');field.value+=' 🙂';field.dispatchEvent(new Event('input',{bubbles:true}));field.focus();};
+  const closeModeMenu=()=>{$('composerModeMenu').classList.add('hidden');$('composerMode').setAttribute('aria-expanded','false');};
+  $('composerMode').onclick=event=>{event.stopPropagation();const open=$('composerModeMenu').classList.contains('hidden');$('composerModeMenu').classList.toggle('hidden',!open);$('composerMode').setAttribute('aria-expanded',String(open));if(open)$(state.composerMode==='ooc'?'modeOOC':'modeIC').focus();};
+  $('modeIC').onclick=()=>{closeModeMenu();switchComposerMode('ic');};
+  $('modeOOC').onclick=()=>{closeModeMenu();switchComposerMode('ooc');};
+  $('composerModeMenu').addEventListener('keydown',event=>{
+    if(event.key==='Escape'){closeModeMenu();$('composerMode').focus();}
+    if(['ArrowUp','ArrowDown','Home','End'].includes(event.key)){event.preventDefault();$(document.activeElement===$('modeIC')?'modeOOC':'modeIC').focus();}
+  });
+  document.addEventListener('click',closeModeMenu);
   $('attachmentBtn').onclick=event=>{
     event.stopPropagation();
     if($('attachmentBtn').disabled)return;
@@ -974,6 +1053,7 @@
     }
     try{
       state.pendingImage={name:file.name,mime:file.type,data:await bytes64(file)};
+      if(state.draft)state.draft.requestId=null;
       renderPending();
       syncDraft();
     }catch(error){notify(error);}
@@ -1262,7 +1342,7 @@
   },2500);
   $('askAi').onclick=()=>{
     if(!state.pilot||!state.save||!state.identity)return;
-    modal('<h3>Ask AI-DM</h3><p>Your questions and replies are private to your selected player profile and saved separately from table chat. Asking does not change Ready or advance the table.</p><div id="pilotThread" class="pilot-chat-log" role="log" aria-label="Your private AI-DM conversation"></div><div id="askHistoryError" class="muted" role="status"></div><div id="pilotAskStatus" class="muted" role="status" aria-live="polite"></div><label>Question<textarea id="pilotAsk" rows="4" maxlength="20000" placeholder="Ask the AI-DM a question"></textarea></label><div class="actions"><button class="btn" data-close>Close</button><button class="btn primary" id="pilotSend">Send question</button></div>');
+    modal('<h3>Ask AI-DM privately</h3><p>Your questions and replies are private to your selected player profile and saved separately from table chat. Asking does not change Ready or advance the table.</p><div id="pilotThread" class="pilot-chat-log" role="log" aria-label="Your private AI-DM conversation"></div><div id="askHistoryError" class="muted" role="status"></div><div id="pilotAskStatus" class="muted" role="status" aria-live="polite"></div><label>Question<textarea id="pilotAsk" rows="4" maxlength="20000" placeholder="Ask the AI-DM a question"></textarea></label><div class="actions"><button class="btn" data-close>Close</button><button class="btn primary" id="pilotSend">Send question</button></div>');
     const dialog=askDialog={saveId:state.save.save.id,playerId:state.identity,thread:$('pilotThread'),messages:[],loaded:false,loading:false,revision:0};
     fillPilotThread();renderActivity();
     const field=$('pilotAsk');
