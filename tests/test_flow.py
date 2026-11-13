@@ -846,11 +846,12 @@ Flyman block.
         self.assertEqual(combat['events'][-1]['kind'], 'combat_started')
         self.assertIn('Record a combat outcome', self.api_error(f'/api/saves/{save_id}/mode',
             {'mode': 'normal'})['error'])
-        for player in combat['players']:
-            self.api(f'/api/saves/{save_id}/ready', {'playerId': player['id'], 'ready': True,
-                                                  'handoffId': combat['combat']['id']})
+        combat = self.api(f'/api/saves/{save_id}/combat-report', {
+            'playerId': player_id, 'handoffId': combat['combat']['id'], 'action': 'claim',
+            'revision': 0, 'editorToken': 'integration-editor'})
         payload = {'playerId': player_id, 'handoffId': combat['combat']['id'],
-                   'requestId': str(uuid.uuid4())}
+                   'requestId': str(uuid.uuid4()), 'revision': combat['combat']['revision'],
+                   'editorToken': 'integration-editor'}
         self.assertIn('Combat outcome', self.api_error(f'/api/saves/{save_id}/combat-outcome',
             {**payload, 'text': '  '})['error'])
         result = self.api(f'/api/saves/{save_id}/combat-outcome',

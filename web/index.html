@@ -239,7 +239,7 @@
             <button class="btn warn" id="readyOverride">Ready Override</button>
             <button class="btn" id="pilotMap">GM Map</button>
             <button class="btn" id="combatToggle">Enter Combat Mode</button>
-            <button class="btn good hidden" id="resumeCombat">Resume AI-DM</button>
+            <button class="btn hidden" id="correctCombat">Correct combat outcome</button>
             <button class="btn" id="endSession">End Session</button>
           </div>
         </div>
@@ -250,7 +250,8 @@
       <div id="tableStatus" class="sr-only" aria-live="polite">Waiting for table · 0 of 3 Ready</div>
       <div id="combatStatus" class="draft-notice hidden" role="status">
         <span id="combatExplanation"></span>
-        <button class="btn small" id="combatOutcomeOpen" type="button">Combat Outcome</button>
+        <button class="btn small" id="combatOutcomeOpen" type="button">Report combat outcome</button>
+        <button class="btn small hidden" id="combatTakeover" type="button">Take over outcome</button>
         <button class="btn small warn hidden" id="combatRetry" type="button">Retry aftermath</button>
       </div>
       <div id="attachmentTray" class="attachment-tray hidden"></div>

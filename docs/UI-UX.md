@@ -756,17 +756,23 @@ An explicit AI-DM handoff signal or manual Pilot entry activates Combat Mode. Hu
 
 The main composer, Send, attachments, and normal Force Advance are disabled. Show “Combat is at the table. Enable Pilot Mode to ask AI-DM a question.” Preserve unsent drafts. Ask AI-DM remains a separate saved conversation visible to Pilot-enabled players.
 
-Ready becomes Combat Finished / Undo Finished, initially Not Finished for everyone. Display individual states and a count such as “2 of 3 finished.” Suspend auto-ready without removing its normal-play preference.
+Normal Ready is hidden during combat; there are no Finished votes or counts. Suggested replies are disabled too.
 
 ---
 
-# 22. Resume AI-DM
+# 22. Report Combat Outcome
 
-All Finished opens one dismissible optional outcome dialog per client. Defer it when another dialog is open. Closing it leaves combat unchanged; Combat Outcome reopens it. Each player has a local report draft, not live collaborative editing.
+Any player may click **Report combat outcome**; the first accepted claim assigns one reporter. No Finished votes, count, or Pilot waiting override is used. Everyone else sees “[Name] is recording the combat outcome” and may **Take over outcome**.
 
-Anyone may choose Send outcome & Resume AI-DM or Skip & Resume AI-DM. Undo Finished disables ordinary submission until everyone finishes again. Pilot Resume AI-DM opens the same dialog with an explicit waiting override.
+Only the reporter can edit or submit. The form asks “How did the fight end, and what’s still unresolved?” Its encounter-specific draft autosaves to the server and displays Unsaved changes, Saving, Saved, or a save error. The assignment and saved text survive refresh and restart. Each new encounter starts blank.
 
-Only the first submission is accepted. Other clients close their outcome dialogs when acceptance arrives. Display the attributed report or skip in shared history. Keep the composer paused during aftermath generation and after failures; expose Retry aftermath to any player. Restore normal controls and reset readiness after publication. Require review of preserved drafts before sending.
+**Close**, Escape, and clicking outside hide the form while reporting remains active. The reporter can **Reopen outcome**. **Return to combat** releases reporting for everyone, preserves the draft, and restores Report combat outcome. Takeover transfers the saved draft, even if the reporter disconnects. Encounter identity, an editor token, and a draft revision reject stale saves, old tabs, and submissions for another encounter.
+
+**Send outcome & Continue** requires nonblank text and submits the latest text in the box. There is no Skip action. The AI-DM treats the report as the result and leaves unresolved player decisions open. The report is durably attributed before generation. Everyone sees generation status; chat stays locked until the aftermath is saved and received by that client. Duplicate submissions/retries publish only one aftermath.
+
+Failures, startup recovery of interrupted narration, and a 180-second generation deadline preserve the accepted outcome and expose **Retry aftermath** to any player. A timed-out worker cannot publish a late response. Normal readiness resets after successful publication; preserved composer drafts require review.
+
+Afterward, Pilot Mode offers **Correct combat outcome**. It appends a labeled correction to shared history and future AI context, sends it through the separate operational conversation, and preserves the original report and aftermath. It does not advance the beat or replay aftermath. If acknowledgment fails, the correction remains saved.
 
 ---
 

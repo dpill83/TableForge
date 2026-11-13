@@ -43,6 +43,12 @@ def initialize(conn, stamp):
         );
         CREATE INDEX IF NOT EXISTS combat_save ON combat_handoffs(save_id,created_at);
     ''')
+    columns = {row['name'] for row in conn.execute('PRAGMA table_info(combat_handoffs)')}
+    for name, spec in {'reporter_id': 'TEXT', 'editor_token': 'TEXT',
+                       'draft': "TEXT NOT NULL DEFAULT ''", 'revision': 'INTEGER NOT NULL DEFAULT 0'}.items():
+        if name not in columns:
+            conn.execute(f'ALTER TABLE combat_handoffs ADD COLUMN {name} {spec}')
+    conn.execute("UPDATE combat_handoffs SET phase='fighting' WHERE phase='outcome_pending'")
     # initialize is called at startup or after a guarded restore, never mid-request.
     recovering = [row['save_id'] for row in conn.execute("SELECT save_id FROM combat_handoffs WHERE phase='resuming'")]
     conn.execute("UPDATE combat_handoffs SET phase='failed' WHERE phase='resuming'")
@@ -70,12 +76,45 @@ def pending(handoff):
 
 
 def sync_ready(conn, save_id):
+    # Ready is only for ordinary play. Reporting is explicitly claimed.
+    return
+
+
+def require_editor(handoff, payload):
+    if (handoff['phase'] != 'reporting' or handoff['reporter_id'] != payload.get('playerId')
+            or not payload.get('editorToken') or handoff['editor_token'] != payload['editorToken']):
+        raise ValueError('Outcome ownership changed; reopen or take over the saved draft')
+    if payload.get('revision') != handoff['revision']:
+        raise ValueError('Outcome draft changed; reopen the saved draft before editing')
+
+
+def edit(conn, save_id, payload):
     handoff = current(conn, save_id)
-    if not handoff or handoff['phase'] not in ('fighting', 'outcome_pending'):
-        return
-    players = conn.execute('SELECT ready FROM players WHERE save_id=?', (save_id,)).fetchall()
-    phase = 'outcome_pending' if players and all(p['ready'] for p in players) else 'fighting'
-    conn.execute('UPDATE combat_handoffs SET phase=? WHERE id=?', (phase, handoff['id']))
+    if not handoff or handoff['id'] != payload.get('handoffId'):
+        raise ValueError('This combat handoff is no longer current')
+    action = payload.get('action')
+    if action in ('claim', 'takeover'):
+        if handoff['phase'] not in ('fighting', 'reporting'):
+            raise ValueError('The combat outcome has already been submitted')
+        if action == 'claim' and handoff['phase'] == 'reporting':
+            raise ValueError('Someone is already recording the combat outcome')
+        if payload.get('revision') != handoff['revision']:
+            raise ValueError('Outcome ownership changed; refresh before taking over')
+        token = str(payload.get('editorToken') or '')
+        if not token or len(token) > 100:
+            raise ValueError('An editor token is required')
+        conn.execute("UPDATE combat_handoffs SET phase='reporting',reporter_id=?,editor_token=?,revision=revision+1 WHERE id=?",
+                     (payload['playerId'], token, handoff['id']))
+    elif action in ('draft', 'return'):
+        require_editor(handoff, payload)
+        text = str(payload.get('text') or '')
+        if len(text) > 20000:
+            raise ValueError('Combat outcome must be at most 20,000 characters')
+        conn.execute('UPDATE combat_handoffs SET draft=?,revision=revision+1 WHERE id=?', (text, handoff['id']))
+        if action == 'return':
+            conn.execute("UPDATE combat_handoffs SET phase='fighting',reporter_id=NULL,editor_token=NULL WHERE id=?", (handoff['id'],))
+    else:
+        raise ValueError('Unknown combat reporting action')
 
 
 def start(conn, save_id, session_id, player_id, stamp):

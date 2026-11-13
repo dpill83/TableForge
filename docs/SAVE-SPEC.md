@@ -702,9 +702,15 @@ Do not require players to manage these manually during ordinary play.
 
 TableForge does not need to store every combat turn.
 
-It preserves meaningful outcomes reported back to the AI-DM as append-only combat_outcome events; combat_skipped and combat_override events record intentional skips and Pilot overrides. These events appear in shared history without being duplicated as player contributions.
+Reports are append-only combat_outcome events. Later Pilot corrections are append-only combat_correction events, also included in public history and future AI context. Historical combat_skipped/combat_override events remain readable; new combats cannot skip outcomes or override readiness.
 
-SQLite combat_handoffs records associate each handoff with its save/session, phase (fighting, outcome_pending, resuming, failed, complete), accepted report or skip, submitting player, request identity, override flag, and resulting narration ID. Save snapshots expose the latest handoff as combat. The combat-outcome endpoint accepts handoffId, requestId, playerId, text or skip, and optional pilot/override flags. combat-retry accepts handoffId and playerId. Both use the existing generation pipeline. Ready requests in Combat Mode also carry handoffId, preventing delayed exploration or earlier-combat Ready requests from marking a new combat finished. Startup recovers interrupted narration to failed and migrates existing combat saves to fighting without changing transcript or events.
+SQLite combat_handoffs associates an encounter with its save/session, phase (fighting, reporting, resuming, failed, complete), reporter_id, editor_token, server draft, revision, accepted outcome, submitting player, request identity, and resulting narration ID. Legacy skipped/override columns remain for compatibility. Migration converts old outcome_pending records to fighting, preserves reports/events, and recovers interrupted resuming records to failed.
+
+POST combat-report accepts handoffId, playerId, editorToken, revision, action (claim, takeover, draft, return), and text for draft/return. Claims and takeovers increment revision atomically. Draft/return and combat-outcome require current reporter ownership plus the expected revision. A return clears ownership and preserves text. POST combat-outcome also takes requestId and the latest nonblank text; it saves that exact report before generation. POST combat-retry accepts handoffId and any valid playerId, uses the accepted outcome, and is harmless while already running or complete. Ready is rejected during combat.
+
+POST combat-correction requires a completed handoffId, playerId, pilot=true, and nonblank text. It preserves the original report, saves a labeled public correction, and sends it through the operational AI conversation. Corrections survive acknowledgment failure and do not change the public beat.
+
+Mode remains combat until successful aftermath publication. Accepted report/completion identities prevent duplicate aftermath publication; the generation deadline and startup recovery leave failed requests retryable.
 
 Possible data:
 

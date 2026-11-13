@@ -479,11 +479,12 @@ Keep combat human-controlled while preserving AI-DM support.
 
 - [ ] detect or manually trigger combat handoff
 - [ ] pause normal Ready auto-advance
-- [ ] Combat Finished / Undo Finished with reset states
+- [x] single reporter claim without Finished votes
 - [ ] keep Pilot Ask AI-DM available
 - [ ] allow rulings/tactics/monster-motivation questions
-- [ ] collect optional combat outcome
-- [ ] all Finished optional outcome dialog, with Pilot waiting override
+- [x] autosave the encounter draft and require a nonblank outcome
+- [x] Close/reopen, Return to combat, and multiplayer takeover
+- [x] failed/stalled aftermath retry and separate Pilot outcome correction
 - [ ] resume normal Ready loop after narration
 
 ### Do not build by default

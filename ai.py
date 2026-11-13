@@ -228,6 +228,7 @@ def build_context(state, data_dir, purpose='advance'):
         'transcript': transcript,
         'summaryAvailable': len(summary_range(state['messages'], summary)),
     }
+    context['combatCorrections'] = [e['body'] for e in state.get('events', []) if e['kind'] == 'combat_correction']
     handoff = state.get('combat')
     if handoff and handoff['phase'] in ('resuming', 'failed'):
         context['combatResume'] = {key: handoff[key] for key in ('id', 'outcome', 'skipped')}
@@ -325,6 +326,8 @@ def chat_messages(context):
     outcomes = context.get('combatOutcomes') or []
     if outcomes:
         system += '\n\nRecorded combat outcomes:\n' + '\n'.join('- ' + item['body'] for item in outcomes)
+    if context.get('combatCorrections'):
+        system += '\n\nCombat outcome corrections (apply these over earlier reports; do not replay aftermath):\n' + '\n'.join(context['combatCorrections'])
     resume = context.get('combatResume')
     if resume:
         system += '\n\nCombat has ended. Narrate its aftermath without running combat turns.'
@@ -332,7 +335,9 @@ def chat_messages(context):
             system += (' No outcome was supplied. Use only recorded facts; do not invent deaths, damage, '
                        'victory, defeat, loot, or other combat results. Ask for necessary missing results.')
         else:
-            system += '\nAccepted outcome for this combat:\n' + resume['outcome']
+            system += ('\nTreat this report as the combat result. Leave unresolved player choices open; '
+                       'do not invent decisions, searches, loot collection, or next actions.\n'
+                       'Accepted outcome for this combat:\n' + resume['outcome'])
     if context.get('openingStage'):
         system += opening_flow.instructions(context['openingStage'], first=context.get('opening', False),
                                             has_player_input=context.get('openingHasPlayerInput', False))
@@ -375,6 +380,8 @@ def ask_chat_messages(context):
     system = ASK_PROMPT + f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
     system += optional_resource_text(context)
     system += summary_text(context)
+    if context.get('combatCorrections'):
+        system += '\n\nRecorded combat corrections:\n' + '\n'.join(context['combatCorrections'])
     table = context.get('messages') or []
     if table:
         system += '\n\nRecent table transcript (background only):\n' + '\n'.join(

@@ -145,12 +145,12 @@ test('stale or disabled drafts cannot send or become Ready through composer Ente
   }
 });
 
-test('combat Enter still marks Finished and preserves the unsent action',async()=>{
+test('combat Enter preserves the unsent action without marking Ready',async()=>{
   const t=table();t.choose('A');t.state.save.save.mode='combat';t.state.save.combat={id:'combat',phase:'fighting'};
   await t.press(t.readyButton);
-  assert.equal(t.requests[0].action,'ready');assert.equal(t.requests[0].payload.handoffId,'combat');
+  assert.equal(t.requests.length,0);
   assert.equal(t.field.value,'I help the crew.');
-  await t.press(t.field);assert.equal(t.requests.length,1);
+  await t.press(t.field);assert.equal(t.requests.length,0);
 });
 
 test('AUTO send marks Ready and advances only when everyone is Ready',async()=>{
