@@ -973,7 +973,8 @@ def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=
     if opening_stage in opening_flow.GUIDANCE:
         first = (state['save']['beat'] == 1 and not any(
             message['kind'] == 'ai' for message in state['messages']))
-        _, contributed = ai.split_beat(state['messages'])
+        # Hypothetical OOC questions cannot authorize travel or site entry.
+        _, contributed = ai.split_beat([m for m in state['messages'] if m['kind'] != 'ooc'])
         adventure = adventure_for(state)
         text, next_opening_stage = opening_flow.prepare(
             text, opening_stage, first=first,

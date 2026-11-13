@@ -151,6 +151,38 @@ class PublicQuestionsTest(unittest.TestCase):
             self.api(f'/api/saves/{sid}/public-question', {'playerId': pid, 'requestId': question['ooc']['id']})
             self.wait(sid)
 
+    def test_ooc_cannot_authorize_opening_transitions_but_ic_can(self):
+        for stage, next_stage, declaration, expected_error in (
+                ('decision', 'travel', 'We accept the job and set out.', 'No player accepted'),
+                ('arrival', 'exploration', 'I enter the site.', 'No player entered')):
+            with self.subTest(stage=stage):
+                sid = self.ready_save()
+                with patch('ai.current_provider', return_value=test_flow.FakeProvider('The party waits.')):
+                    self.api(f'/api/saves/{sid}/advance', {})
+                with server.db() as conn:
+                    conn.execute('UPDATE saves SET opening_stage=? WHERE id=?', (stage, sid))
+                state = self.api(f'/api/saves/{sid}')
+                pid = state['players'][0]['id']
+                for player in state['players']:
+                    self.api(f'/api/saves/{sid}/ready', {'playerId': player['id'], 'ready': True})
+                with patch('ai.current_provider', return_value=test_flow.FakeProvider('Explain the attempt only.')):
+                    self.question(sid, pid, 'Could we go inside?')
+                    before = self.wait(sid)
+                candidate = 'The party proceeds.\n[Opening: ' + next_stage + ']'
+                with patch('ai.current_provider', return_value=test_flow.FakeProvider(candidate)):
+                    error = self.api_error(f'/api/saves/{sid}/advance', {})
+                self.assertIn(expected_error, error['error'])
+                after = self.api(f'/api/saves/{sid}')
+                self.assertEqual(after['messages'], before['messages'])
+                self.assertEqual(after['players'], before['players'])
+                self.assertEqual(after['save']['beat'], before['save']['beat'])
+                self.assertEqual(after['save']['opening_stage'], stage)
+                # Real IC intent still authorizes the same transition with OOC in history.
+                self.api(f'/api/saves/{sid}/messages', {'playerId': pid, 'text': declaration})
+                with patch('ai.current_provider', return_value=test_flow.FakeProvider(candidate)):
+                    accepted = self.api(f'/api/saves/{sid}/advance', {})
+                self.assertEqual(accepted['save']['opening_stage'], next_stage)
+
     def test_attachment_retry_and_public_snapshot(self):
         sid = self.ready_save()
         pid = self.api(f'/api/saves/{sid}')['players'][0]['id']
