@@ -1391,9 +1391,91 @@
     });
   };
   $('pilotMap').onclick=openMaps;
-  // Party knowledge: only what a Pilot writes down as known to the party. Nothing is read from the cartridge.
-  const noteCategories={npcs:['npc','NPCs','NPC'],locations:['location','Locations','location'],notes:['world','World Notes','note']};
+  // Notes are shared; NPC and location reference editing remains Pilot-only.
+  const notesSessions=new Map();
+  let sharedNotesDialog=null;
+  const notesSession=()=>{
+    if(!state.save||!state.identity)return null;
+    let tab=sessionStorage.getItem('tableforge-notes-tab');
+    if(!tab){tab=newRequestId();sessionStorage.setItem('tableforge-notes-tab',tab);}
+    const saveId=state.save.save.id,playerId=state.identity;
+    const key=`tableforge-notes:${saveId}:${playerId}:${tab}`;
+    if(!notesSessions.has(key))notesSessions.set(key,new TableForgeNotes.NotesSession({
+      storage:localStorage,key,uuid:newRequestId,
+      send:async body=>{
+        const result=await request(`saves/${saveId}/notes`,{playerId,...body});
+        if(state.save?.save.id===saveId){state.save.notes=result.notes;sharedNotesDialog?.refresh();}
+        return result;
+      },
+      changed:()=>sharedNotesDialog?.refresh(),
+    }));
+    return notesSessions.get(key);
+  };
+  const openSharedNotes=()=>{
+    const s=state.save,session=notesSession();if(!s||!session)return;
+    let editing=null,listMarkup='',draftMarkup='';
+    modal('<h3>Notes</h3><p class="muted">Shared notes for the table. Everyone can add and edit.</p><div id="sharedNotes"><div id="sharedNoteEditor"></div><div id="sharedNoteDrafts"></div><div class="note-list" id="sharedNoteList"></div><div class="actions"><button class="btn primary" id="sharedNoteAdd">Add note</button><button class="btn" data-close>Close</button></div></div>','wide');
+    // modal() binds Close buttons present at creation time.
+    const root=$('sharedNotes');
+    const currentNotes=()=>state.save?.save.id===s.save.id?(state.save.notes||[]).filter(n=>n.category==='world'):[];
+    const editor=d=>{
+      editing=d;
+      $('sharedNoteEditor').innerHTML='<div class="note-form"><label>Title<input id="sharedNoteTitle" maxlength="200"></label><label>Text<textarea id="sharedNoteBody" rows="7" maxlength="10000"></textarea></label><p class="muted" id="sharedNoteStatus" role="status" aria-live="polite"></p><p id="sharedNoteError" role="alert"></p><div id="sharedNoteConflict" hidden><p>Another player changed or deleted this note. Your text is kept above. Review the saved version below, then keep your draft as a separate note or use the saved version.</p><div id="sharedNoteLatest" class="markdown-body"></div><div class="actions"><button class="btn" id="sharedNoteCopy">Save draft as a new note</button><button class="btn" id="sharedNoteLatestUse">Use saved version</button></div></div><div class="actions"><button class="btn" id="sharedNoteDone">Done</button></div></div>';
+      $('sharedNoteTitle').value=d.title;$('sharedNoteBody').value=d.body;
+      const input=()=>session.input(d,$('sharedNoteTitle').value,$('sharedNoteBody').value);
+      $('sharedNoteTitle').oninput=input;$('sharedNoteBody').oninput=input;
+      $('sharedNoteDone').onclick=()=>{session.flush(d);editing=null;$('sharedNoteEditor').replaceChildren();refresh();};
+      $('sharedNoteCopy').onclick=()=>editor(session.copy(d));
+      $('sharedNoteLatestUse').onclick=()=>{
+        if(!confirm('Discard your local draft and use the saved version?'))return;
+        session.discard(d);editing=null;$('sharedNoteEditor').replaceChildren();refresh();
+      };
+      refresh();$('sharedNoteTitle').focus();
+    };
+    const refresh=()=>{
+      if(!root.isConnected)return;
+      const notes=currentNotes();
+      const name=id=>s.players.find(p=>p.id===id)?.character||s.players.find(p=>p.id===id)?.name||'a player';
+      const nextList=notes.map(n=>`<section class="note-card" data-note="${n.id}"><div class="row"><strong>${esc(n.title)}</strong><span class="note-actions"><button class="btn small note-edit">Edit</button><button class="btn small warn note-remove">Delete</button></span></div><div class="markdown-body">${TableForgeMarkdown.render(n.body||'')}</div><div class="muted note-meta">Last edited by ${esc(name(n.updated_by||n.created_by))} · ${esc(when(n.updated_at))}</div></section>`).join('')||'<p>No notes recorded yet.</p>';
+      if(nextList!==listMarkup){$('sharedNoteList').innerHTML=nextList;listMarkup=nextList;}
+      $('sharedNoteList').querySelectorAll('.note-edit').forEach(b=>b.onclick=()=>{
+        const n=notes.find(n=>n.id===Number(b.closest('[data-note]').dataset.note));
+        const d=[...session.drafts.values()].find(d=>d.id===n.id);
+        if(d&&!d.dirty&&!d.op&&!session.running.has(d.key))session.discard(d);
+        editor(d&&(d.dirty||d.op)?d:session.edit(n));
+      });
+      $('sharedNoteList').querySelectorAll('.note-remove').forEach(b=>b.onclick=async()=>{
+        const n=notes.find(n=>n.id===Number(b.closest('[data-note]').dataset.note));
+        const drafts=[...session.drafts.values()].filter(d=>d.id===n.id);
+        if(drafts.some(d=>session.running.has(d.key)))return notify(Error('Wait for this note to finish saving before deleting it.'));
+        if(!confirm(`Delete “${n.title}”? Any local draft will also be discarded. It stays in the save history.`))return;
+        try{
+          await session.send({id:n.id,category:'world',revision:n.revision,remove:true,mutationId:newRequestId()});
+          drafts.forEach(d=>session.discard(d));
+          if(editing?.id===n.id){editing=null;$('sharedNoteEditor').replaceChildren();}refresh();
+        }catch(error){notify(error);}
+      });
+      const pending=[...session.drafts.values()].filter(d=>(d.dirty||d.op||d.conflict)&&d!==editing);
+      const nextDrafts=pending.map(d=>`<p><button class="btn small" data-draft="${esc(d.key)}">Continue draft: ${esc(d.title||'Untitled note')}</button> <span>${esc(d.status)}</span></p>`).join('');
+      if(nextDrafts!==draftMarkup){$('sharedNoteDrafts').innerHTML=nextDrafts;draftMarkup=nextDrafts;}
+      $('sharedNoteDrafts').querySelectorAll('[data-draft]').forEach(b=>b.onclick=()=>editor(session.drafts.get(b.dataset.draft)));
+      if(editing){
+        $('sharedNoteStatus').textContent=editing.status||'Enter a title and text to start saving.';
+        $('sharedNoteError').textContent=session.storageError?'Browser draft storage is unavailable. Keep this page open until your note is saved.':editing.error||'';
+        $('sharedNoteConflict').hidden=!editing.conflict;
+        if(editing.conflict){
+          const latest=notes.find(n=>n.id===editing.id||n.client_key===editing.clientKey);
+          $('sharedNoteLatest').innerHTML=latest?`<strong>${esc(latest.title)}</strong>${TableForgeMarkdown.render(latest.body)}`:'<p>The saved note was deleted.</p>';
+        }
+      }
+    };
+    sharedNotesDialog={refresh};$('sharedNoteAdd').onclick=()=>editor(session.edit());
+    refresh();session.resume();
+  };
+  setInterval(()=>{notesSession()?.resume();sharedNotesDialog?.refresh();},3000);
+  const noteCategories={npcs:['npc','NPCs','NPC'],locations:['location','Locations','location'],notes:['world','Notes','note']};
   const openNotes=(ref,editing=null)=>{
+    if(ref==='notes')return openSharedNotes();
     const [category,heading,noun]=noteCategories[ref];
     const s=state.save;if(!s)return;
     const notes=(s.notes||[]).filter(n=>n.category===category);

@@ -162,7 +162,9 @@ tool remains available for host-side administration.
 
 ### Party knowledge
 
-**NPCs**, **Locations**, and **World Notes** in the left sidebar show only what Pilots have written down as known to the party. Nothing is read from the cartridge, and these notes are not sent to the AI-DM. In Pilot Mode, add, edit, or remove entries; removed entries stay in the save history.
+**Notes** in the left sidebar are shared notes for the table. Every joined player can add, edit, and delete titled notes without Pilot Mode. Titles and text auto-save after a short pause, with Saving…, Saved, or Couldn’t save feedback and the last editor and time. Pending drafts survive closing the editor and page reloads in the same browser tab; temporary connection failures retry automatically. Conflicting edits keep the local draft and show the saved version, allowing the draft to be saved as a separate note. Deletion requires confirmation and keeps the removed entry in save history. Existing World Notes remain in their original playthroughs.
+
+**NPCs** and **Locations** still require Pilot Mode to add, edit, or remove entries. These references and shared Notes read nothing from the cartridge and are excluded from AI-DM requests and summaries. Editing Notes does not change Ready state or advance narration.
 
 ### Backups
 
@@ -463,7 +465,7 @@ Initial concepts:
 Reference
 - NPCs
 - Locations
-- World Notes
+- Notes
 
 Tools
 - Cast Viewer
@@ -536,9 +538,9 @@ Built from `cast.json`, `cast.md`, transcript knowledge, and save-state discover
 
 Derived from `run-data.json`, `module.md`, `scenes.json`, or future dedicated location data.
 
-### World Notes
+### Notes
 
-Derived from authored module information and what the party has actually learned.
+Shared, player-written notes for loot, clues, plans, and reminders. Everyone at the table can add and edit; Notes are kept in the playthrough save and are not sent to the AI-DM.
 
 ### Module Viewer
 
