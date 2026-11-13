@@ -719,7 +719,7 @@
         if(!copied)notify(Error('Copy failed. Select the message text to copy it.'));
         setTimeout(()=>{button.innerHTML=TableForgeMessageActions.copyIcon;button.title='Copy message';button.setAttribute('aria-label','Copy message');button.classList.remove('copied','copy-failed');button.disabled=false;},1200);
       };
-      row.dataset.searchText=(m.name+' '+m.body).toLowerCase();$('feedInner').append(row);
+      row.dataset.searchText=[m.name,m.body,m.ooc?.status==='complete'?m.ooc.answer:''].join(' ').toLowerCase();$('feedInner').append(row);
     }
     while(combatEventIndex<combatEvents.length)appendCombatEvent(combatEvents[combatEventIndex++]);
     applySearch();
