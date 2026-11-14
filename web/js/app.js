@@ -609,8 +609,6 @@
     $('play').querySelector('.top-title strong').textContent=s.cartridge.title;
     $('partyList').innerHTML=s.players.map(p=>`<div class="party-card" style="${p.id===state.identity?'border-color:var(--accent2)':''}"><div class="party-top">${p.id===state.identity?`<button class="portrait-button" type="button" title="Edit ${esc(p.character)} portrait" aria-label="Edit ${esc(p.character)} portrait">${avatar(p,'party-avatar')}</button>`:avatar(p,'party-avatar')}<div class="party-name"><strong>${esc(p.character)}</strong><span>${esc(p.name)}</span></div><span class="ready-badge ${p.ready?'ready':''}">${combatPending()?'Combat':(p.ready?'Ready':'Not Ready')}</span></div></div>`).join('');
     $('partyList').querySelector('.portrait-button')?.addEventListener('click',openPortraitEditor);
-    $('usageSummary').innerHTML=s.usage?`<strong>AI usage</strong><div>This session: ${esc(usageLine(s.usage.session))}</div><div>Playthrough: ${esc(usageLine(s.usage.save))}</div><div>${tokenLabel(s.usage.save.inputTokens)} input · ${tokenLabel(s.usage.save.outputTokens)} output</div><div>Estimated USD · <a href="${esc(s.usage.pricingUrl)}" target="_blank" rel="noopener">rates ${esc(s.usage.pricingAsOf)}</a></div>`:'<strong>AI usage</strong><div>Restart the TableForge server to enable tracking.</div>';
-    if(s.imageUsage) $('usageSummary').insertAdjacentHTML('beforeend',`<div class="image-usage"><strong>Scene images (separate)</strong><div>Session: ${esc(imageUsageLine(s.imageUsage.session))}</div><div>Playthrough: ${esc(imageUsageLine(s.imageUsage.save))}</div></div>`);
     $('illustrateScene').disabled=!state.identity||!s.messages.some(m=>m.kind==='ai');
     // Rebuild the feed only when its content changes, so Ready/typing updates keep the reading position.
     const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,s.messages.map(m=>[m.id,m.body.length,m.ooc,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl]),s.events.filter(e=>['combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind))]);
@@ -769,7 +767,7 @@
     $('combatTakeover').disabled=!current||busy;
     $('combatRetry').classList.toggle('hidden',s.combat?.phase!=='failed');
     $('combatRetry').disabled=!current||busy;
-    $('endSession').disabled=state.generating||state.updating;
+    if($('endSession'))$('endSession').disabled=state.generating||state.updating;
     renderDraft();
     renderLocation();
     refreshContextFlag();
@@ -1103,13 +1101,11 @@
     catch(error){try{state.save=await request('saves/'+state.save.save.id);}catch(refreshError){console.error(refreshError);}notify(error);}
     finally{state.generating=false;render();}
   };
-  $('sessionMenu').onclick=()=>{
-    if(!state.save)return;
-    modal(`<h3>Session</h3><p>${esc(state.save.save.name)} · Session ${state.save.sessions.at(-1)?.number||1}</p><p>Download the full public conversation across all saved sessions as Markdown.</p><div class="actions"><a class="btn" href="/api/saves/${encodeURIComponent(state.save.save.id)}/chat.md" download>Download Chat</a><button class="btn" data-close>Close</button></div>`);
-  };
-  $('endSession').onclick=()=>{
+  const openEndSession=()=>{
+    if(!state.pilot||!state.save||!state.identity||state.generating||state.updating)return;
     modal('<h3>End Session</h3><p>Save a checkpoint and close this session. Continuing later opens the next session.</p><label>Session note (optional)<textarea id="sessionNote" rows="4" maxlength="10000" placeholder="Where did the table leave off?"></textarea></label><div class="actions"><button class="btn" data-close>Cancel</button><button class="btn warn" id="submitEndSession">End Session</button></div>');
     $('submitEndSession').onclick=async()=>{
+      if(!state.pilot||!state.save||!state.identity||state.generating||state.updating)return;
       const note=$('sessionNote').value.trim();
       if(await update('end-session',{playerId:state.identity,note})){$('modalRoot').replaceChildren();await show('load');}
     };
@@ -1297,8 +1293,19 @@
   $('optionsGear').onclick=async()=>{
     try {
       const info = await showRuntime();
-      const usage=state.save?.usage;
-      modal(`<h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge v2.0</p><div class="binding notification-setting"><label class="context-option" for="aiMessageNotifications"><input id="aiMessageNotifications" data-ai-notification-toggle type="checkbox"><span><strong>AI-DM message notifications</strong><span>Play a sound and show a browser notification when a new AI-DM message arrives while TableForge is in a background tab.</span></span></label><div data-ai-notification-status class="muted" role="status" aria-live="polite">Notifications are off.</div></div>${usage?`<p>AI usage this session: ${esc(usageLine(usage.session))}<br>Playthrough: ${esc(usageLine(usage.save))}<br>Estimates use <a href="${esc(usage.pricingUrl)}" target="_blank" rel="noopener">standard text rates</a> from ${esc(usage.pricingAsOf)}. Earlier activity is unavailable.</p>`:''}<div class="actions"><button class="btn" data-close>Close</button></div>`);
+      const usage=state.save?.usage,imageUsage=state.save?.imageUsage;
+      modal(`<div id="optionsDialog"><h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge</p>
+        <h4>Preferences</h4>
+        <div class="binding notification-setting"><label class="context-option" for="aiMessageNotifications"><input id="aiMessageNotifications" data-ai-notification-toggle type="checkbox"><span><strong>AI-DM message notifications</strong><span>Play a sound and show a browser notification when a new AI-DM message arrives while TableForge is in a background tab.</span></span></label><div data-ai-notification-status class="muted" role="status" aria-live="polite">Notifications are off.</div></div>
+        ${state.save?`<h4>Session</h4>
+          <p>${esc(state.save.save.name)} · Session ${state.save.sessions.at(-1)?.number||1}</p>
+          <div class="actions"><a class="btn" href="/api/saves/${encodeURIComponent(state.save.save.id)}/chat.md" download title="Download the full public conversation across all saved sessions as Markdown">Download Chat</a>${state.pilot?`<button class="btn warn" id="endSession" ${state.generating||state.updating?'disabled':''}>End Session</button>`:''}</div>
+          ${usage?`<p><strong>AI usage</strong><br>This session: ${esc(usageLine(usage.session))}<br>Playthrough: ${esc(usageLine(usage.save))}<br>${tokenLabel(usage.save.inputTokens)} input · ${tokenLabel(usage.save.outputTokens)} output<br>Estimated USD · <a href="${esc(usage.pricingUrl)}" target="_blank" rel="noopener">rates ${esc(usage.pricingAsOf)}</a>. Earlier activity is unavailable.</p>`:'<p>Restart the TableForge server to enable usage tracking.</p>'}
+          ${imageUsage?`<p><strong>Scene images (separate)</strong><br>This session: ${esc(imageUsageLine(imageUsage.session))}<br>Playthrough: ${esc(imageUsageLine(imageUsage.save))}</p>`:''}
+          ${state.pilot?'<h4>Advanced</h4><div class="actions"><button class="btn" id="aiRequestLog">AI Request Log</button></div>':''}`:''}
+        <div class="actions"><button class="btn" data-close>Close</button></div></div>`);
+      if($('endSession'))$('endSession').onclick=openEndSession;
+      if($('aiRequestLog'))$('aiRequestLog').onclick=openAIRequestLog;
       renderAINotificationOption();
     } catch(error) { notify(error); }
   };
@@ -1339,6 +1346,7 @@
   });
   $('pilotToggle').onclick=()=>{
     state.pilot=!state.pilot;
+    if($('optionsDialog')||$('submitEndSession'))$('modalRoot').replaceChildren();
     $('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');
     $('pilotPanel').classList.toggle('hidden',!state.pilot);
     for(const tool of toolFrames) $(tool.button).classList.toggle('hidden',!state.pilot);
@@ -1601,7 +1609,7 @@
     };
   };
   $('reviewContext').onclick=openContextReview;
-  $('aiRequestLog').onclick=()=>{
+  const openAIRequestLog=()=>{
     if(!state.pilot||!state.save||!state.identity)return;
     modal('<div id="aiRequestLogDialog"><h3>AI Request Log</h3><p class="muted">Saved request metadata across this playthrough’s sessions. Expand a request to compare routing, provider models, and usage. Temporary payload captures contain the full context sent to the provider.</p><div id="aiRequestLogEntries" class="pilot-chat-log" role="log" aria-label="AI request log"></div><div class="actions"><button class="btn" data-close>Close</button></div></div>','wide');
     const dialog=$('aiRequestLogDialog'),list=$('aiRequestLogEntries');
