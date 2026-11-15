@@ -159,6 +159,12 @@
 <section id="play" class="screen">
   <div class="play-shell">
     <header class="topbar">
+      <button class="top-icon-button sidebar-toggle" id="sidebarToggle" type="button" aria-controls="leftSidebar" aria-expanded="true" aria-label="Hide sidebar" title="Hide sidebar">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="3.5" y="4.5" width="17" height="15" rx="2.5"></rect>
+          <path d="M9.5 4.5v15"></path>
+        </svg>
+      </button>
       <div class="app-brand" title="TableForge">
         <span class="app-name">TableForge</span>
         <span class="app-version" id="appVersion" data-build-info>Checking version…</span>
@@ -189,11 +195,10 @@
     </header>
 
     <div id="workarea" class="workarea">
-      <button class="divider-handle left-handle" id="toggleLeft" title="Collapse left sidebar" aria-label="Collapse left sidebar">‹</button>
-      <button class="divider-handle right-handle" id="toggleRight" title="Collapse right sidebar" aria-label="Collapse right sidebar">›</button>
-      <aside id="leftSidebar" class="sidebar left">
+      <aside id="leftSidebar" class="sidebar left" aria-label="Table sidebar">
         <div class="sidebar-inner">
           <button class="nav-item active" id="showTable" type="button"><span class="nav-symbol">#</span>table</button>
+          <div id="partyList" class="party-list" aria-label="Party"></div>
 
           <div class="section-title">Reference</div>
           <button class="nav-item ref-open" data-ref="npcs"><span class="nav-symbol">◉</span>NPCs</button>
@@ -207,8 +212,23 @@
           <button class="nav-item ref-open" data-ref="map"><span class="nav-symbol">◇</span>Map</button>
 
           <button class="nav-item" style="margin-top:12px;color:var(--muted)"><span class="nav-symbol">＋</span>Add</button>
+
+          <div id="pilotPanel" class="pilot-panel hidden">
+            <div class="section-title">Pilot Controls</div>
+            <label id="pilotLocationWrap" class="pilot-location hidden">Party location
+              <select id="pilotLocation" title="Where the party is. The AI-DM updates this; correct it if it is wrong."></select>
+            </label>
+            <button class="btn" id="askAi">Ask AI-DM privately</button>
+            <button class="btn" id="illustrateScene">Illustrate Scene</button>
+            <button class="btn" id="reviewContext">Review Context</button>
+            <button class="btn warn" id="readyOverride">Ready Override</button>
+            <button class="btn" id="pilotMap">GM Map</button>
+            <button class="btn" id="combatToggle">Enter Combat Mode</button>
+            <button class="btn hidden" id="correctCombat">Correct combat outcome</button>
+          </div>
         </div>
       </aside>
+      <div id="sidebarResize" class="sidebar-resize" role="separator" tabindex="0" aria-orientation="vertical" aria-controls="leftSidebar" aria-label="Resize sidebar" title="Drag to resize; drag past the minimum to hide"></div>
 
       <main id="mainChat" class="main-chat">
         <div id="feed" class="feed">
@@ -237,79 +257,58 @@
         <div id="mapStatus" class="map-status" aria-live="polite"></div>
       </section>
 
-      <aside id="rightSidebar" class="sidebar right">
-        <div class="sidebar-inner">
-          <div class="section-title" style="margin-top:2px">Party</div>
-          <div id="partyList"></div>
-
-          <div id="pilotPanel" class="pilot-panel hidden">
-            <div class="section-title" style="margin:0 0 8px">Pilot Controls</div>
-            <label id="pilotLocationWrap" class="pilot-location hidden">Party location
-              <select id="pilotLocation" title="Where the party is. The AI-DM updates this; correct it if it is wrong."></select>
-            </label>
-            <button class="btn" id="askAi">Ask AI-DM privately</button>
-            <button class="btn" id="illustrateScene">Illustrate Scene</button>
-            <button class="btn" id="reviewContext">Review Context</button>
-            <button class="btn warn" id="readyOverride">Ready Override</button>
-            <button class="btn" id="pilotMap">GM Map</button>
-            <button class="btn" id="combatToggle">Enter Combat Mode</button>
-            <button class="btn hidden" id="correctCombat">Correct combat outcome</button>
-          </div>
+      <footer id="composerWrap" class="composer-wrap">
+        <div id="tableStatus" class="sr-only" aria-live="polite">Waiting for table · 0 of 3 Ready</div>
+        <div id="combatStatus" class="draft-notice hidden" role="status">
+          <span id="combatExplanation"></span>
+          <button class="btn small" id="combatOutcomeOpen" type="button">Report combat outcome</button>
+          <button class="btn small hidden" id="combatTakeover" type="button">Take over outcome</button>
+          <button class="btn small warn hidden" id="combatRetry" type="button">Retry aftermath</button>
         </div>
-      </aside>
+        <div id="attachmentTray" class="attachment-tray hidden"></div>
+        <div id="draftNotice" class="draft-notice hidden" role="status">
+          <span><strong>The story moved on while you were writing.</strong> Your message hasn't been sent — review it against the latest AI-DM reply.</span>
+          <button class="btn small warn" id="keepDraft" type="button">Keep for this beat</button>
+        </div>
+        <div class="composer-body">
+          <div class="attachment-control">
+            <button class="composer-square attachment-btn" id="attachmentBtn" type="button" title="Add attachment" aria-label="Add attachment">+</button>
+            <div id="attachmentMenu" class="attachment-menu hidden">
+              <button id="addPhotosFiles" type="button">
+                <span class="paperclip">⌕</span>
+                <span>Add photo</span>
+              </button>
+              <button id="emojiBtn" type="button"><span aria-hidden="true">☺</span><span>Emoji</span></button>
+            </div>
+            <input id="attachmentInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp" title="Attach a photo" aria-label="Attach a photo">
+          </div>
+
+          <div class="composer-mode-control">
+            <button id="composerMode" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Message mode: In Character">IC ▾</button>
+            <div id="composerModeMenu" class="attachment-menu hidden" role="menu" aria-label="Message mode">
+              <button id="modeIC" type="button" role="menuitemradio" aria-checked="true">✓ In Character</button>
+              <button id="modeOOC" type="button" role="menuitemradio" aria-checked="false">Out of Character</button>
+            </div>
+          </div>
+          <span class="composer-divider" aria-hidden="true"></span>
+          <div class="message-box">
+            <textarea id="composer" rows="1" aria-label="Table message" placeholder="Message #table..."></textarea>
+          </div>
+
+          <button class="composer-square send-icon-btn" id="sendBtn" type="button" title="Send message" aria-label="Send message">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M11 20V7l-5 5-1.4-1.4L12 3l7.4 7.6L18 12l-5-5v13Z"></path>
+            </svg>
+          </button>
+
+          <button class="ready-btn-large" id="readyBtn" type="button">
+            <span class="ready-check">✓</span>
+            <span class="ready-label">Ready</span>
+            <span class="auto-ready-indicator" aria-hidden="true">AUTO</span>
+          </button>
+        </div>
+      </footer>
     </div>
-
-    <footer id="composerWrap" class="composer-wrap">
-      <div id="tableStatus" class="sr-only" aria-live="polite">Waiting for table · 0 of 3 Ready</div>
-      <div id="combatStatus" class="draft-notice hidden" role="status">
-        <span id="combatExplanation"></span>
-        <button class="btn small" id="combatOutcomeOpen" type="button">Report combat outcome</button>
-        <button class="btn small hidden" id="combatTakeover" type="button">Take over outcome</button>
-        <button class="btn small warn hidden" id="combatRetry" type="button">Retry aftermath</button>
-      </div>
-      <div id="attachmentTray" class="attachment-tray hidden"></div>
-      <div id="draftNotice" class="draft-notice hidden" role="status">
-        <span><strong>The story moved on while you were writing.</strong> Your message hasn't been sent — review it against the latest AI-DM reply.</span>
-        <button class="btn small warn" id="keepDraft" type="button">Keep for this beat</button>
-      </div>
-      <div class="composer-body">
-        <div class="attachment-control">
-          <button class="composer-square attachment-btn" id="attachmentBtn" type="button" title="Add attachment" aria-label="Add attachment">+</button>
-          <div id="attachmentMenu" class="attachment-menu hidden">
-            <button id="addPhotosFiles" type="button">
-              <span class="paperclip">⌕</span>
-              <span>Add photo</span>
-            </button>
-            <button id="emojiBtn" type="button"><span aria-hidden="true">☺</span><span>Emoji</span></button>
-          </div>
-          <input id="attachmentInput" class="hidden" type="file" accept="image/png,image/jpeg,image/webp" title="Attach a photo" aria-label="Attach a photo">
-        </div>
-
-        <div class="composer-mode-control">
-          <button id="composerMode" type="button" aria-haspopup="menu" aria-expanded="false" aria-label="Message mode: In Character">IC ▾</button>
-          <div id="composerModeMenu" class="attachment-menu hidden" role="menu" aria-label="Message mode">
-            <button id="modeIC" type="button" role="menuitemradio" aria-checked="true">✓ In Character</button>
-            <button id="modeOOC" type="button" role="menuitemradio" aria-checked="false">Out of Character</button>
-          </div>
-        </div>
-        <span class="composer-divider" aria-hidden="true"></span>
-        <div class="message-box">
-          <textarea id="composer" rows="1" aria-label="Table message" placeholder="Message #table..."></textarea>
-        </div>
-
-        <button class="composer-square send-icon-btn" id="sendBtn" type="button" title="Send message" aria-label="Send message">
-          <svg viewBox="0 0 24 24" aria-hidden="true">
-            <path d="M11 20V7l-5 5-1.4-1.4L12 3l7.4 7.6L18 12l-5-5v13Z"></path>
-          </svg>
-        </button>
-
-        <button class="ready-btn-large" id="readyBtn" type="button">
-          <span class="ready-check">✓</span>
-          <span class="ready-label">Ready</span>
-          <span class="auto-ready-indicator" aria-hidden="true">AUTO</span>
-        </button>
-      </div>
-    </footer>
   </div>
 </section>
 
@@ -322,6 +321,7 @@
 <script src="/js/message-actions.js" defer></script>
 <script src="/js/notes.js" defer></script>
 <script src="/js/table-map.js" defer></script>
+<script src="/js/layout.js" defer></script>
 <script src="/js/app.js" defer></script>
 </body>
 </html>

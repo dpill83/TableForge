@@ -3,7 +3,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const avatar = (player, className, fallback) => `<div class="${className}">${esc(fallback ?? player?.character?.[0] ?? '?')}${player?.portraitUrl?`<img src="${esc(player.portraitUrl)}" alt="">`:''}</div>`;
   const screens = [...document.querySelectorAll('.screen')];
-  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, left:false, right:false, draft:null, pendingImage:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0,composerMode:'ic',publicSending:false};
+  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, draft:null, pendingImage:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0,composerMode:'ic',publicSending:false};
   const combatPending=()=>state.save?.save.mode==='combat'||!!(state.save?.combat&&state.save.combat.phase!=='complete');
   const combatTokenKey=()=>`tableforge-combat-editor:${state.save?.save.id}:${state.save?.combat?.id}`;
   const combatToken=()=>sessionStorage.getItem(combatTokenKey());
@@ -492,13 +492,20 @@
   };
   const feedAtBottom=()=>{const feed=$('feed');return feed.scrollHeight-feed.scrollTop-feed.clientHeight<48;};
   const scrollFeedToLatest=()=>{$('feed').scrollTop=$('feed').scrollHeight;state.followLatest=true;$('jumpLatest').classList.add('hidden');};
+  // Single left sidebar. Every width change TableForge makes first captures the
+  // paragraph being read; a resize observer restores it after the text reflows.
+  const feedAnchor=new TableForgeLayout.FeedAnchor({feed:$('feed'),isFollowing:()=>state.followLatest!==false});
+  const mapTakesChatSpace=()=>{const map=$('mapPanel');return !map.classList.contains('hidden')&&getComputedStyle(map).position!=='absolute'?map.getBoundingClientRect().width:0;};
+  let storage=null;try{storage=localStorage;}catch{/* Sidebar preferences are not remembered. */}
+  const sidebar=TableForgeLayout.createSidebar({workarea:$('workarea'),sidebar:$('leftSidebar'),toggle:$('sidebarToggle'),divider:$('sidebarResize'),storage,beforeWidthChange:()=>feedAnchor.prepare(),mapWidth:mapTakesChatSpace});
   // Shared table map: a panel beside chat. Pan and zoom stay on this screen;
   // the chosen map and the party token are shared through the save.
   const mapUi={assets:[],assetsFor:null,triedFor:null,loading:null,loadError:'',queued:null,sending:false,pending:false,timer:null,status:'',error:false,selectKey:'',restoredFor:null,revealsFor:null};
   const mapAssetName=asset=>asset.path.split('/').at(-1);
   const mapOpen=()=>!$('mapPanel').classList.contains('hidden');
   const setMapOpen=open=>{
-    $('mapPanel').classList.toggle('hidden',!open);$('workarea').classList.toggle('map-open',open);
+    if(open!==mapOpen())feedAnchor.prepare();
+    $('mapPanel').classList.toggle('hidden',!open);$('workarea').classList.toggle('map-open',open);sidebar.refresh();
     document.querySelector('.ref-open[data-ref="map"]')?.classList.toggle('active',open);
     if(state.save)try{const key=`tableforge-map-open:${state.save.save.id}`;if(open)localStorage.setItem(key,'true');else localStorage.removeItem(key);}catch{/* Per-viewer convenience only. */}
     if(open){mapView.fit();syncTableMap(true);}
@@ -593,9 +600,9 @@
   $('mapResize').onpointerdown=event=>{
     const handle=$('mapResize');try{handle.setPointerCapture(event.pointerId);}catch{/* Resizes while over the handle. */}handle.classList.add('active');
     const resize=move=>{
-      const box=$('workarea').getBoundingClientRect(),right=box.right-$('rightSidebar').getBoundingClientRect().width;
-      const width=Math.round(Math.min(Math.max(right-move.clientX,280),box.width*0.7));
-      $('workarea').style.setProperty('--map-size',`${width}px`);return width;
+      const box=$('workarea').getBoundingClientRect(),limit=Math.min(box.width*0.7,box.width-sidebar.width()-sidebar.config.chatMin);
+      const width=Math.round(Math.min(Math.max(box.right-move.clientX,280),Math.max(280,limit)));
+      feedAnchor.prepare();$('workarea').style.setProperty('--map-size',`${width}px`);return width;
     };
     handle.onpointermove=resize;
     handle.onpointerup=handle.onpointercancel=up=>{
@@ -726,6 +733,7 @@
     state.feedSaveId=s.save.id;
     if(followLatest||!previousIds.size||added.some(m=>m.player_id&&m.player_id===state.identity&&m.kind!=='ai')) scrollFeedToLatest();
     else{feed.scrollTop=top;if(added.length)$('jumpLatest').classList.remove('hidden');}
+    feedAnchor.capture();
     }
     const current=s.players.find(p=>p.id===state.identity);
     const locked=combatPending(),combatMode=s.save.mode==='combat',busy=state.generating||state.updating||!!s.activity?.aiDm;
@@ -870,7 +878,7 @@
       if(state.save) render();
     }
   };
-  $('feed').addEventListener('scroll',()=>{state.followLatest=feedAtBottom();if(state.followLatest)$('jumpLatest').classList.add('hidden');},{passive:true});
+  $('feed').addEventListener('scroll',()=>{if(feedAnchor.handleScroll())return;state.followLatest=feedAtBottom();if(state.followLatest)$('jumpLatest').classList.add('hidden');},{passive:true});
   $('jumpLatest').onclick=()=>$('feed').scrollTo({top:$('feed').scrollHeight,behavior:'smooth'});
   $('sendBtn').onclick=async()=>{
     if(state.composerMode==='ooc'){if(!$('sendBtn').disabled)await sendPublicQuestion();return;}
@@ -1846,9 +1854,6 @@
   $('showTable').onclick=()=>showTool(null);
   for(const tool of toolFrames.filter(tool=>tool.button!=='showModuleViewer')) $(tool.button).onclick=()=>showTool(tool.button);
   $('showModuleViewer').onclick=openModuleViewer;
-  const toggle=(id,css,key,other,symbols)=>{state[key]=!state[key];$(other).classList.toggle('collapsed',state[key]);$(id).textContent=state[key]?symbols[1]:symbols[0];if(css)$('workarea').classList.toggle(css,state[key]);};
-  $('toggleLeft').onclick=()=>toggle('toggleLeft','left-collapsed','left','leftSidebar',['‹','›']);
-  $('toggleRight').onclick=()=>toggle('toggleRight','right-collapsed','right','rightSidebar',['›','‹']);
   const applySearch=()=>{const q=$('messageSearch').value.trim().toLowerCase();let hits=0;document.querySelectorAll('#feedInner .message').forEach(el=>{const found=!!q&&el.dataset.searchText.includes(q);hits+=Number(found);el.classList.toggle('search-dim',!!q&&!found);el.classList.toggle('search-match',found);});$('searchCount').textContent=q?hits:'';};
   $('messageSearch').oninput=applySearch;
   $('messageSearch').onkeydown=e=>{if(e.key==='Escape'){$('messageSearch').value='';applySearch();}if(e.key==='Enter')document.querySelector('.search-match')?.scrollIntoView({block:'center'});};

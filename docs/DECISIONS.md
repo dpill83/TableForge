@@ -425,9 +425,8 @@ Do not assume fewer fights is the desired solution.
 Use:
 
 - top bar
-- collapsible left sidebar
+- one collapsible, resizable left sidebar (no right sidebar; see D-029)
 - main conversation
-- collapsible right sidebar
 - bottom composer/status area
 
 ---
@@ -458,18 +457,11 @@ Additional channels/tools should appear only when there is a real use case.
 
 ---
 
-## D-029 — Right Sidebar Is Not Pilot Mode
+## D-029 — One Left Sidebar; It Is Not Pilot Mode
 
-**Decision:** The right sidebar contains normal shared table information such as:
+**Decision (revised; supersedes the earlier right-sidebar layout):** The Play Screen has a single resizable, collapsible left sidebar and no right sidebar. Below `# table` it shows compact party rows (portrait, character, player, Ready/combat state), then Reference and Tools, then Pilot Controls only while the local client's Pilot Mode is enabled.
 
-- players
-- Ready status
-- presence
-- quick reference
-
-Pilot controls are added to the right sidebar when Pilot Mode is enabled.
-
-The right sidebar itself is not a privileged area.
+The sidebar itself is not a privileged area. A persistent header toggle hides or restores it; width and collapsed state are per-browser preferences, separate from saves. Collapsing it intentionally hides party readiness, and no duplicate Ready display is added.
 
 ---
 
@@ -477,8 +469,7 @@ The right sidebar itself is not a privileged area.
 
 **Decision:** The Play Screen should allow collapsing:
 
-- left sidebar
-- right sidebar
+- the left sidebar (the only sidebar; see D-029)
 - bottom composer/status area
 
 This lets the user reduce the app to a near-ChatGPT-like reading view when desired.

@@ -23,7 +23,7 @@ The interface should prioritize:
 - lightweight Ready controls
 - optional Pilot controls
 - quick access to known NPCs, locations, maps, and adventure reference material
-- collapsible sidebars and bottom controls
+- one collapsible, resizable sidebar and bottom controls
 - game-like top-level navigation
 
 The product should feel like opening a game and then sitting down at a shared digital table.
@@ -36,7 +36,7 @@ The product should feel like opening a game and then sitting down at a shared di
 
 Use interaction patterns users already understand:
 
-- Discord-like left/right sidebars
+- a Discord-like left sidebar
 - ChatGPT-like scrolling conversation
 - persistent bottom composer
 - game-style title screen
@@ -69,11 +69,10 @@ A normal player should be able to play using only:
 
 The main Play Screen should support collapsing:
 
-- left sidebar
-- right sidebar
+- the left sidebar (there is no right sidebar)
 - bottom composer/status area
 
-When sidebars are collapsed, the experience should approach a simple ChatGPT-like conversation view.
+When the sidebar is collapsed, the experience should approach a simple ChatGPT-like conversation view.
 
 ---
 
@@ -354,18 +353,22 @@ Recommended layout:
 
 ```text
 ┌─────────────────────────────────────────────────────────────┐
-│ TOP BAR                                                     │
-├──────────────┬───────────────────────────────┬──────────────┤
-│ LEFT         │ MAIN                          │ RIGHT        │
-│ SIDEBAR      │ SHARED CHAT                   │ SIDEBAR      │
-│              │                               │              │
-│              │                               │              │
-├──────────────┴───────────────────────────────┴──────────────┤
-│ BOTTOM COMPOSER / READY BAR                                │
-└─────────────────────────────────────────────────────────────┘
+│ [≡] TOP BAR                                                 │
+├──────────────┬──────────────────────────────────────────────┤
+│ SIDEBAR      │ MAIN                                         │
+│ # table      │ SHARED CHAT                                  │
+│ party rows   │ (centered at a comfortable reading width)    │
+│ Reference    │                                              │
+│ Tools        │                                              │
+│ Pilot*       ├──────────────────────────────────────────────┤
+│              │ BOTTOM COMPOSER / READY BAR                  │
+└──────────────┴──────────────────────────────────────────────┘
+* only while this client's Pilot Mode is on
 ```
 
-All major regions should be independently collapsible.
+The sidebar runs the full height below the top bar, beside both the chat and the composer, so the composer stays centered under the conversation. When the shared table map is open it sits to the right of the chat column.
+
+The sidebar is resized by dragging its right divider and hidden or restored with the persistent toggle at the upper left of the top bar. Dragging past the minimum width collapses it. Width and collapsed state are remembered per browser, separately from saves. In windows too narrow for the minimum sidebar plus a usable chat column, the sidebar becomes an overlay that starts closed.
 
 ---
 
@@ -390,8 +393,7 @@ Party Sidebar
 - save/session identifier
 - current mode
 - Pilot Mode toggle
-- left sidebar toggle
-- right sidebar toggle
+- sidebar toggle (upper left, available whether the sidebar is shown or hidden)
 
 Avoid filling the top bar with minor controls.
 
@@ -399,7 +401,7 @@ Avoid filling the top bar with minor controls.
 
 # 11. Left Sidebar
 
-The left sidebar should start intentionally small.
+The left sidebar is the only sidebar. Below `# table` it shows compact party rows, then Reference and Tools, then Pilot Controls when the local client's Pilot Mode is on. Keep its navigation small.
 
 Do not copy Discord's channel model just because the layout resembles Discord.
 
@@ -598,27 +600,22 @@ When generation begins:
 
 ---
 
-# 15. Right Sidebar
+# 15. Party Rows
 
-The right sidebar is a shared table-status area.
+There is no right sidebar. Shared table status lives in compact party rows directly below `# table` in the left sidebar, without a separate Party heading.
 
-It is **not** itself Pilot Mode.
+The sidebar is **not** itself Pilot Mode.
 
 Initial structure:
 
 ```text
-PARTY
-
-George      Ready
-Ethereal    Ready
-Viktor      Not Ready
-
-QUICK REFERENCE
-
-NPCs
-Locations
-World Notes
+# table
+[portrait] George     Ready
+[portrait] Ethereal   Ready
+[portrait] Viktor     Not Ready
 ```
+
+Collapsing the sidebar intentionally hides party readiness. Do not add a duplicate Ready count or another persistent party display.
 
 Possible player details:
 
@@ -665,7 +662,7 @@ Enabling it should reveal additional controls without replacing the entire scree
 
 ## Pilot controls
 
-Suggested right-sidebar section:
+Pilot Controls appear at the bottom of the left sidebar, after Reference and Tools:
 
 ```text
 PILOT CONTROLS
@@ -987,23 +984,15 @@ Images should remain associated with the message/session context where they were
 
 The user should be able to collapse:
 
-### Left sidebar
+### Sidebar
 
-Leaves more space for chat.
-
-### Right sidebar
-
-Hides party/reference/Pilot controls.
+Hides party, reference, tools, and Pilot controls and produces a simple ChatGPT-like layout. The upper-left toggle restores the last expanded width. Dragging the divider below the minimum width resists briefly, then collapses.
 
 ### Bottom composer
 
 Useful when reading history or reviewing a long AI-DM response.
 
-### Both sidebars
-
-Produces a simple ChatGPT-like layout.
-
-Collapsed state should be remembered locally when practical.
+Sidebar width and collapsed state are remembered per browser, separately from saves. Resizing or collapsing keeps the paragraph being read in place.
 
 ---
 
@@ -1015,7 +1004,7 @@ However, the UI should degrade gracefully on smaller screens.
 
 Possible mobile/tablet behavior:
 
-- sidebars become drawers
+- the sidebar becomes an overlay that starts closed, once the window cannot fit the minimum sidebar plus a usable chat column
 - main chat stays primary
 - bottom composer stays accessible
 - Party/Pilot controls move behind a button
@@ -1172,9 +1161,9 @@ PLAY
 These are intentionally unresolved:
 
 1. Exact visual style of the Play Screen.
-2. Whether Reference and Tools both belong in the left sidebar or some become right-sidebar quick actions.
+2. Resolved: Reference, Tools, party rows, and Pilot Controls all live in the single left sidebar.
 3. Exact Player Profile / portrait editing interaction.
-4. Whether the Pilot console appears as a left-sidebar item, drawer, side panel, or separate chat view.
+4. Whether the private Pilot console appears as a drawer, side panel, or separate chat view (Pilot Controls themselves live in the left sidebar).
 5. Whether AI-DM drafts require explicit Pilot publish every time or publish automatically during normal play.
 6. Exact attachment/image picker behavior.
 7. Exact map viewer behavior.
@@ -1196,8 +1185,8 @@ Unless explicitly changed later:
 4. Players do not manually target scene IDs.
 5. Ready is simple and always available during normal play.
 6. Pilot Mode adds controls rather than replacing the whole interface.
-7. The right sidebar is not synonymous with Pilot Mode.
-8. The left sidebar starts small.
+7. The sidebar is not synonymous with Pilot Mode; Pilot Controls appear in it only while Pilot Mode is on.
+8. There is one left sidebar and no right sidebar; its navigation stays small.
 9. Multiple channels are not required at launch.
 10. Cartridge secrets must not leak into player-facing reference views.
 11. Combat does not turn TableForge into a VTT.
