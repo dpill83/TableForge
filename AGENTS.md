@@ -219,11 +219,12 @@ The intended play-screen mental model is:
 
 Use:
 
-- top menu/header bar
-- collapsible left sidebar
+- top menu/header bar, with a persistent sidebar toggle at the upper left
+- one resizable, collapsible left sidebar
 - main shared chat area
-- collapsible right sidebar
-- collapsible bottom composer/status bar
+- collapsible bottom composer/status bar, aligned with the chat column
+
+There is no right sidebar.
 
 Do not make the UI a dashboard full of unrelated cards.
 
@@ -245,46 +246,39 @@ player response(s)
 
 Internal scene/message IDs may exist, but ordinary users should not manage them.
 
-### Left Sidebar
+### Sidebar
 
-Keep this intentionally light.
-
-Initial useful content may include:
+The play screen has a single left sidebar. It runs the full height below the header, beside both the chat and the composer, and holds:
 
 ```text
 # table
+[party rows: portrait, character, player, Ready/combat state]
 
 Reference
 - NPCs
 - Locations
-- World Notes
+- Notes
 
 Tools
-- Cast Viewer
-- Module Viewer
+- Cast Viewer   (Pilot only)
+- Module Viewer (Pilot only)
+- Scene Viewer  (Pilot only)
 - Map
 
 + Add
+
+Pilot Controls  (only while this client's Pilot Mode is on)
 ```
+
+The sidebar itself is **not** Pilot Mode. Party rows are normal shared table information; Pilot Controls appear only when the local client enables Pilot Mode.
+
+Players resize it by dragging its right divider and hide or restore it with the header toggle. Width and collapsed state are per-browser preferences, separate from saves. Collapsing it intentionally hides party readiness; do not add a duplicate Ready display. Narrow windows show it as an overlay that starts closed.
 
 Do not invent multiple Discord-like channels without a real use case.
 
 Additional channels/tools may be added later.
 
 AdventureForge viewer concepts may be reused when useful.
-
-### Right Sidebar
-
-The right sidebar is **not** Pilot Mode.
-
-It should contain normal shared table information, such as:
-
-- party members
-- connection/presence
-- Ready state
-- quick reference controls
-
-When Pilot Mode is enabled, add Pilot Controls to this sidebar.
 
 ### Bottom Bar
 
@@ -579,8 +573,7 @@ The current design/prototype sequence is:
 4. **Play Screen**
    - collapsible shell
    - shared AI-DM feed
-   - left reference/tools sidebar
-   - right party/Pilot sidebar
+   - single left sidebar: party, reference/tools, Pilot controls
    - bottom composer
    - Ready system
 

@@ -166,7 +166,7 @@ textarea{padding:10px;resize:none}
   height:100%;
   width:100%;
   display:grid;
-  grid-template-rows:58px minmax(0,1fr) auto;
+  grid-template-rows:58px minmax(0,1fr);
 }
 .topbar{
   border-bottom:1px solid var(--border);
@@ -177,17 +177,15 @@ textarea{padding:10px;resize:none}
   padding:0;
   min-width:0;
 }
+.sidebar-toggle{flex:none;margin-left:10px}
 .app-brand{
   align-self:stretch;
-  width:230px;
-  min-width:230px;
   display:flex;
   flex-direction:column;
   align-items:flex-start;
   justify-content:center;
   gap:0;
-  padding:0 18px;
-  border-right:1px solid var(--border);
+  padding:0 10px 0 8px;
   white-space:nowrap;
 }
 .app-name{
@@ -292,45 +290,48 @@ textarea{padding:10px;resize:none}
   stroke-linejoin:round;
 }
 .pilot-toggle.on{background:#6f522f;border-color:#9a713d}
+/* One full-height left sidebar beside the chat column (chat above composer);
+   the shared table map, when open, sits to the right of the chat column. */
 .workarea{
   min-height:0;
   position:relative;
   display:grid;
-  --left-w:230px;--right-w:260px;--map-w:0px;
-  grid-template-columns:var(--left-w) minmax(0,1fr) var(--map-w) var(--right-w);
+  --sidebar-w:260px;--map-w:0px;
+  grid-template-columns:var(--sidebar-w) minmax(0,1fr) var(--map-w);
+  grid-template-rows:minmax(0,1fr) auto;
 }
-#leftSidebar{grid-column:1}
-#rightSidebar{grid-column:4}
-.divider-handle{
-  position:absolute;
-  z-index:12;
-  width:20px;height:34px;
-  display:grid;place-items:center;
-  border:1px solid var(--border2);
-  border-radius:6px;
-  background:#15191f;
-  color:#8f98a4;
-  cursor:pointer;
-  top:50%;
-  transform:translateY(-50%);
-  box-shadow:0 2px 8px rgba(0,0,0,.28);
-}
-.divider-handle:hover,.divider-handle:focus-visible{
-  color:var(--text);border-color:var(--accent);outline:none
-}
-.left-handle{left:220px}
-.right-handle{right:250px}
-.workarea.left-collapsed .left-handle{left:-1px}
-.workarea.right-collapsed .right-handle{right:-1px}
-.workarea.left-collapsed{--left-w:0px}
-.workarea.right-collapsed{--right-w:0px}
+#leftSidebar{grid-column:1;grid-row:1/-1}
+.workarea.sidebar-collapsed{--sidebar-w:0px}
+.workarea.sidebar-collapsed #leftSidebar{visibility:hidden;border-right:0}
 .workarea.map-open{--map-w:var(--map-size,clamp(300px,32vw,600px))}
 .sidebar{
-  min-width:0;overflow:auto;background:#111419;border-right:1px solid var(--border);
+  min-width:0;overflow:auto;overscroll-behavior:contain;background:#111419;border-right:1px solid var(--border);
 }
-.sidebar.right{border-right:0;border-left:1px solid var(--border)}
-.sidebar.collapsed{overflow:hidden}
 .sidebar-inner{padding:12px;width:100%}
+/* Narrow windows: the sidebar floats over the chat column and starts closed. */
+.workarea.sidebar-overlay{--sidebar-w:0px}
+.workarea.sidebar-overlay #leftSidebar{
+  position:absolute;top:0;bottom:0;left:0;z-index:15;
+  width:var(--sidebar-overlay-w,220px);max-width:calc(100vw - 48px);box-shadow:var(--shadow)
+}
+.sidebar-resize{
+  position:absolute;top:0;bottom:0;left:calc(var(--sidebar-w) - 6px);z-index:14;
+  width:12px;cursor:col-resize;touch-action:none
+}
+.sidebar-resize::after{
+  content:"";position:absolute;top:0;bottom:0;left:5px;width:2px;
+  background:transparent;transition:background-color .12s
+}
+.sidebar-resize:hover::after,.sidebar-resize.active::after{background:rgba(201,154,87,.45)}
+.sidebar-resize:focus-visible{outline:none}
+.sidebar-resize:focus-visible::after{background:var(--accent)}
+.workarea.sidebar-collapsed .sidebar-resize,.workarea.sidebar-overlay .sidebar-resize{display:none}
+/* Keep the divider (and its pointer capture) alive while a drag collapses the sidebar. */
+.workarea.sidebar-resizing .sidebar-resize{display:block}
+/* While dragging: keep the resize cursor everywhere, stop text selection, and
+   keep embedded viewers from swallowing the pointer. */
+body.sidebar-dragging,body.sidebar-dragging *{cursor:col-resize!important;user-select:none!important}
+body.sidebar-dragging iframe{pointer-events:none}
 .section-title{
   margin:15px 8px 6px;font-size:11px;font-weight:800;letter-spacing:.08em;
   color:#7f8792;text-transform:uppercase
@@ -343,7 +344,7 @@ textarea{padding:10px;resize:none}
 .nav-item:hover,.nav-item.active{background:#1c2128;color:var(--text)}
 .nav-symbol{width:18px;color:#8d95a1;text-align:center}
 .main-chat{
-  grid-column:2;min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr) auto;
+  grid-column:2;grid-row:1;min-width:0;min-height:0;display:grid;grid-template-rows:minmax(0,1fr) auto;
   background:
     radial-gradient(circle at 50% 10%,rgba(201,154,87,.035),transparent 35%),
     #0d1014;
@@ -356,7 +357,8 @@ textarea{padding:10px;resize:none}
   position:absolute;inset:0;z-index:3;width:100%;height:100%;
   border:0;background:#0d1014
 }
-.feed{overflow:auto;padding:22px clamp(16px,4vw,52px) 34px}
+/* A symmetric gutter keeps the reading column centered on the same axis as the composer. */
+.feed{overflow:auto;scrollbar-gutter:stable both-edges;padding:22px clamp(16px,4vw,52px) 34px}
 .jump-latest{
   position:absolute;left:50%;bottom:38px;transform:translateX(-50%);z-index:2;
   padding:7px 14px;border:1px solid var(--accent2);border-radius:999px;
@@ -474,8 +476,10 @@ textarea{padding:10px;resize:none}
 .typing::after{content:"";animation:dots 1.2s steps(4,end) infinite}
 @keyframes dots{0%{content:""}25%{content:"."}50%{content:".."}75%,100%{content:"..."}}
 
-/* right sidebar */
-.party-card{padding:8px;border:1px solid var(--border);border-radius:10px;background:#0f1216;margin-bottom:8px}
+/* party rows (sidebar) */
+.party-list{margin:8px 0 2px}
+.party-list:empty{display:none}
+.party-card{padding:7px 8px;border:1px solid var(--border);border-radius:10px;background:#0f1216;margin-bottom:6px}
 .usage-summary{padding:10px;border:1px solid var(--border);border-radius:10px;background:#0f1216;color:var(--muted);font-size:12px;line-height:1.5}
 .usage-summary strong{display:block;color:var(--text);font-size:13px;margin-bottom:3px}
 .usage-summary a{color:var(--blue)}
@@ -486,10 +490,13 @@ textarea{padding:10px;resize:none}
 .portrait-button:hover .party-avatar,.portrait-button:focus-visible .party-avatar{border-color:var(--accent2)}
 .portrait-button:focus-visible{outline:2px solid var(--accent2);outline-offset:3px}
 .party-name{min-width:0;flex:1}
-.party-name strong{display:block;font-size:13px}.party-name span{font-size:11px;color:var(--muted)}
+.party-name strong{display:block;font-size:13px}.party-name span{display:block;font-size:11px;color:var(--muted)}
+.party-name strong,.party-name span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ready-badge{flex:none}
 .ready-badge{font-size:11px;padding:3px 7px;border-radius:999px;border:1px solid var(--border);color:var(--muted)}
 .ready-badge.ready{border-color:rgba(105,197,138,.5);color:var(--good);background:rgba(105,197,138,.07)}
-.pilot-panel{margin-top:12px;border-top:1px solid var(--border);padding-top:12px}
+.pilot-panel{margin-top:12px;border-top:1px solid var(--border);padding-top:2px}
+.pilot-panel .section-title{margin-bottom:8px}
 .pilot-panel .btn{width:100%;margin-bottom:7px}
 .pilot-panel .btn.flagged{border-color:var(--warn);color:var(--warn)}
 .pilot-location{display:block;margin-bottom:9px}
@@ -514,6 +521,7 @@ textarea{padding:10px;resize:none}
 
 /* composer */
 .composer-wrap{
+  grid-column:2;grid-row:2;min-width:0;
   position:relative;z-index:12;
   border-top:1px solid var(--border);background:#111419;padding:10px 14px;
 }
@@ -801,17 +809,10 @@ textarea{padding:10px;resize:none}
 .pilot-line-header time{color:var(--muted);font-size:11px}
 
 @media(max-width:900px){
-  .app-brand{width:auto;min-width:0;border-right:0;padding:0 10px}
+  .app-brand{padding:0 8px 0 6px}
   .app-name{font-size:18px}
   .top-title{padding-left:8px}
   .top-search{width:170px}
-  .workarea,.workarea.left-collapsed,.workarea.right-collapsed,.workarea.map-open{--left-w:0px;--right-w:0px;--map-w:0px}
-  .main-chat{grid-column:2}
-  .left-handle{left:-1px}
-  .right-handle{right:-1px}
-  .sidebar{position:fixed;top:58px;bottom:0;width:260px;z-index:10;box-shadow:var(--shadow)}
-  .sidebar.left{left:0}.sidebar.right{right:0}
-  .sidebar.collapsed{display:none}
   .composer-body{gap:7px}
 }
 @media(max-width:620px){
@@ -864,7 +865,7 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center}
 
 /* Shared table map: a panel beside chat. */
 .map-panel{
-  grid-column:3;position:relative;min-width:0;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto;
+  grid-column:3;grid-row:1/-1;position:relative;min-width:0;min-height:0;display:grid;grid-template-rows:auto minmax(0,1fr) auto;
   background:#0b0d10;border-left:1px solid var(--border)
 }
 .map-panel.hidden{display:none}
@@ -892,6 +893,25 @@ a.btn{text-decoration:none;display:inline-flex;align-items:center}
 .map-status.error{color:#f0a3a3}
 @media(max-width:900px){
   /* Phones and narrow windows: the map covers the chat until closed. */
-  .map-panel{grid-column:1/-1;grid-row:1;position:absolute;inset:0;z-index:9;border-left:0}
+  .workarea.map-open{--map-w:0px}
+  .map-panel{grid-column:2/-1;grid-row:1;position:absolute;inset:0;z-index:9;border-left:0}
   .map-resize{display:none}
+}
+
+/* Dark scrollbars. Chromium and Safari use the ::-webkit-scrollbar pseudo-
+   elements (no arrow buttons, rounded thumb). Chromium 121+ ignores those
+   wherever the standard properties are set, so the standard properties are
+   applied only where the pseudo-elements are unsupported (Firefox). Forced
+   colors keep the system scrollbars. */
+@media (forced-colors:none){
+  #play .feed,#play .sidebar,#modalRoot .modal,#modalRoot .modal *,#play .map-panel *{--scroll-thumb:#3a414b;--scroll-thumb-hover:#5a636f}
+  #play .feed::-webkit-scrollbar,#play .sidebar::-webkit-scrollbar,#modalRoot .modal::-webkit-scrollbar,#modalRoot .modal *::-webkit-scrollbar,#play .map-panel *::-webkit-scrollbar{width:10px;height:10px;background:transparent}
+  #play .feed::-webkit-scrollbar-track,#play .sidebar::-webkit-scrollbar-track,#modalRoot .modal::-webkit-scrollbar-track,#modalRoot .modal *::-webkit-scrollbar-track,#play .map-panel *::-webkit-scrollbar-track,#play .feed::-webkit-scrollbar-corner,#play .sidebar::-webkit-scrollbar-corner,#modalRoot .modal::-webkit-scrollbar-corner,#modalRoot .modal *::-webkit-scrollbar-corner,#play .map-panel *::-webkit-scrollbar-corner{background:transparent}
+  #play .feed::-webkit-scrollbar-button,#play .sidebar::-webkit-scrollbar-button,#modalRoot .modal::-webkit-scrollbar-button,#modalRoot .modal *::-webkit-scrollbar-button,#play .map-panel *::-webkit-scrollbar-button{display:none;width:0;height:0}
+  #play .feed::-webkit-scrollbar-thumb,#play .sidebar::-webkit-scrollbar-thumb,#modalRoot .modal::-webkit-scrollbar-thumb,#modalRoot .modal *::-webkit-scrollbar-thumb,#play .map-panel *::-webkit-scrollbar-thumb{background:var(--scroll-thumb);border:2px solid transparent;border-radius:999px;background-clip:padding-box;min-height:36px}
+  #play .feed:hover::-webkit-scrollbar-thumb,#play .sidebar:hover::-webkit-scrollbar-thumb,#modalRoot .modal:hover::-webkit-scrollbar-thumb,#modalRoot .modal *:hover::-webkit-scrollbar-thumb,#play .map-panel *:hover::-webkit-scrollbar-thumb{background:var(--scroll-thumb-hover);background-clip:padding-box}
+  @supports not selector(::-webkit-scrollbar){
+    #play .feed,#play .sidebar,#modalRoot .modal,#modalRoot .modal *,#play .map-panel *{scrollbar-width:thin;scrollbar-color:var(--scroll-thumb) transparent}
+    #play .feed:hover,#play .sidebar:hover,#modalRoot .modal:hover,#modalRoot .modal *:hover,#play .map-panel *:hover{scrollbar-color:var(--scroll-thumb-hover) transparent}
+  }
 }

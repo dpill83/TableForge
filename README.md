@@ -109,7 +109,7 @@ Each player can click their portrait in the Party list to open the editor, then 
 
 Players can attach one PNG, JPEG, or WebP image (up to 20 MB) from the composer **+** control. The picture is stored with the playthrough and shown in the table feed. A caption is optional. Image-only shares stay on the table; the AI-DM sees caption text only.
 
-The Play Screen sidebar shows reported OpenAI tokens and an estimated USD cost for the current session and playthrough. Options shows totals across saved adventures. Tracking begins with requests made after this update; earlier API activity cannot be reconstructed from the save. Estimates use standard text prices dated 2026-09-25 in `metering.py`. Models without a known rate still show tokens, with cost marked unavailable. The OpenAI billing dashboard remains the source of truth for charges.
+The in-game Options dialog shows reported OpenAI tokens and an estimated USD cost for the current session and playthrough. Title-screen Options shows totals across saved adventures. Tracking begins with requests made after this update; earlier API activity cannot be reconstructed from the save. Estimates use standard text prices dated 2026-09-25 in `metering.py`. Models without a known rate still show tokens, with cost marked unavailable. The OpenAI billing dashboard remains the source of truth for charges.
 
 ### Illustrate Scene (experimental)
 
@@ -123,7 +123,7 @@ Generation uses the selected public narration, visual direction, player-characte
 
 Image bytes and request metadata are stored with the save in `tableforge.sqlite3`, following the existing portrait storage approach. Shared images and unreviewed drafts survive reloads and server restarts. Discard removes the image bytes while retaining request metadata and usage. Pilot Mode remains a UI safety measure for the trusted table, not an authentication boundary. Any trusted player in Pilot Mode can review a draft.
 
-Image requests and estimated costs appear separately from text usage in the sidebar and Options. The Flare estimate uses reported text input and image output tokens at the [model's rates](https://developers.openai.com/api/docs/models/gpt-image-2.5-flare), dated 2026-09-25. Unknown models, missing usage, and failed or interrupted requests show cost unavailable. Discarding an image does not refund its generation. Requests can take up to a few minutes; failures and interrupted requests are never automatically retried. Check provider usage before explicitly retrying an uncertain request.
+Image requests and estimated costs appear separately from text usage in Options. The Flare estimate uses reported text input and image output tokens at the [model's rates](https://developers.openai.com/api/docs/models/gpt-image-2.5-flare), dated 2026-09-25. Unknown models, missing usage, and failed or interrupted requests show cost unavailable. Discarding an image does not refund its generation. Requests can take up to a few minutes; failures and interrupted requests are never automatically retried. Check provider usage before explicitly retrying an uncertain request.
 
 ### Drafts, retries, and Ready Override
 
@@ -431,14 +431,12 @@ The intended play-screen design is:
 The main shell includes:
 
 ```text
-Top bar
-Left sidebar
-Main shared conversation
-Right sidebar
-Bottom composer / Ready bar
+Top bar (with the sidebar toggle at the upper left)
+Left sidebar | Main shared conversation
+             | Bottom composer / Ready bar
 ```
 
-All major regions should be collapsible.
+There is one resizable, collapsible left sidebar and no right sidebar.
 
 ### Main Area
 
@@ -456,12 +454,11 @@ Players should not manually manage scene IDs or reply targets.
 
 ### Left Sidebar
 
-Keep this light.
-
-Initial concepts:
+Keep this light. Drag its right divider to resize it; drag past the minimum or use the upper-left toggle to hide it. Width and collapsed state are remembered per browser.
 
 ```text
 # table
+[party rows with Ready/combat state]
 
 Reference
 - NPCs
@@ -474,20 +471,11 @@ Tools
 - Map
 
 + Add
+
+Pilot Controls (only while Pilot Mode is on)
 ```
 
 Do not add multiple Discord-like channels without a real use case.
-
-### Right Sidebar
-
-Shared table information such as:
-
-- party members
-- connection state
-- Ready state
-- quick reference controls
-
-When Pilot Mode is enabled, Pilot controls appear here as an additional section.
 
 ### Bottom Bar
 
@@ -623,8 +611,7 @@ Exit
 
 - collapsible app shell
 - shared AI-DM feed
-- reference/tools sidebar
-- party/Pilot sidebar
+- single sidebar: party, reference/tools, Pilot controls
 - composer
 - Ready system
 
