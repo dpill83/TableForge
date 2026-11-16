@@ -254,6 +254,14 @@ For a resumed game this includes the current saved state and whatever cartridge 
 
 The AI-DM produces the opening or next table-facing response.
 
+### Start Adventure
+
+A new playthrough does not begin until someone presses **Start Adventure** — the "start engine" button. Until then the main chat shows a Start card instead of an empty feed, and Ready / Ready Override are hidden, so readiness cannot start the adventure by accident.
+
+The Start card has an optional **Anything to add before we begin?** box. Usually you just press Start. Notes, such as party level, tone, or a starting situation, are added to the standard start request with priority over it. Pilot Mode can expand the exact request that will be sent. IC messages players send before Start are honored too.
+
+Any joined player may press Start. TableForge saves an attributed `adventure_start` event with the notes, shown in the feed as "[Name] started the adventure", only when the opening narration is published. A failed start saves nothing and can be retried. Non-empty notes remain in AI context for the rest of the playthrough, labeled as already fulfilled, so the opening is not replayed.
+
 ---
 
 ## 8. Normal Table Conversation

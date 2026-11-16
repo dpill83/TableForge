@@ -367,6 +367,18 @@ body.sidebar-dragging iframe{pointer-events:none}
 }
 .jump-latest:hover{background:#252b34}
 .feed-inner{max-width:900px;margin:0 auto}
+.start-card{
+  max-width:620px;margin:8vh auto 0;padding:28px 30px;text-align:center;
+  border:1px solid var(--border);border-radius:14px;background:var(--panel)
+}
+.start-eyebrow{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--accent)}
+.start-card h2{margin:8px 0 6px;font:28px Georgia,"Times New Roman",serif}
+.start-notes-label{display:block;text-align:left;margin-top:20px}
+.start-notes-label textarea{width:100%;box-sizing:border-box;margin-top:6px;resize:vertical}
+.start-btn{margin-top:18px;height:52px;padding:0 34px;font-size:18px}
+.start-status{min-height:1.4em;margin:10px 0 0}
+.start-prompt{text-align:left;margin-top:8px;font-size:13px}
+.start-prompt pre{white-space:pre-wrap;font:inherit;color:var(--muted);margin:8px 0 0}
 .typing-indicator{
   max-width:900px;width:100%;margin:0 auto;box-sizing:border-box;
   min-height:26px;padding:3px clamp(16px,4vw,52px) 5px;font-size:13px;font-style:italic;color:var(--muted)

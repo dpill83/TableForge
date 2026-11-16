@@ -233,6 +233,17 @@
       <main id="mainChat" class="main-chat">
         <div id="feed" class="feed">
           <div id="feedInner" class="feed-inner"></div>
+          <section id="startCard" class="start-card hidden" aria-labelledby="startTitle">
+            <div class="start-eyebrow">Ready to begin</div>
+            <h2 id="startTitle">Adventure</h2>
+            <p class="muted">When the table is set, press Start and the AI-DM will open the adventure.</p>
+            <label class="start-notes-label">Anything to add before we begin? <span class="muted">(optional)</span>
+              <textarea id="startNotes" rows="3" maxlength="20000" placeholder="e.g. We're all level 3. Keep the tone light. Our characters already know each other."></textarea>
+            </label>
+            <button class="btn primary start-btn" id="startAdventure" type="button">&#9654; Start Adventure</button>
+            <p id="startStatus" class="start-status muted" role="status" aria-live="polite"></p>
+            <details id="startPromptDetails" class="start-prompt hidden"><summary>Starting request sent to the AI-DM</summary><pre id="startPromptText"></pre></details>
+          </section>
         </div>
         <button id="jumpLatest" class="jump-latest hidden" type="button">New messages · Jump to latest ↓</button>
         <div id="typingIndicator" class="typing-indicator" aria-live="polite"></div>

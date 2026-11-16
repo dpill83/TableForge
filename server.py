@@ -627,7 +627,7 @@ def snapshot(conn, save_id, pilot_player_id=None):
         message['choices'] = json.loads(message.pop('choices_json') or 'null')
         if message['id'] in questions:
             message['ooc'] = questions[message['id']]
-    return {
+    result = {
         'save': dict(save),
         'combat': combat.current(conn, save_id),
         'tableMap': table_map.current(conn, save_id),
@@ -661,6 +661,16 @@ def snapshot(conn, save_id, pilot_player_id=None):
             'pricingUrl': metering.PRICING_URL,
         },
     }
+    # Before the first AI-DM narration the play screen shows a Start Adventure card.
+    # startPrompt is the request it sends, shown read-only for transparency.
+    result['started'] = ai.adventure_started(result)
+    if not result['started']:
+        try:
+            kind = runtime_prompts.for_save(conn, save_id)['kind']
+        except ValueError:
+            kind = None
+        result['startPrompt'] = ai.default_start_request(result, kind)
+    return result
 
 
 def typing_players(save_id):
@@ -757,6 +767,30 @@ def begin_advance(conn, save_id, payload):
             'waitingOn': [p['id'] for p in state['players'] if not p['ready']],
         }}
     return context
+
+
+def begin_start(conn, save_id, payload):
+    """Start engine: the first AI-DM narration, sent with optional table notes."""
+    state = snapshot(conn, save_id)
+    if not state['cartridge']['available']:
+        raise ValueError('Locate the cartridge before starting the adventure')
+    if not active_session(conn, save_id):
+        raise ValueError('Start the next session before playing')
+    if state['started']:
+        raise ValueError('The adventure has already begun')
+    if state['save']['mode'] != 'normal' or combat.pending(state.get('combat')):
+        raise ValueError('Leave combat before starting the adventure')
+    player = require_player(state, payload.get('playerId'))
+    notes = str(payload.get('notes') or '').strip()
+    if len(notes) > ai.START_NOTES_LIMIT:
+        raise ValueError(f'Starting notes are limited to {ai.START_NOTES_LIMIT:,} characters')
+    if payload.get('beat') is not None and int(payload['beat']) != state['save']['beat']:
+        raise ValueError('This beat has already advanced')
+    if save_id in GENERATING:
+        raise ValueError('The AI-DM is already responding')
+    context = ai.build_context(state, DATA, start_notes=notes)
+    GENERATING[save_id] = 'advance'
+    return context, {'playerId': player['id'], 'notes': notes}
 
 
 def begin_ask(conn, save_id, payload):
@@ -963,7 +997,7 @@ def set_location(conn, state, location, player_id, source, arrival=None, arrival
                               **({'arrivalConnectionId': arrival} if arrival is not None or previous is not None else {})}), utc()))
 
 
-def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=False):
+def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=False, start=None):
     session = active_session(conn, save_id)
     state = snapshot(conn, save_id)
     text, combat_started = combat.extract(text)
@@ -1007,6 +1041,10 @@ def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=
                      (save_id, session['id'], override['playerId'], 'ready_override',
                       json.dumps({'beat': override['beat'], 'messageId': message_id,
                                   'ready': override['ready'], 'waitingOn': override['waitingOn']}), stamp))
+    if start:
+        # Saved only with the narration it produced, attributed to whoever started.
+        conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
+                     (save_id, session['id'], start['playerId'], 'adventure_start', start['notes'], stamp))
     conn.execute('UPDATE saves SET beat=beat+1, opening_stage=?, updated_at=? WHERE id=?',
                  (next_opening_stage, utc(), save_id))
     conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
@@ -1236,6 +1274,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.resolve_image(parts[2], parts[4], parts[5], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'advance':
                 return self.handle_advance(parts[2], payload)
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'start':
+                return self.handle_start(parts[2], payload)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] in ('combat-outcome', 'combat-retry'):
                 return self.handle_combat_resume(parts[2], payload, parts[3] == 'combat-retry')
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'combat-report':
@@ -1924,6 +1964,19 @@ class Handler(BaseHTTPRequestHandler):
 
         def publish(conn, save_id, text):
             return publish_advance(conn, save_id, text, override or None)
+
+        return self.run_generation(save_id, begin, publish, payload)
+
+    def handle_start(self, save_id, payload):
+        start = {}
+
+        def begin(conn, save_id, payload):
+            context, details = begin_start(conn, save_id, payload)
+            start.update(details)
+            return context
+
+        def publish(conn, save_id, text):
+            return publish_advance(conn, save_id, text, start=start)
 
         return self.run_generation(save_id, begin, publish, payload)
 
