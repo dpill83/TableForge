@@ -417,6 +417,13 @@ Older messages acquire null metadata through the additive schema migration and
 retain their original text. Choice clicks edit only the local draft; Send records
 the final edited contribution through the existing player-message path.
 
+The first AI-DM narration is published together with one append-only
+`adventure_start` session event: the player who pressed Start Adventure, plus
+their optional start notes (possibly empty). Non-empty notes stay in future AI
+context. Saves created before Start Adventure existed have no such event and are
+unaffected. Save API responses include `started`, and `startPrompt` (the default
+start request) until the first narration is published.
+
 AI-DM outputs should be saved before or when published.
 
 Recommended distinctions:

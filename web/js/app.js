@@ -618,7 +618,7 @@
     $('partyList').querySelector('.portrait-button')?.addEventListener('click',openPortraitEditor);
     $('illustrateScene').disabled=!state.identity||!s.messages.some(m=>m.kind==='ai');
     // Rebuild the feed only when its content changes, so Ready/typing updates keep the reading position.
-    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,s.messages.map(m=>[m.id,m.body.length,m.ooc,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl]),s.events.filter(e=>['combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind))]);
+    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,s.messages.map(m=>[m.id,m.body.length,m.ooc,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl]),s.events.filter(e=>['adventure_start','combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind))]);
     const feedChanged=feedKey!==state.feedKey,sameSave=state.feedSaveId===s.save.id,previousIds=new Set(state.feedKey?[...$('feedInner').children].map(el=>el.id):[]);
     const followLatest=state.followLatest!==false;
     if(feedChanged){
@@ -631,14 +631,14 @@
       try{const detail=JSON.parse(e.body);overrides.set(detail.messageId,{...detail,playerId:e.player_id});}catch(error){console.error(error);}
     }
     const character=id=>s.players.find(p=>p.id===id)?.character||'A player';
-    const combatEvents=(s.events||[]).filter(e=>['combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind));
+    const combatEvents=(s.events||[]).filter(e=>['adventure_start','combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind));
     let combatEventIndex=0;
     const appendCombatEvent=e=>{
       const row=document.createElement('div');row.className='message combat-event';row.id='event-'+e.id;
-      const label=e.kind==='combat_correction'?'corrected the combat outcome':e.kind==='combat_outcome'?'reported the combat outcome':e.kind==='combat_skipped'?'skipped the combat outcome':'used Combat Finished Override';
-      row.innerHTML=`<div class="avatar">✓</div><div><div class="message-head"><strong>${esc(character(e.player_id))} ${label}</strong><span class="time">${new Date(e.created_at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</span></div><div class="message-body markdown-body"></div></div>`;
-      if(['combat_outcome','combat_correction'].includes(e.kind))row.querySelector('.message-body').innerHTML=TableForgeMarkdown.render(e.body);
-      row.dataset.searchText=(character(e.player_id)+' '+label+' '+(e.kind==='combat_outcome'?e.body:'')).toLowerCase();
+      const label=e.kind==='adventure_start'?(e.body?'started the adventure with these notes':'started the adventure'):e.kind==='combat_correction'?'corrected the combat outcome':e.kind==='combat_outcome'?'reported the combat outcome':e.kind==='combat_skipped'?'skipped the combat outcome':'used Combat Finished Override';
+      row.innerHTML=`<div class="avatar">${e.kind==='adventure_start'?'▶':'✓'}</div><div><div class="message-head"><strong>${esc(character(e.player_id))} ${label}</strong><span class="time">${new Date(e.created_at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</span></div><div class="message-body markdown-body"></div></div>`;
+      if(['adventure_start','combat_outcome','combat_correction'].includes(e.kind))row.querySelector('.message-body').innerHTML=TableForgeMarkdown.render(e.body);
+      row.dataset.searchText=(character(e.player_id)+' '+label+' '+(['adventure_start','combat_outcome'].includes(e.kind)?e.body:'')).toLowerCase();
       $('feedInner').append(row);
     };
     for(const m of s.messages){
@@ -737,8 +737,10 @@
     }
     const current=s.players.find(p=>p.id===state.identity);
     const locked=combatPending(),combatMode=s.save.mode==='combat',busy=state.generating||state.updating||!!s.activity?.aiDm;
-    $('readyBtn').disabled=!current||busy||locked;
-    $('readyBtn').classList.toggle('hidden',locked);
+    const unstarted=s.started===false;
+    $('readyBtn').disabled=!current||busy||locked||unstarted;
+    $('readyBtn').classList.toggle('hidden',locked||unstarted);
+    renderStartCard(s,current,busy);
     const ooc=state.composerMode==='ooc';
     $('sendBtn').disabled=!current||(ooc?state.publicSending:busy||locked);
     $('composer').disabled=!current||(ooc?state.publicSending:busy||locked);
@@ -764,7 +766,7 @@
     $('correctCombat').disabled=busy||locked;
     $('combatToggle').disabled=busy||locked;
     $('readyOverride').disabled=busy||locked;
-    $('readyOverride').classList.toggle('hidden',locked);
+    $('readyOverride').classList.toggle('hidden',locked||unstarted);
     $('combatStatus').classList.toggle('hidden',!locked);
     const reporting=s.combat?.phase==='reporting',reporter=s.players.find(p=>p.id===s.combat?.reporter_id);
     $('combatExplanation').textContent=state.generating&&combatPending()?'The AI-DM is narrating the aftermath.':s.combat?.phase==='failed'?'The outcome is saved. Aftermath narration failed or stalled; anyone can retry.':s.combat?.phase==='resuming'?'The AI-DM is narrating the aftermath.':reporting?`${reporter?.name||'A player'} is recording the combat outcome.`:'Combat is at the table. Report the outcome when the fight is resolved.';
@@ -866,8 +868,44 @@
     if(state.composerMode==='ooc')$('sendBtn').disabled=!state.identity||state.publicSending||!$('composer').value.replace(/^\s*OOC:\s*/i,'').trim();
     refreshChoiceButtons();
   };
-  $('keepDraft').onclick=()=>{if(combatPending())return;state.draft=null;syncDraft();$('composer').focus();};  const advanceTable = async (extra={}) => {
-    if(state.generating || state.updating || state.asking || combatPending()) return;
+  $('keepDraft').onclick=()=>{if(combatPending())return;state.draft=null;syncDraft();$('composer').focus();};  // Before the first AI-DM narration only Start Adventure begins play; Ready waits for the first beat.
+  const startNotesKey=()=>state.save?`tableforge-start-notes:${state.save.save.id}`:null;
+  const readStartNotes=()=>{try{return localStorage.getItem(startNotesKey())||'';}catch{return '';}};
+  const storeStartNotes=value=>{const key=startNotesKey();if(!key)return;try{if(value)localStorage.setItem(key,value);else localStorage.removeItem(key);}catch(error){console.error(error);}};
+  const startPromptPreview=s=>{
+    const extra=$('startNotes').value.trim();
+    return (s.startPrompt||'')+(extra?'\n\nThe table added these notes before starting. Follow them; they take precedence over the instructions above where they conflict:\n'+extra:'');
+  };
+  const renderStartCard=(s,current,busy)=>{
+    const card=$('startCard'),show=s.started===false&&s.save.mode==='normal'&&!combatPending();
+    card.classList.toggle('hidden',!show);
+    if(!show)return;
+    $('startTitle').textContent=s.cartridge.title;
+    const notes=$('startNotes');
+    if(notes.dataset.saveId!==s.save.id){notes.dataset.saveId=s.save.id;notes.value=readStartNotes();}
+    const starting=!!state.starting||s.activity?.aiDm==='advance';
+    $('startAdventure').disabled=!current||busy;
+    notes.disabled=starting;
+    $('startStatus').textContent=starting?'The AI-DM is opening the adventure…':!current?'Join as a player to start.':'';
+    $('startPromptDetails').classList.toggle('hidden',!state.pilot);
+    $('startPromptText').textContent=startPromptPreview(s);
+  };
+  $('startNotes').addEventListener('input',()=>{
+    storeStartNotes($('startNotes').value);
+    if(state.save)$('startPromptText').textContent=startPromptPreview(state.save);
+  });
+  $('startAdventure').onclick=async()=>{
+    if($('startAdventure').disabled||state.generating||!state.save||state.save.started!==false)return;
+    const saveId=state.save.save.id,notes=$('startNotes').value.trim();
+    state.generating=true;state.starting=true;render();
+    try{
+      state.save=await request(`saves/${saveId}/start`,{playerId:state.identity,notes,beat:state.save.save.beat});
+      if(state.save.started){storeStartNotes('');$('startNotes').value='';}
+    }catch(error){notify(error);}
+    finally{state.generating=false;state.starting=false;if(state.save)render();}
+  };
+  const advanceTable = async (extra={}) => {
+    if(state.generating || state.updating || state.asking || combatPending() || state.save?.started===false) return;
     state.generating = true;
     render();
     try {
@@ -1358,6 +1396,7 @@
     $('pilotToggle').textContent='Pilot Mode: '+(state.pilot?'On':'Off');
     $('pilotPanel').classList.toggle('hidden',!state.pilot);
     for(const tool of toolFrames) $(tool.button).classList.toggle('hidden',!state.pilot);
+    $('startPromptDetails').classList.toggle('hidden',!state.pilot);
     refreshContextFlag();
     if(!state.pilot){
       if($('pilotThread')||$('sceneImageDialog')||$('moduleViewerLoading')||$('moduleViewerMessage')||$('moduleValidatorDialog')||$('aiRequestLogDialog'))$('modalRoot').replaceChildren();

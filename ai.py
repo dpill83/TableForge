@@ -28,6 +28,23 @@ SUMMARY_PROMPT = (
     'combat outcomes, and open threads. Use only facts from the summary and transcript. '
     'Be concise, use plain prose or short bullet lists, and do not narrate a new beat.'
 )
+# The table's "start engine" request, sent when someone presses Start Adventure.
+# Optional table notes typed on the start card are appended to it.
+STAGE3_START_REQUEST = (
+    'Begin the adventure. This is the first AI-DM narration. '
+    'This session is already running in TableForge; do not ask whether TableForge is being used. '
+    'Use the saved character assignments and skip relay setup and party-sheet confirmation. '
+    'Present only the first playable opening beat, beginning with the character establishing '
+    'round. The hook, acceptance, travel, and arrival happen across later beats as players '
+    'respond; they are not a checklist for this response. Stop when you ask what the players '
+    'do, without narrating an outcome or the next scene. Honor any player contributions above.'
+)
+GENERIC_START_REQUEST = (
+    'Begin the adventure. This is the first AI-DM narration. '
+    'Use the saved character assignments. Present the opening scene and stop when you ask '
+    'what the players do. Honor any player contributions above.'
+)
+START_NOTES_LIMIT = 20_000
 MODULE_CAP = 60_000
 TRANSCRIPT_CAP = 40_000
 # Older history is summarized so the verbatim window keeps headroom for new play.
@@ -178,8 +195,40 @@ def trim_transcript(messages, cap=TRANSCRIPT_CAP):
     return kept
 
 
-def build_context(state, data_dir, purpose='advance'):
-    """Assemble provider context plus a report of everything left out of it."""
+def adventure_started(state):
+    """The adventure begins with the first published AI-DM narration."""
+    return any(m['kind'] == 'ai' for m in state['messages'])
+
+
+def stage3_opening(state):
+    """Whether a Stage 3 save is still at its authored session opening."""
+    return (state['save']['beat'] == 1 and not state.get('summary')
+            and not adventure_started(state)
+            and not state.get('checkpoint') and not state['save'].get('location'))
+
+
+def default_start_request(state, prompt_kind):
+    return STAGE3_START_REQUEST if prompt_kind == 'stage3' and stage3_opening(state) else GENERIC_START_REQUEST
+
+
+def start_event(state):
+    return next((e for e in state.get('events', []) if e['kind'] == 'adventure_start'), None)
+
+
+def start_request(default, notes):
+    notes = (notes or '').strip()
+    if not notes:
+        return default
+    return (default + '\n\nThe table added these notes before starting. Follow them; they take '
+            'precedence over the instructions above where they conflict:\n' + notes)
+
+
+def build_context(state, data_dir, purpose='advance', start_notes=None):
+    """Assemble provider context plus a report of everything left out of it.
+
+    Before the first AI-DM narration, the final request is the Start Adventure
+    request plus any optional `start_notes` the table typed on the start card.
+    """
     # Public questions are explanations, never player action declarations. Keep
     # them outside beat detection, retrieval, opening progression, and choices.
     rulings = [{'question': m['body'], 'answer': m['ooc']['answer']}
@@ -249,10 +298,16 @@ def build_context(state, data_dir, purpose='advance'):
     report['narrationPrompt'] = runtime_prompts.metadata(prompt)
     context['choiceInstructions'] = narration_choices.instructions()
     context['choicePlayers'] = [{'playerId': p['id'], 'character': p['character']} for p in state['players']]
+    if not adventure_started(state):
+        context['startRequest'] = start_request(default_start_request(state, prompt['kind']), start_notes)
+    else:
+        started = start_event(state)
+        # Start notes may carry table facts or preferences ("we are level 3",
+        # "keep it light"), so they remain context for the whole playthrough.
+        if started and started['body'].strip():
+            context['startInstructions'] = started['body'].strip()
     if prompt['kind'] == 'stage3':
-        context['opening'] = (state['save']['beat'] == 1 and not summary
-                              and not any(m['kind'] == 'ai' for m in state['messages'])
-                              and not state.get('checkpoint') and not state.get('save', {}).get('location'))
+        context['opening'] = stage3_opening(state)
         context['party'] = [{'player': p['name'], 'character': p['character']} for p in state['players']]
         context['runData'] = (adventure.opening_data(opening_stage) if opening_stage
                               else adventure.structured_context(focus))
@@ -334,6 +389,10 @@ def chat_messages(context):
         if not context.get('opening'):
             system += ('\n\nRuntime request: continue the current situation. Do not restart the session opening. '
                        'If combat has just been resumed, narrate its aftermath using the recorded outcome.')
+    if context.get('startInstructions'):
+        system += ('\n\nTable notes given when the adventure began (the opening already happened; do not '
+                   'restart it, but keep any facts or preferences these notes establish):\n'
+                   + context['startInstructions'])
     checkpoint = context.get('checkpoint')
     if checkpoint:
         system += (f"\n\nLast session checkpoint (beat {checkpoint['beat']}, mode {checkpoint['mode']}): "
@@ -368,15 +427,8 @@ def chat_messages(context):
             messages.append({'role': 'assistant', 'content': item['body']})
         else:
             messages.append({'role': 'user', 'content': f"{item['name']}: {item['body']}"})
-    if context.get('opening'):
-        messages.append({'role': 'user', 'content':
-                         'Begin the adventure. This is the first AI-DM narration. '
-                         'This session is already running in TableForge; do not ask whether TableForge is being used. '
-                         'Use the saved character assignments and skip relay setup and party-sheet confirmation. '
-                         'Present only the first playable opening beat, beginning with the character establishing '
-                         'round. The hook, acceptance, travel, and arrival happen across later beats as players '
-                         'respond; they are not a checklist for this response. Stop when you ask what the players '
-                         'do, without narrating an outcome or the next scene. Honor any player contributions above.'})
+    if context.get('startRequest'):
+        messages.append({'role': 'user', 'content': context['startRequest']})
     elif not resume and not split_beat(context['messages'])[1]:
         # Earlier player messages are history, not a contribution to this beat.
         # Ready (or an override) can request continuation without declaring an action.
