@@ -85,7 +85,7 @@
   window.addEventListener('focus', checkBuild);
   const request = async (path, body) => {
     const controller=new AbortController();
-    const generating=body!==undefined&&/\/(images|advance|ask|summary-draft|combat-outcome|combat-retry|combat-correction)$/.test(path);
+    const generating=body!==undefined&&/\/(images|advance|start|ask|summary-draft|combat-outcome|combat-retry|combat-correction)$/.test(path);
     const bulky=!!body?.image;
     const timer=setTimeout(()=>controller.abort(),generating?210000:bulky?120000:15000);
     try{
