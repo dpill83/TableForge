@@ -85,17 +85,19 @@
   window.addEventListener('focus', checkBuild);
   const request = async (path, body) => {
     const controller=new AbortController();
+    const zip=typeof Blob!=='undefined'&&body instanceof Blob;
     const generating=body!==undefined&&/\/(images|advance|start|ask|summary-draft|combat-outcome|combat-retry|combat-correction)$/.test(path);
     const bulky=!!body?.image;
-    const timer=setTimeout(()=>controller.abort(),generating?210000:bulky?120000:15000);
+    const timer=setTimeout(()=>controller.abort(),zip?300000:generating?210000:bulky?120000:15000);
     try{
-      const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST', signal:controller.signal, headers:{'Content-Type':'application/json'}, body: body === undefined ? undefined : JSON.stringify(body)});
+      const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST', signal:controller.signal, headers:{'Content-Type':zip?'application/zip':'application/json'}, body: zip?body:body === undefined ? undefined : JSON.stringify(body)});
+      if(zip&&response.status===413) throw Error('The upload is too large for the server. Choose a smaller ZIP cartridge.');
       if(response.status===404&&path.endsWith('/portrait')) throw Error('Portraits need the updated TableForge server. Restart the server and refresh this page.');
       const result = await response.json();
       if(!response.ok) throw Object.assign(Error(result.error || `Request failed (${response.status})`), {code:result.code});
       return result;
     }catch(error){
-      if(error.name==='AbortError')throw Error(body===undefined?'The server is taking too long to respond.':'The request timed out. The server may still be working; check its status before retrying.');
+      if(error.name==='AbortError')throw Error(zip?'The ZIP upload timed out. Check your connection, then select the ZIP again.':body===undefined?'The server is taking too long to respond.':'The request timed out. The server may still be working; check its status before retrying.');
       throw error;
     }finally{clearTimeout(timer);}
   };
@@ -200,16 +202,23 @@
     for(let i=0;i<bytes.length;i+=8192) out += String.fromCharCode(...bytes.subarray(i,i+8192));
     return btoa(out);
   };
-  const cartridgePayload = async items => items.length === 1 && /\.zip$/i.test(items[0].name)
-    ? {kind:'zip', data:await bytes64(items[0])}
-    : {kind:'files', files:await Promise.all(items.map(async file => ({name:file.webkitRelativePath || file.name,data:await bytes64(file)})))};
+  const cartridgePayload = async items => {
+    if(items.length === 1 && /\.zip$/i.test(items[0].name)) {
+      if(items[0].size > 90*1024*1024) throw Error('Choose a ZIP cartridge up to 90 MB.');
+      return items[0];
+    }
+    return {kind:'files', files:await Promise.all(items.map(async file => ({name:file.webkitRelativePath || file.name,data:await bytes64(file)})))};
+  };
   const selectedFiles = async files => {
+    if($('browseFiles').disabled) return;
     const items = [...files];
     if(!items.length) return;
     if(items.length!==1 || !/\.zip$/i.test(items[0].name)) return notify(Error('Choose one ZIP cartridge containing all adventure files.'));
     const upload=++state.bindingRequest;
     state.cartridge=null;
     renderCartridge();
+    $('cartridgeUploadStatus').textContent=`Uploading and checking ${items[0].name}… This may take a few minutes.`;
+    $('browseFiles').disabled=true;
     try {
       const cartridge = await request('cartridges', await cartridgePayload(items));
       if(upload!==state.bindingRequest) return;
@@ -217,7 +226,9 @@
       $('setupSaveName').value=state.cartridge.title;
       setSetupPlayers(cartridge.setupPlayers);
       renderCartridge();
-    } catch(error) { if(upload===state.bindingRequest) notify(error); }
+      $('cartridgeUploadStatus').textContent='';
+    } catch(error) { if(upload===state.bindingRequest) $('cartridgeUploadStatus').textContent=error.message || String(error); }
+    finally { if(upload===state.bindingRequest) $('browseFiles').disabled=false; }
   };
   $('browseFiles').onclick = () => $('filesInput').click();
   $('filesInput').onchange = event => {selectedFiles(event.target.files);event.target.value='';};

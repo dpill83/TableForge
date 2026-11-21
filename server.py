@@ -50,6 +50,9 @@ TYPING_SECONDS = 6
 AI_REQUEST_LOGS = {}
 COMBAT_GENERATION_TIMEOUT = 180
 MAX_REQUEST = 32 * 1024 * 1024
+# Keep ZIP uploads below the public proxy's request limit without base64 overhead.
+MAX_CARTRIDGE_BYTES = 90 * 1024 * 1024
+MAX_UNPACKED_CARTRIDGE_BYTES = 512 * 1024 * 1024
 MAX_PORTRAIT_BYTES = 5 * 1024 * 1024
 MAX_CHAT_IMAGE_BYTES = 20 * 1024 * 1024
 PORTRAIT_SIGNATURES = {
@@ -484,14 +487,14 @@ def read_archive(raw):
     with zipfile.ZipFile(io.BytesIO(raw)) as archive:
         if len(archive.infolist()) > 500:
             raise ValueError('Too many files in cartridge')
-        if sum(item.file_size for item in archive.infolist()) > MAX_REQUEST:
+        if sum(item.file_size for item in archive.infolist()) > MAX_UNPACKED_CARTRIDGE_BYTES:
             raise ValueError('Unpacked cartridge is too large')
         files = {}
         for item in archive.infolist():
             if item.is_dir():
                 continue
             path = Path(item.filename.replace('\\', '/'))
-            if path.is_absolute() or '..' in path.parts or item.file_size > MAX_REQUEST:
+            if path.is_absolute() or '..' in path.parts or item.file_size > MAX_UNPACKED_CARTRIDGE_BYTES:
                 raise ValueError('Unsafe cartridge entry')
             if item.filename in files:
                 raise ValueError('Duplicate cartridge entry')
@@ -552,9 +555,11 @@ def bound_scenes(state):
 def unpack_payload(payload):
     kind = payload.get('kind')
     if kind == 'zip':
-        raw = base64.b64decode(payload.get('data') or '', validate=True)
-        if len(raw) > MAX_REQUEST:
-            raise ValueError("Cartridge is too large (32 MB maximum)")
+        raw = payload.get('_zip_bytes')
+        if not isinstance(raw, bytes):
+            raw = base64.b64decode(payload.get('data') or '', validate=True)
+        if len(raw) > MAX_CARTRIDGE_BYTES:
+            raise ValueError("Cartridge is too large (90 MB maximum)")
         return read_archive(raw), raw
     if kind == 'files':
         files = {item['name']: base64.b64decode(item['data'] or '', validate=True) for item in payload.get('files', [])}
@@ -1122,6 +1127,16 @@ class Handler(BaseHTTPRequestHandler):
 
     def body(self):
         length = int(self.headers.get('Content-Length', '0'))
+        if self.headers.get_content_type() == 'application/zip':
+            path = urlparse(self.path).path
+            if path != '/api/cartridges' and not re.fullmatch(r'/api/saves/[^/]+/locate-cartridge', path):
+                raise ValueError('ZIP uploads are only supported for cartridges')
+            if length <= 0 or length > MAX_CARTRIDGE_BYTES:
+                raise ValueError('Choose a ZIP cartridge up to 90 MB')
+            raw = self.rfile.read(length)
+            if len(raw) != length:
+                raise ValueError('ZIP upload was interrupted; select the file again')
+            return {'kind': 'zip', '_zip_bytes': raw}
         if length > MAX_REQUEST * 2 or length < 0:
             raise ValueError('Request too large')
         return json.loads(self.rfile.read(length))
