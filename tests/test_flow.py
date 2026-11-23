@@ -1056,7 +1056,8 @@ Flyman block.
                 if failure:
                     raise urllib.error.URLError('PRIVATE PROVIDER ERROR secret-key')
                 completion = {'choices': [{'message': {'content': 'Narration.'}}],
-                              'usage': {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120},
+                              'usage': {'prompt_tokens': 100, 'completion_tokens': 20, 'total_tokens': 120,
+                                        'prompt_tokens_details': {'cached_tokens': 20, 'cache_write_tokens': 60}},
                               'service_tier': service_tier}
                 if reported is not None:
                     completion['model'] = reported
@@ -1075,8 +1076,9 @@ Flyman block.
 
     def test_request_log_routes_persist_all_models_scores_and_usage_after_restart(self):
         save_id = self.ready_save('# Private module')
-        for tier, model in [('cheap', 'gpt-6-luna'), ('standard', 'gpt-6-sol'), ('heavy', 'gpt-6-astra')]:
-            with self.subTest(tier=tier):
+        for tier, model in [('cheap', 'gpt-6-luna'), ('standard', 'gpt-6-sol'),
+                            ('standard', 'gpt-6.1-sol'), ('standard', 'gpt-6.2-sol'), ('heavy', 'gpt-6-astra')]:
+            with self.subTest(tier=tier, model=model):
                 route = {'tier': tier, 'model': model, 'reason': 'Confidence threshold cleared',
                          'reasoning_effort': 'low', 'effort_reason': 'Routine task',
                          'effort_scores': {'light': 0.8, 'normal': 0.15, 'hard': 0.05},
@@ -1101,7 +1103,10 @@ Flyman block.
                 self.assertEqual(entry['provider'], 'openai')
                 self.assertEqual(entry['status'], 'complete')
                 self.assertEqual((entry['inputTokens'], entry['outputTokens'], entry['totalTokens']), (100, 20, 120))
+                self.assertEqual((entry['cachedInputTokens'], entry['cacheWriteTokens']), (20, 60))
                 self.assertIsNotNone(entry['estimatedCostUsd'])
+                if model in ('gpt-6.1-sol', 'gpt-6.2-sol'):
+                    self.assertAlmostEqual(entry['estimatedCostUsd'], 0.000392)
                 self.assertNotIn('requestLog', result)
                 with server.db() as conn:
                     row = conn.execute('SELECT * FROM ai_requests WHERE id=?', (entry['id'],)).fetchone()
@@ -1126,6 +1131,19 @@ Flyman block.
         self.assertFalse(entry['routing']['fallback'])
         self.assertIsNotNone(entry['estimatedCostUsd'])
         self.assertEqual(len(sent), 1)
+
+    def test_table_play_policy_routes_real_opening_and_normal_advance(self):
+        save_id = self.ready_save()
+        with patch.dict(os.environ, {'TABLEFORGE_ROUTING_POLICY': 'table-play'}):
+            for expected_effort, expected_reason in [('high', 'Adventure opening'), ('medium', 'Normal narration')]:
+                with self.subTest(effort=expected_effort):
+                    entry, sent, _ = self.logged_openai(save_id, {'tier': 'heavy', 'model': 'gpt-6-astra'},
+                                                        reported='gpt-6.2-sol-snapshot')
+                    self.assertEqual(len(sent), 1)
+                    self.assertEqual((sent[0]['model'], sent[0]['reasoning_effort']), ('gpt-6.2-sol', expected_effort))
+                    self.assertEqual(entry['routing']['policy'], 'table-play')
+                    self.assertEqual(entry['routing']['reason'], expected_reason)
+                    self.assertFalse(entry['routing']['routerContacted'])
 
     def test_request_log_router_fallback_succeeds_and_retains_safe_reason(self):
         save_id = self.ready_save()

@@ -63,6 +63,17 @@ Variables already set in the launching terminal take precedence over `.env`, inc
 
 The `.env` file is plain text, excluded from Git, and outside the browser-served `web/` directory. Keep it private. The loader supports `KEY=value`, optional quotes, and comments; values are literal, so Windows paths work without escaping backslashes. Do not paste PowerShell assignment commands into `.env`.
 
+### Optional table play routing
+
+Set `TABLEFORGE_ROUTING_POLICY=table-play` and restart TableForge to select the model and reasoning effort by request type:
+
+- Normal narration and private Pilot Ask use GPT-6.2 Sol at `medium`.
+- The first narration, guided opening stages, and combat aftermath (including retries) use GPT-6.2 Sol at `high`.
+- Public OOC questions use GPT-6.2 Sol at `low`.
+- Campaign summaries use GPT-6 Luna at `medium`.
+
+TableForge selects these routes locally and gives the policy priority over configured models, effort overrides, and the LAN router. The Pilot AI Request Log shows the selected route and the effort sent to OpenAI. Clear `TABLEFORGE_ROUTING_POLICY` to return to the configured default model or the LAN router.
+
 ### Optional LAN model routing
 
 Set `TABLEFORGE_ROUTER_URL=http://10.0.0.22:8001/route` in `.env` and restart to route OpenAI text requests. An unset or blank value preserves the configured model and existing behavior. The router receives `POST {"prompt":"..."}` containing a task description capped at 2,400 characters: purpose (`advance`, `ask`, or `summary`), bounded recent player/Pilot requests, and brief relevant reply/combat context. It receives no cartridge, full transcript, API key, or generation prompt. These snippets can contain private Pilot information, so use a trusted router.
@@ -73,7 +84,7 @@ for older routers. Allowed values are `low`, `medium`, `high`, and `xhigh`.
 A valid router `reasoning_effort` takes precedence over tier configuration, then the
 default. TableForge router failures use only the configured default effort. Blank
 settings and older router replies preserve the provider-default request behavior.
-Effort is sent only for known GPT-6 Luna, GPT-6 Sol, GPT-6.1 Sol, and GPT-6 Astra
+Effort is sent only for known GPT-6 Luna, GPT-6 Sol, GPT-6.1 Sol, GPT-6.2 Sol, and GPT-6 Astra
 models (including their snapshots); other models keep their existing payload and
 show an explanatory note. Invalid router effort is ignored with a sanitized note.
 The AI Request Log shows requested effort in compact rows and separately records

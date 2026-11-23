@@ -5,7 +5,8 @@ const {render} = require('../web/js/request-log.js');
 const entry = {
   id: 'test', purpose: 'advance', provider: 'openai', sessionNumber: 1, status: 'complete',
   configuredModel: 'default-model', requestedModel: 'requested-model', reportedModel: 'reported-snapshot',
-  serviceTier: 'default', inputTokens: 100, outputTokens: 20, totalTokens: 120,
+  serviceTier: 'default', inputTokens: 100, cachedInputTokens: 0, cacheWriteTokens: 60,
+  outputTokens: 20, totalTokens: 120,
   estimatedCostUsd: 0.00002,
   routing: {enabled: true, tier: 'cheap', model: 'router-model', reason: 'Confidence threshold cleared',
     routerContacted: true, routerInternalFallbackUsed: false, routerInternalFallbackReason: null,
@@ -31,7 +32,8 @@ test('router, requested, reported and configured models are separately labeled',
     ['Router-selected model', 'router-model'], ['Model requested from OpenAI', 'requested-model'],
     ['Model reported by OpenAI', 'reported-snapshot'], ['Configured default / fallback model', 'default-model'],
     ['Router enabled', 'true'], ['Router contacted', 'true'], ['Laya/router fallback', 'false'],
-    ['TableForge router fallback', 'false'], ['OpenAI service tier', 'default']
+    ['TableForge router fallback', 'false'], ['OpenAI service tier', 'default'],
+    ['Cache-read input tokens', '0'], ['Cache-write input tokens', '60']
   ]) assert.ok(html.includes(`<dt>${label}</dt><dd>${value}</dd>`));
   assert.match(html, /cheap: 0\.49 · standard: 0\.42 · heavy: 0\.09/);
 });
@@ -49,6 +51,18 @@ test('TableForge router fallback is distinct from successful generation', () => 
   assert.match(html, /complete/);
   assert.match(html, /Router timed out/);
   assert.doesNotMatch(html, /role="alert"/);
+});
+
+test('table play policy shows its reason and selected effort without LAN router details', () => {
+  const html = render({...entry, requestedModel: 'gpt-6.2-sol',
+    routing: {policy: 'table-play', reason: 'Combat aftermath', requestedEffort: 'high',
+      effortSource: 'TableForge policy', routerContacted: false}});
+  const summary = html.split('</summary>')[0];
+  assert.match(summary, /Table play/);
+  assert.match(summary, /gpt-6.2-sol · high effort/);
+  assert.match(html, /Request route<\/dt><dd>Combat aftermath/);
+  assert.match(html, /Reasoning effort source<\/dt><dd>TableForge policy/);
+  assert.doesNotMatch(html, /Router contacted|Laya\/router fallback/);
 });
 
 test('router-internal fallback retains the tier badge and gets its own indicator', () => {
@@ -105,6 +119,7 @@ test('legacy records do not fabricate routes or reported models', () => {
   assert.match(html, /Routing unknown/);
   assert.match(html, /Router enabled<\/dt><dd>Unknown/);
   assert.match(html, /Metered model \(legacy\)<\/dt><dd>legacy-model/);
+  assert.match(html, /Cache-write input tokens<\/dt><dd>Unavailable/);
   assert.match(html, /Model reported by OpenAI<\/dt><dd>Unavailable/);
   assert.match(html, /Full payload unavailable/);
 });
