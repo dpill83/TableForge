@@ -26,15 +26,21 @@ def visible(conn, save_id):
         'FROM public_questions WHERE save_id=?', (save_id,))}
 
 
-def context(state, question, image=None):
+def recent_rulings(messages):
+    return [
+        {'character': message['name'], 'beat': message['ooc']['beat'],
+         'question': message['body'], 'answer': message['ooc']['answer']}
+        for message in messages if message.get('ooc', {}).get('status') == 'complete'
+    ][-20:]
+
+
+def context(state, question, image=None, *, character):
     # Deliberately never load a cartridge, summary, private thread, or pending IC actions.
     published = [m for m in state['messages'] if m['kind'] == 'ai'][-20:]
-    rulings = [dict(question=m['body'], answer=m['ooc']['answer'])
-               for m in state['messages'] if m.get('ooc', {}).get('status') == 'complete'][-20:]
     result = {'purpose': 'ooc', 'title': state['cartridge']['title'],
-              'beat': state['save']['beat'], 'question': question,
+              'beat': state['save']['beat'], 'character': character, 'question': question,
               'messages': [{'kind': 'ai', 'name': m['name'], 'body': m['body']} for m in published],
-              'publicRulings': rulings,
+              'publicRulings': recent_rulings(state['messages']),
               'publicNotes': [{'title': n['title'], 'body': n['body']} for n in state.get('notes', [])],
               'publicOutcomes': [e['body'] for e in state.get('events', [])
                                  if e['kind'] in ('combat_outcome', 'combat_correction')]}

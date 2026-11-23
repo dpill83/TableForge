@@ -2103,7 +2103,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not body or len(body) > 20000:
                     raise ValueError('Question must contain 1 to 20,000 characters')
                 source = next((m['id'] for m in reversed(state['messages']) if m['kind'] == 'ai'), None)
-                question_context = public_questions.context(state, body, payload.get('image'))
+                question_context = public_questions.context(
+                    state, body, payload.get('image'), character=player['character'])
                 inserted = conn.execute('INSERT INTO messages (save_id,session_id,player_id,kind,name,body,created_at,request_id) VALUES (?,?,?,?,?,?,?,?)',
                     (save_id, session['id'], player['id'], 'ooc', player['character'], body, utc(), request_id))
                 if image:

@@ -171,10 +171,12 @@ code never loads it. No provider call is needed to inspect or select instruction
 Public OOC questions use a separate `ooc` provider request. Its context contains
 published narration, completed public rulings, shared notes and combat reports,
 plus any image attached to that question. It excludes cartridge content, private
-Pilot exchanges, summaries and pending IC declarations. The server-owned prompt
-permits rules explanations and hypothetical attempts, forbids actions, outcomes
-and hidden facts, and cannot invoke runtime narration/combat transitions.
-Completed rulings enter later narration as explicitly hypothetical explanations.
+Pilot exchanges, summaries and pending IC declarations. When an observable
+condition such as local lighting is unspecified, the AI-DM can rule on it directly
+using the public scene and state its effect on a pending check. Explicit rulings
+carry into later narration with their scope. Questions remain separate from
+player declarations, and OOC replies cannot resolve actions, reveal hidden facts,
+or invoke narration or combat transitions.
 Private Pilot questions continue through the separate `ask` request.
 
 Public narration requests append server-owned combat instructions without altering the pinned Stage 3 snapshot. The AI-DM calls initiative, stops, and emits `[[TABLEFORGE_COMBAT:START]]` as the exact final line after other metadata. The server strips that signal and atomically enters Combat Mode with the published narration. Prose matching, quoted/code examples, Ask AI-DM, and summary responses cannot activate combat. Combat handoffs omit action choices.

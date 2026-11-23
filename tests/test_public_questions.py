@@ -1,6 +1,6 @@
 """Public questions preserve runtime state, privacy, and request identity."""
-import threading
 import base64
+import threading
 import time
 import unittest
 import uuid
@@ -53,6 +53,50 @@ class PublicQuestionsTest(unittest.TestCase):
         self.assertFalse(any(m['kind'] == 'ooc' for m in context['messages']))
         self.assertEqual(context['publicRulings'][0]['answer'], provider.text)
         self.assertIn('NEVER actions', ai.chat_messages(context)[0]['content'])
+
+    def test_visible_condition_ruling_carries_into_pending_check(self):
+        sid = self.ready_save('# Hidden trap under the drum')
+        scene = 'Ethereal, the captain leads you to the drum. Roll Dexterity (Stealth) to tamper with it.'
+        with patch('ai.current_provider', return_value=test_flow.FakeProvider(scene)):
+            before = self.api(f'/api/saves/{sid}/advance', {})
+        ethereal = before['players'][1]['id']
+        question = 'Is it dim light or darkness by the drum? My Stealth has disadvantage otherwise.'
+        answer = 'It is dim light by the drum. That feature does not impose disadvantage on this check.'
+        dm = test_flow.FakeProvider(answer)
+        with patch('ai.current_provider', return_value=dm):
+            self.question(sid, ethereal, question)
+            after = self.wait(sid)
+        prompt = ai.chat_messages(dm.context)[0]['content']
+        self.assertIn('make a reasonable, scene-specific DM ruling', prompt)
+        self.assertIn('Answer directly on the first request', prompt)
+        self.assertIn('Do not perform actions, decide outcomes, roll checks', prompt)
+        self.assertIn(scene, prompt)
+        self.assertNotIn('Hidden trap under the drum', prompt)
+        self.assertEqual(dm.context['character'], 'Ethereal')
+        self.assertEqual(after['save']['beat'], before['save']['beat'])
+        self.assertEqual(after['players'], before['players'])
+
+        followup = test_flow.FakeProvider('Correct. Roll and report your total.')
+        with patch('ai.current_provider', return_value=followup):
+            self.question(sid, ethereal, 'Same spot. Does that mean I roll without that disadvantage?')
+            self.wait(sid, 2)
+        self.assertEqual(followup.context['publicRulings'], [{
+            'character': 'Ethereal', 'beat': before['save']['beat'], 'question': question, 'answer': answer,
+        }])
+
+        self.api(f'/api/saves/{sid}/messages', {'playerId': ethereal, 'text': 'Stealth total is 15.'})
+        narration = test_flow.FakeProvider('You steady your hand by the drum.')
+        with patch('ai.current_provider', return_value=narration):
+            final = self.api(f'/api/saves/{sid}/advance', self.override(sid))
+        system = ai.chat_messages(narration.context)[0]['content']
+        self.assertIn(answer, system)
+        self.assertIn('including when resolving a reported check', system)
+        self.assertFalse(any(m['kind'] == 'ooc' for m in narration.context['messages']))
+        self.assertIn('Stealth total is 15.', narration.context['messages'][-1]['body'])
+        with patch.object(ai, 'SUMMARY_WINDOW', 0):
+            summary = ai.chat_messages(ai.build_summary_context(final))
+        self.assertIn('Preserve relevant public DM rulings', summary[0]['content'])
+        self.assertIn(answer, summary[1]['content'])
 
     def test_two_players_scene_advance_and_duplicate_pending_retry(self):
         sid = self.ready_save()
