@@ -39,12 +39,20 @@ class NotesTest(unittest.TestCase):
         self.assertEqual(self.api_error(path, create)['code'], 'note_conflict')
         # Even a Pilot must supply a matching revision for shared Notes.
         self.assertEqual(self.api_error(path, {**edit, 'pilot': True, 'mutationId': 'pilot-stale'})['code'], 'note_conflict')
+        # NPCs and Locations are open to every player, with the same revision checks as Notes.
         for category in ('npc', 'location'):
-            restricted = dict(playerId=first, category=category, title='Known person/place', body='Known')
-            self.assertIn('Pilot Mode', self.api_error(path, restricted)['error'])
-            ref = next(n for n in self.api(path, {**restricted, 'pilot': True})['notes'] if n['category'] == category)
-            for change in ({'body': 'Changed'}, {'remove': True}, {'category': 'world'}):
-                self.assertIn('Pilot Mode', self.api_error(path, {**restricted, 'id': ref['id'], **change})['error'])
+            known = dict(playerId=first, category=category, title='Known person/place', body='Known',
+                         clientKey=f'create-{category}', mutationId=f'create-{category}')
+            ref = next(n for n in self.api(path, known)['notes'] if n['category'] == category)
+            self.assertEqual(ref['created_by'], first)
+            change = dict(playerId=second, id=ref['id'], category=category, revision=ref['revision'],
+                          title='Known person/place', body='Changed', mutationId=f'edit-{category}')
+            changed = next(n for n in self.api(path, change)['notes'] if n['id'] == ref['id'])
+            self.assertEqual((changed['body'], changed['updated_by'], changed['revision']), ('Changed', second, 2))
+            self.assertEqual(self.api_error(path, {**change, 'mutationId': f'stale-{category}'})['code'], 'note_conflict')
+            gone = self.api(path, dict(playerId=second, id=ref['id'], revision=2, remove=True, mutationId=f'delete-{category}'))
+            self.assertFalse(any(n['id'] == ref['id'] for n in gone['notes']))
+        self.assertIn('mutationId', self.api_error(path, dict(playerId=first, category='npc', title='No retry key'))['error'])
         server.initialize()
         resumed = self.api(f'/api/saves/{save_id}')
         self.assertEqual(next(n for n in resumed['notes'] if n['id'] == note['id']), edited)

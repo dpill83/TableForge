@@ -910,7 +910,8 @@ class NoteConflict(ValueError):
 
 
 def save_note(conn, state, payload):
-    """Shared player notes; NPC and location knowledge still requires Pilot Mode."""
+    """Shared party notes (NPCs, Locations, Notes): any player may add, edit, or remove.
+    Every edit is revision-checked and idempotent so concurrent editors never silently overwrite."""
     player = require_player(state, payload.get('playerId'))
     save_id, stamp = state['save']['id'], utc()
     note_id = payload.get('id')
@@ -919,42 +920,32 @@ def save_note(conn, state, payload):
         existing = conn.execute('SELECT * FROM party_notes WHERE id=? AND save_id=?', (note_id, save_id)).fetchone() if type(note_id) is int else None
         if existing is None:
             raise ValueError('This note no longer exists')
-    category = payload.get('category', existing['category'] if existing else None)
-    # Checking both categories prevents relabeling NPCs/Locations to bypass Pilot Mode.
-    if (category != 'world' or (existing and existing['category'] != 'world')) and payload.get('pilot') is not True:
-        raise ValueError('Enable Pilot Mode to edit party knowledge')
-    shared = category == 'world' and (not existing or existing['category'] == 'world')
     mutation = payload.get('mutationId')
-    if shared:
-        if not isinstance(mutation, str) or not 1 <= len(mutation) <= 100:
-            raise ValueError('Notes require a mutationId for safe retries')
-        if existing:
-            if existing['mutation_id'] == mutation:
-                return
-            if existing['removed_at'] or type(payload.get('revision')) is not int or payload['revision'] != existing['revision']:
+    if not isinstance(mutation, str) or not 1 <= len(mutation) <= 100:
+        raise ValueError('Notes require a mutationId for safe retries')
+    if existing:
+        if existing['mutation_id'] == mutation:
+            return
+        if existing['removed_at'] or type(payload.get('revision')) is not int or payload['revision'] != existing['revision']:
+            raise NoteConflict('This note changed or was deleted. Your draft has been kept.')
+    else:
+        key = payload.get('clientKey')
+        if not isinstance(key, str) or not 1 <= len(key) <= 100:
+            raise ValueError('New Notes require a clientKey for safe retries')
+        previous = conn.execute('SELECT * FROM party_notes WHERE save_id=? AND client_key=?', (save_id, key)).fetchone()
+        if previous:
+            if previous['removed_at'] or previous['mutation_id'] != mutation:
                 raise NoteConflict('This note changed or was deleted. Your draft has been kept.')
-        else:
-            key = payload.get('clientKey')
-            if not isinstance(key, str) or not 1 <= len(key) <= 100:
-                raise ValueError('New Notes require a clientKey for safe retries')
-            previous = conn.execute('SELECT * FROM party_notes WHERE save_id=? AND client_key=?', (save_id, key)).fetchone()
-            if previous:
-                if previous['removed_at'] or previous['mutation_id'] != mutation:
-                    raise NoteConflict('This note changed or was deleted. Your draft has been kept.')
-                return
-    elif existing and existing['removed_at']:
-        raise ValueError('This note no longer exists')
+            return
     if payload.get('remove') is True:
         if note_id is None:
             raise ValueError('Choose a note to remove')
         # Kept in the save as history; it just stops appearing in reference views.
         conn.execute('UPDATE party_notes SET removed_at=?,removed_by=?,revision=revision+1,mutation_id=? WHERE id=?', (stamp, player['id'], mutation, note_id))
     else:
-        category = payload.get('category')
+        category = payload.get('category', existing['category'] if existing else None)
         title = str(payload.get('title') or '').strip()
         body = str(payload.get('body') or '')
-        if not shared:
-            body = body.strip()
         if category not in NOTE_CATEGORIES:
             raise ValueError('Choose NPCs, Locations, or Notes')
         if not title or len(title) > 200:
@@ -964,7 +955,7 @@ def save_note(conn, state, payload):
         if note_id is None:
             conn.execute('INSERT INTO party_notes (save_id,category,title,body,created_by,created_at,updated_by,updated_at,client_key,mutation_id) '
                          'VALUES (?,?,?,?,?,?,?,?,?,?)', (save_id, category, title, body, player['id'], stamp, player['id'], stamp,
-                                                       payload.get('clientKey') if shared else None, mutation))
+                                                       payload.get('clientKey'), mutation))
         else:
             conn.execute('UPDATE party_notes SET category=?,title=?,body=?,updated_by=?,updated_at=?,revision=revision+1,mutation_id=? WHERE id=?',
                          (category, title, body, player['id'], stamp, mutation, note_id))

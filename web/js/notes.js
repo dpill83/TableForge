@@ -14,9 +14,10 @@
       }catch{this.storageError=true;}
       this.changed();
     }
-    edit(note){
+    // One session holds drafts for every category; drafts saved before categories existed are Notes.
+    edit(note,category='world'){
       const key=note?.id?String(note.id):this.uuid();
-      if(!this.drafts.has(key))this.drafts.set(key,{key,id:note?.id,clientKey:note?.client_key||this.uuid(),
+      if(!this.drafts.has(key))this.drafts.set(key,{key,id:note?.id,clientKey:note?.client_key||this.uuid(),category:note?.category||category,
         revision:note?.revision,title:note?.title||'',body:note?.body||'',dirty:false,status:note?'Saved':'',version:0});
       return this.drafts.get(key);
     }
@@ -37,7 +38,7 @@
           d.status='Couldn’t save';d.error='Use a title of 1–200 characters and text of at most 10,000 characters.';
           this.persist();return;
         }
-        d.op={id:d.id,clientKey:d.clientKey,revision:d.revision,category:'world',title:d.title.trim(),body:d.body,mutationId:this.uuid()};
+        d.op={id:d.id,clientKey:d.clientKey,revision:d.revision,category:d.category||'world',title:d.title.trim(),body:d.body,mutationId:this.uuid()};
         d.sentVersion=d.version;
       }
       this.running.add(d.key);d.status='Saving…';d.error='';this.persist();
@@ -60,7 +61,7 @@
     resume(){for(const d of this.drafts.values())if((d.dirty||d.op)&&!d.conflict&&!this.timers.has(d.key))this.flush(d);}
     discard(d){clearTimeout(this.timers.get(d.key));this.drafts.delete(d.key);this.persist();}
     copy(d){
-      const copy=this.edit();
+      const copy=this.edit(null,d.category||'world');
       this.input(copy,d.title,d.body);this.discard(d);return copy;
     }
   }

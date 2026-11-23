@@ -502,7 +502,16 @@
     if(status) status.innerHTML=aiDmBusy('ask')?'The AI-DM is typing '+dots():'';
   };
   const feedAtBottom=()=>{const feed=$('feed');return feed.scrollHeight-feed.scrollTop-feed.clientHeight<48;};
-  const scrollFeedToLatest=()=>{$('feed').scrollTop=$('feed').scrollHeight;state.followLatest=true;$('jumpLatest').classList.add('hidden');};
+  // Shown whenever the reader is scrolled meaningfully above the latest message,
+  // not only when something new arrives; the label notes unseen messages.
+  const syncJumpLatest=()=>{
+    const feed=$('feed'),button=$('jumpLatest');
+    if(state.followLatest!==false)state.feedHasNew=false;
+    const away=feed.scrollHeight-feed.scrollTop-feed.clientHeight>Math.max(160,feed.clientHeight/3);
+    button.classList.toggle('hidden',state.followLatest!==false||!(away||state.feedHasNew));
+    button.textContent=state.feedHasNew?'New messages · Jump to latest ↓':'Back to latest ↓';
+  };
+  const scrollFeedToLatest=()=>{$('feed').scrollTop=$('feed').scrollHeight;state.followLatest=true;syncJumpLatest();};
   // Single left sidebar. Every width change TableForge makes first captures the
   // paragraph being read; a resize observer restores it after the text reflows.
   const feedAnchor=new TableForgeLayout.FeedAnchor({feed:$('feed'),isFollowing:()=>state.followLatest!==false});
@@ -743,7 +752,7 @@
     if(sameSave&&document.hidden&&aiNotificationsEnabled())added.filter(m=>m.kind==='ai').forEach(announceAIMessage);
     state.feedSaveId=s.save.id;
     if(followLatest||!previousIds.size||added.some(m=>m.player_id&&m.player_id===state.identity&&m.kind!=='ai')) scrollFeedToLatest();
-    else{feed.scrollTop=top;if(added.length)$('jumpLatest').classList.remove('hidden');}
+    else{feed.scrollTop=top;if(added.length)state.feedHasNew=true;syncJumpLatest();}
     feedAnchor.capture();
     }
     const current=s.players.find(p=>p.id===state.identity);
@@ -927,7 +936,7 @@
       if(state.save) render();
     }
   };
-  $('feed').addEventListener('scroll',()=>{if(feedAnchor.handleScroll())return;state.followLatest=feedAtBottom();if(state.followLatest)$('jumpLatest').classList.add('hidden');},{passive:true});
+  $('feed').addEventListener('scroll',()=>{if(feedAnchor.handleScroll())return;state.followLatest=feedAtBottom();syncJumpLatest();},{passive:true});
   $('jumpLatest').onclick=()=>$('feed').scrollTo({top:$('feed').scrollHeight,behavior:'smooth'});
   $('sendBtn').onclick=async()=>{
     if(state.composerMode==='ooc'){if(!$('sendBtn').disabled)await sendPublicQuestion();return;}
@@ -1720,7 +1729,7 @@
     });
   };
   $('pilotMap').onclick=openMaps;
-  // Notes are shared; NPC and location reference editing remains Pilot-only.
+  // NPCs, Locations, and Notes are shared: any player may add, edit, or delete, with autosave and conflict checks.
   const notesSessions=new Map();
   let sharedNotesDialog=null;
   const notesSession=()=>{
@@ -1740,16 +1749,26 @@
     }));
     return notesSessions.get(key);
   };
-  const openSharedNotes=()=>{
+  const noteCategories={
+    npcs:{category:'npc',heading:'NPCs',noun:'NPC',titleLabel:'Name',bodyLabel:'Known to the party',placeholder:'Only what the party has learned in play.',
+      intro:'Known to the party. Everyone can add and edit what the table has learned in play.'},
+    locations:{category:'location',heading:'Locations',noun:'location',titleLabel:'Name',bodyLabel:'Known to the party',placeholder:'Only what the party has learned in play.',
+      intro:'Known to the party. Everyone can add and edit what the table has learned in play.'},
+    notes:{category:'world',heading:'Notes',noun:'note',titleLabel:'Title',bodyLabel:'Text',placeholder:'',
+      intro:'Shared notes for the table. Everyone can add and edit.'},
+  };
+  const openNotes=ref=>{
+    const config=noteCategories[ref],category=config.category;
     const s=state.save,session=notesSession();if(!s||!session)return;
     let editing=null,listMarkup='',draftMarkup='';
-    modal('<h3>Notes</h3><p class="muted">Shared notes for the table. Everyone can add and edit.</p><div id="sharedNotes"><div id="sharedNoteEditor"></div><div id="sharedNoteDrafts"></div><div class="note-list" id="sharedNoteList"></div><div class="actions"><button class="btn primary" id="sharedNoteAdd">Add note</button><button class="btn" data-close>Close</button></div></div>','wide');
+    modal(`<h3>${esc(config.heading)}</h3><p class="muted">${esc(config.intro)}</p><div id="sharedNotes"><div id="sharedNoteEditor"></div><div id="sharedNoteDrafts"></div><div class="note-list" id="sharedNoteList"></div><div class="actions"><button class="btn primary" id="sharedNoteAdd">Add ${esc(config.noun)}</button><button class="btn" data-close>Close</button></div></div>`,'wide');
     // modal() binds Close buttons present at creation time.
     const root=$('sharedNotes');
-    const currentNotes=()=>state.save?.save.id===s.save.id?(state.save.notes||[]).filter(n=>n.category==='world'):[];
+    const currentNotes=()=>state.save?.save.id===s.save.id?(state.save.notes||[]).filter(n=>n.category===category):[];
+    const draftCategory=d=>d.category||'world';
     const editor=d=>{
       editing=d;
-      $('sharedNoteEditor').innerHTML='<div class="note-form"><label>Title<input id="sharedNoteTitle" maxlength="200"></label><label>Text<textarea id="sharedNoteBody" rows="7" maxlength="10000"></textarea></label><p class="muted" id="sharedNoteStatus" role="status" aria-live="polite"></p><p id="sharedNoteError" role="alert"></p><div id="sharedNoteConflict" hidden><p>Another player changed or deleted this note. Your text is kept above. Review the saved version below, then keep your draft as a separate note or use the saved version.</p><div id="sharedNoteLatest" class="markdown-body"></div><div class="actions"><button class="btn" id="sharedNoteCopy">Save draft as a new note</button><button class="btn" id="sharedNoteLatestUse">Use saved version</button></div></div><div class="actions"><button class="btn" id="sharedNoteDone">Done</button></div></div>';
+      $('sharedNoteEditor').innerHTML=`<div class="note-form"><label>${esc(config.titleLabel)}<input id="sharedNoteTitle" maxlength="200"></label><label>${esc(config.bodyLabel)}<textarea id="sharedNoteBody" rows="7" maxlength="10000" placeholder="${esc(config.placeholder)}"></textarea></label><p class="muted" id="sharedNoteStatus" role="status" aria-live="polite"></p><p id="sharedNoteError" role="alert"></p><div id="sharedNoteConflict" hidden><p>Another player changed or deleted this note. Your text is kept above. Review the saved version below, then keep your draft as a separate note or use the saved version.</p><div id="sharedNoteLatest" class="markdown-body"></div><div class="actions"><button class="btn" id="sharedNoteCopy">Save draft as a new note</button><button class="btn" id="sharedNoteLatestUse">Use saved version</button></div></div><div class="actions"><button class="btn" id="sharedNoteDone">Done</button></div></div>`;
       $('sharedNoteTitle').value=d.title;$('sharedNoteBody').value=d.body;
       const input=()=>session.input(d,$('sharedNoteTitle').value,$('sharedNoteBody').value);
       $('sharedNoteTitle').oninput=input;$('sharedNoteBody').oninput=input;
@@ -1765,7 +1784,7 @@
       if(!root.isConnected)return;
       const notes=currentNotes();
       const name=id=>s.players.find(p=>p.id===id)?.character||s.players.find(p=>p.id===id)?.name||'a player';
-      const nextList=notes.map(n=>`<section class="note-card" data-note="${n.id}"><div class="row"><strong>${esc(n.title)}</strong><span class="note-actions"><button class="btn small note-edit">Edit</button><button class="btn small warn note-remove">Delete</button></span></div><div class="markdown-body">${TableForgeMarkdown.render(n.body||'')}</div><div class="muted note-meta">Last edited by ${esc(name(n.updated_by||n.created_by))} · ${esc(when(n.updated_at))}</div></section>`).join('')||'<p>No notes recorded yet.</p>';
+      const nextList=notes.map(n=>`<section class="note-card" data-note="${n.id}"><div class="row"><strong>${esc(n.title)}</strong><span class="note-actions"><button class="btn small note-edit">Edit</button><button class="btn small warn note-remove">Delete</button></span></div><div class="markdown-body">${TableForgeMarkdown.render(n.body||'')}</div><div class="muted note-meta">Last edited by ${esc(name(n.updated_by||n.created_by))} · ${esc(when(n.updated_at))}</div></section>`).join('')||`<p>No ${esc(category==='npc'?config.heading:config.heading.toLowerCase())} recorded yet.</p>`;
       if(nextList!==listMarkup){$('sharedNoteList').innerHTML=nextList;listMarkup=nextList;}
       $('sharedNoteList').querySelectorAll('.note-edit').forEach(b=>b.onclick=()=>{
         const n=notes.find(n=>n.id===Number(b.closest('[data-note]').dataset.note));
@@ -1779,13 +1798,13 @@
         if(drafts.some(d=>session.running.has(d.key)))return notify(Error('Wait for this note to finish saving before deleting it.'));
         if(!confirm(`Delete “${n.title}”? Any local draft will also be discarded. It stays in the save history.`))return;
         try{
-          await session.send({id:n.id,category:'world',revision:n.revision,remove:true,mutationId:newRequestId()});
+          await session.send({id:n.id,category,revision:n.revision,remove:true,mutationId:newRequestId()});
           drafts.forEach(d=>session.discard(d));
           if(editing?.id===n.id){editing=null;$('sharedNoteEditor').replaceChildren();}refresh();
         }catch(error){notify(error);}
       });
-      const pending=[...session.drafts.values()].filter(d=>(d.dirty||d.op||d.conflict)&&d!==editing);
-      const nextDrafts=pending.map(d=>`<p><button class="btn small" data-draft="${esc(d.key)}">Continue draft: ${esc(d.title||'Untitled note')}</button> <span>${esc(d.status)}</span></p>`).join('');
+      const pending=[...session.drafts.values()].filter(d=>(d.dirty||d.op||d.conflict)&&d!==editing&&draftCategory(d)===category);
+      const nextDrafts=pending.map(d=>`<p><button class="btn small" data-draft="${esc(d.key)}">Continue draft: ${esc(d.title||'Untitled '+config.noun)}</button> <span>${esc(d.status)}</span></p>`).join('');
       if(nextDrafts!==draftMarkup){$('sharedNoteDrafts').innerHTML=nextDrafts;draftMarkup=nextDrafts;}
       $('sharedNoteDrafts').querySelectorAll('[data-draft]').forEach(b=>b.onclick=()=>editor(session.drafts.get(b.dataset.draft)));
       if(editing){
@@ -1798,42 +1817,10 @@
         }
       }
     };
-    sharedNotesDialog={refresh};$('sharedNoteAdd').onclick=()=>editor(session.edit());
+    sharedNotesDialog={refresh};$('sharedNoteAdd').onclick=()=>editor(session.edit(null,category));
     refresh();session.resume();
   };
   setInterval(()=>{notesSession()?.resume();sharedNotesDialog?.refresh();},3000);
-  const noteCategories={npcs:['npc','NPCs','NPC'],locations:['location','Locations','location'],notes:['world','Notes','note']};
-  const openNotes=(ref,editing=null)=>{
-    if(ref==='notes')return openSharedNotes();
-    const [category,heading,noun]=noteCategories[ref];
-    const s=state.save;if(!s)return;
-    const notes=(s.notes||[]).filter(n=>n.category===category);
-    const character=id=>s.players.find(p=>p.id===id)?.character||'a Pilot';
-    const canEdit=state.pilot&&!!state.identity;
-    const saveNote=async body=>{
-      try{state.save=await request('saves/'+s.save.id+'/notes',{playerId:state.identity,pilot:true,...body});render();openNotes(ref);}
-      catch(error){notify(error);}
-    };
-    const form=editing?`<div class="note-form"><label>Name<input id="noteTitle" maxlength="200"></label><label>Known to the party<textarea id="noteBody" rows="5" maxlength="10000" placeholder="Only what the party has learned in play."></textarea></label><div class="actions"><button class="btn" id="noteCancel">Cancel</button><button class="btn good" id="noteSave">Save</button></div></div>`:'';
-    const list=notes.map(n=>`<section class="note-card" data-note="${n.id}"><div class="row"><strong>${esc(n.title)}</strong>${canEdit&&!editing?'<span class="note-actions"><button class="btn small note-edit">Edit</button><button class="btn small warn note-remove">Remove</button></span>':''}</div><div class="markdown-body">${TableForgeMarkdown.render(n.body||'')}</div><div class="muted note-meta">Known · written by ${esc(character(n.updated_by||n.created_by))} · ${esc(when(n.updated_at))}</div></section>`).join('');
-    modal(`<h3>${esc(heading)}</h3><p class="muted">Known to the party. Pilots add what the table has learned in play.</p>${editing?.id?'':form}<div class="note-list">${list||(editing?'':`<p>No ${esc(heading==='NPCs'?heading:heading.toLowerCase())} recorded yet.${canEdit?'':' Pilots can add entries in Pilot Mode.'}</p>`)}</div><div class="actions">${canEdit&&!editing?`<button class="btn primary" id="noteAdd">Add ${esc(noun)}</button>`:''}<button class="btn" data-close>Close</button></div>`,'wide');
-    if(editing?.id) $('modalRoot').querySelector(`[data-note="${editing.id}"]`).innerHTML=form;
-    $('noteAdd')?.addEventListener('click',()=>openNotes(ref,{}));
-    $('modalRoot').querySelectorAll('.note-edit').forEach(button=>button.onclick=()=>openNotes(ref,notes.find(n=>n.id===Number(button.closest('[data-note]').dataset.note))));
-    $('modalRoot').querySelectorAll('.note-remove').forEach(button=>button.onclick=async()=>{
-      const note=notes.find(n=>n.id===Number(button.closest('[data-note]').dataset.note));
-      if(!confirm(`Remove “${note.title}” from ${heading}? It stays in the save history.`))return;
-      await saveNote({id:note.id,remove:true});
-    });
-    if(editing){
-      $('noteTitle').value=editing.title||'';$('noteBody').value=editing.body||'';$('noteTitle').focus();
-      $('noteCancel').onclick=()=>openNotes(ref);
-      $('noteSave').onclick=async()=>{
-        const title=$('noteTitle').value.trim();if(!title)return notify(Error(`Give the ${noun} a name.`));
-        await saveNote({id:editing.id,category,title,body:$('noteBody').value});
-      };
-    }
-  };
   const openModuleViewer=async()=>{
     if(!state.pilot){
       modal('<h3>Module Viewer</h3><p>Enable Pilot Mode to read the adventure module, which may contain spoilers.</p><div class="actions"><button class="btn" data-close>Close</button></div>');

@@ -1387,28 +1387,28 @@ Flyman block.
         normal = self.api(f'/api/saves/{save_id}/advance', {'beat': 2})
         self.assertEqual(len([e for e in normal['events'] if e['kind'] == 'ready_override']), 1)
 
-    def test_party_notes_are_pilot_authored_and_kept_out_of_ai_context(self):
+    def test_party_notes_are_player_authored_and_kept_out_of_ai_context(self):
         save_id = self.ready_save()
         first, second = [p['id'] for p in self.api(f'/api/saves/{save_id}')['players']]
-        note = {'playerId': first, 'pilot': True, 'category': 'npc', 'title': 'Sybil Peti',
-                'body': "Cheese-factor from Gillian's Hill."}
-        self.assertIn('Pilot Mode', self.api_error(f'/api/saves/{save_id}/notes', {**note, 'pilot': False})['error'])
-        self.assertIn('Choose NPCs', self.api_error(f'/api/saves/{save_id}/notes', {**note, 'category': 'secret'})['error'])
-        self.assertIn('title', self.api_error(f'/api/saves/{save_id}/notes', {**note, 'title': ' '})['error'])
+        note = {'playerId': first, 'category': 'npc', 'title': 'Sybil Peti',
+                'body': "Cheese-factor from Gillian's Hill.", 'clientKey': 'sybil', 'mutationId': 'create-sybil'}
+        self.assertIn('Choose NPCs', self.api_error(f'/api/saves/{save_id}/notes', {**note, 'category': 'secret', 'clientKey': 'bad'})['error'])
+        self.assertIn('title', self.api_error(f'/api/saves/{save_id}/notes', {**note, 'title': ' ', 'clientKey': 'blank'})['error'])
         created = self.api(f'/api/saves/{save_id}/notes', note)
         [saved] = created['notes']
         self.assertEqual((saved['title'], saved['created_by']), ('Sybil Peti', first))
         self.assertEqual(created['players'], self.api(f'/api/saves/{save_id}')['players'])
-        edited = self.api(f'/api/saves/{save_id}/notes', {**note, 'id': saved['id'], 'playerId': second,
-                                                           'body': 'Hired the party to stop impostors.'})
+        edited = self.api(f'/api/saves/{save_id}/notes', {**note, 'id': saved['id'], 'playerId': second, 'revision': saved['revision'],
+                                                           'mutationId': 'edit-sybil', 'body': 'Hired the party to stop impostors.'})
         self.assertEqual((edited['notes'][0]['body'], edited['notes'][0]['updated_by']), ('Hired the party to stop impostors.', second))
         fake = FakeProvider()
         with patch.object(ai, 'current_provider', return_value=fake):
             self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
         self.assertNotIn('impostors', json.dumps(fake.context))
-        removed = self.api(f'/api/saves/{save_id}/notes', {'playerId': first, 'pilot': True, 'id': saved['id'], 'remove': True})
+        removed = self.api(f'/api/saves/{save_id}/notes', {'playerId': first, 'id': saved['id'], 'revision': edited['notes'][0]['revision'],
+                                                            'remove': True, 'mutationId': 'delete-sybil'})
         self.assertEqual(removed['notes'], [])
-        self.assertIn('no longer exists', self.api_error(f'/api/saves/{save_id}/notes', {**note, 'id': saved['id']})['error'])
+        self.assertEqual(self.api_error(f'/api/saves/{save_id}/notes', {**note, 'id': saved['id'], 'revision': 3, 'mutationId': 'late'})['code'], 'note_conflict')
         with closing(sqlite3.connect(self.path / 'tableforge.sqlite3')) as conn:
             self.assertEqual(conn.execute('SELECT removed_by FROM party_notes').fetchone()[0], first)
 
