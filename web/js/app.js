@@ -809,11 +809,11 @@
   // text but hold it until the player confirms it still fits the new beat.
   const draftStale=()=>state.composerMode!=='ooc'&&!!state.draft&&!!state.save&&(state.draft.saveId!==state.save.save.id||state.draft.beat!==state.save.save.beat);
   const pendingContribution=()=>!!$('composer').value.trim()||!!state.pendingImage;
-  const renderPending=()=>{
+  const renderPending=(note='')=>{
     const tray=$('attachmentTray'),pending=state.pendingImage;
     tray.classList.toggle('hidden',!pending);
     if(!pending){tray.replaceChildren();return;}
-    tray.innerHTML=`<div class="attachment-chip"><span>${esc(pending.name)}</span><button type="button" id="removeAttachment" aria-label="Remove attachment">×</button></div>`;
+    tray.innerHTML=`<div class="attachment-chip"><span>${esc(pending.name)}</span><button type="button" id="removeAttachment" aria-label="Remove attachment">×</button></div>${note?`<span class="attachment-note" role="status">${esc(note)}</span>`:''}`;
     $('removeAttachment').onclick=()=>{state.pendingImage=null;if(state.draft)state.draft.requestId=null;renderPending();syncDraft();};
   };
   const clearPendingImage=()=>{state.pendingImage=null;renderPending();};
@@ -1221,21 +1221,36 @@
     $('attachmentInput').click();
   };
   document.addEventListener('click',()=>$('attachmentMenu').classList.add('hidden'));
-  $('attachmentInput').onchange=async event=>{
-    const file=event.target.files?.[0];
-    event.target.value='';
-    if(!file)return;
-    if(!['image/png','image/jpeg','image/webp'].includes(file.type)||file.size>20*1024*1024){
-      notify(Error('Choose a PNG, JPEG, or WebP image up to 20 MB.'));
-      return;
-    }
+  // The + picker and clipboard paste share one path: one PNG, JPEG, or WebP image per message.
+  const attachableImage=file=>['image/png','image/jpeg','image/webp'].includes(file.type)&&file.size<=20*1024*1024;
+  const attachImage=async(file,name=file.name)=>{
+    if(!attachableImage(file)){notify(Error('Choose a PNG, JPEG, or WebP image up to 20 MB.'));return;}
     try{
-      state.pendingImage={name:file.name,mime:file.type,data:await bytes64(file)};
+      const replaced=!!state.pendingImage;
+      state.pendingImage={name,mime:file.type,data:await bytes64(file)};
       if(state.draft)state.draft.requestId=null;
-      renderPending();
+      renderPending(replaced?'Replaced the previous image (one image per message).':'');
       syncDraft();
     }catch(error){notify(error);}
   };
+  $('attachmentInput').onchange=async event=>{
+    const file=event.target.files?.[0];
+    event.target.value='';
+    if(file)await attachImage(file);
+  };
+  // Clipboard images get a readable name; browsers usually call every one "image.png".
+  const pastedImageName=(mime,now=new Date())=>{
+    const pad=n=>String(n).padStart(2,'0');
+    return `Pasted image ${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.${{'image/jpeg':'jpg','image/webp':'webp'}[mime]||'png'}`;
+  };
+  // Pasting an image attaches it like the + picker; pasting text is unchanged.
+  $('composer').addEventListener('paste',event=>{
+    const file=[...(event.clipboardData?.items||[])].filter(item=>item.kind==='file'&&item.type.startsWith('image/')).map(item=>item.getAsFile()).find(Boolean);
+    if(!file)return;
+    event.preventDefault();
+    if($('attachmentBtn').disabled)return;
+    attachImage(file,pastedImageName(file.type));
+  });
   const modal=(html,size='')=>{const root=$('modalRoot');root.innerHTML=`<div class="overlay"><div class="modal ${size}">${html}</div></div>`;root.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>root.replaceChildren());root.querySelector('.overlay').onclick=e=>{if(e.target.classList.contains('overlay'))root.replaceChildren();};};
   const openSceneSource=messageId=>{
     const source=state.save?.messages.find(message=>message.id===messageId&&message.kind==='ai');
