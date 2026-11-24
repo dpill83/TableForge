@@ -60,7 +60,8 @@ ROUTER_TIMEOUT = 4
 ROUTER_PROMPT_CAP = 2400
 ROUTER_RESPONSE_CAP = 16_384
 REASONING_EFFORTS = ('low', 'medium', 'high', 'xhigh')
-EFFORT_MODELS = ('gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6-astra')
+EFFORT_MODELS = ('gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.2-sol', 'gpt-6-astra')
+TABLE_PLAY_MODEL = 'gpt-6.2-sol'
 LOGGER = logging.getLogger(__name__)
 
 
@@ -80,12 +81,19 @@ class GeneratedText(str):
         return result
 
 
+def table_play_routing():
+    setting = os.environ.get('TABLEFORGE_ROUTING_POLICY', '').strip().lower()
+    if setting not in ('', 'table-play'):
+        raise ValueError('TABLEFORGE_ROUTING_POLICY must be blank or table-play')
+    return setting == 'table-play'
+
+
 def runtime_status():
     key = os.environ.get('TABLEFORGE_OPENAI_API_KEY', '').strip()
     model = (os.environ.get('TABLEFORGE_AIDM_MODEL', '').strip()
              or os.environ.get('TABLEFORGE_MODEL', '').strip() or 'gpt-4o-mini')
     if key:
-        return {'provider': 'openai', 'model': model}
+        return {'provider': 'openai', 'model': TABLE_PLAY_MODEL if table_play_routing() else model}
     return {'provider': 'mock', 'model': 'local mock runtime'}
 
 
@@ -606,6 +614,22 @@ def routing_state(enabled):
             'requestedEffort': None, 'effortSource': None, 'effortNotice': None}
 
 
+def table_play_route(context):
+    """Choose model and effort from the server's request purpose and play state."""
+    purpose = context.get('purpose', 'advance')
+    if purpose == 'summary':
+        return 'gpt-6-luna', 'medium', 'Campaign summary'
+    if purpose == 'ooc':
+        return TABLE_PLAY_MODEL, 'low', 'Public OOC question'
+    if purpose == 'ask':
+        return TABLE_PLAY_MODEL, 'medium', 'Private Pilot Ask'
+    if context.get('combatResume'):
+        return TABLE_PLAY_MODEL, 'high', 'Combat aftermath'
+    if context.get('startRequest') or context.get('opening') or context.get('openingStage') in opening_flow.GUIDANCE:
+        return TABLE_PLAY_MODEL, 'high', 'Adventure opening'
+    return TABLE_PLAY_MODEL, 'medium', 'Normal narration'
+
+
 def configured_effort(name):
     value = os.environ.get(name, '').strip().lower()
     if value and value not in REASONING_EFFORTS:
@@ -634,13 +658,22 @@ class OpenAIProvider:
     def __init__(self, key, model, router_url=None):
         self.key = key
         self.model = model
+        self.table_play_routing = table_play_routing()
         self.router_url = (os.environ.get('TABLEFORGE_ROUTER_URL', '')
                            if router_url is None else router_url).strip()
-        self.effort = configured_effort('TABLEFORGE_REASONING_EFFORT')
-        self.tier_efforts = {tier: configured_effort('TABLEFORGE_ROUTER_EFFORT_' + tier.upper())
-                            for tier in ('cheap', 'standard', 'heavy')}
+        self.effort = None
+        self.tier_efforts = {}
+        if not self.table_play_routing:
+            self.effort = configured_effort('TABLEFORGE_REASONING_EFFORT')
+            self.tier_efforts = {tier: configured_effort('TABLEFORGE_ROUTER_EFFORT_' + tier.upper())
+                                 for tier in ('cheap', 'standard', 'heavy')}
 
     def select_model(self, context):
+        if self.table_play_routing:
+            model, effort, reason = table_play_route(context)
+            return model, {**routing_state(True), 'policy': 'table-play', 'model': model,
+                           'reason': reason, 'requestedEffort': effort, 'effortSource': 'TableForge policy',
+                           'routerInternalFallbackUsed': False}
         routing = routing_state(bool(self.router_url))
         if not self.router_url:
             return self.model, routing
@@ -716,17 +749,18 @@ class OpenAIProvider:
 
     def generate(self, context, on_request=None, on_metadata=None):
         model, routing = self.select_model(context)
-        tier_effort = self.tier_efforts.get(routing['tier']) if not routing['fallback'] else None
-        effort = routing['routerSelectedEffort'] or tier_effort or self.effort
         routing['configuredEffort'] = self.effort
-        if effort and supports_effort(model):
-            routing['requestedEffort'] = effort
-            routing['effortSource'] = ('router' if routing['routerSelectedEffort'] else
-                                      'tier configuration' if tier_effort else 'default configuration')
-        elif effort:
-            routing['effortNotice'] = 'Effort omitted: model support has not been established'
-        else:
-            routing['effortSource'] = 'provider default'
+        if not routing['requestedEffort']:
+            tier_effort = self.tier_efforts.get(routing['tier']) if not routing['fallback'] else None
+            effort = routing['routerSelectedEffort'] or tier_effort or self.effort
+            if effort and supports_effort(model):
+                routing['requestedEffort'] = effort
+                routing['effortSource'] = ('router' if routing['routerSelectedEffort'] else
+                                          'tier configuration' if tier_effort else 'default configuration')
+            elif effort:
+                routing['effortNotice'] = 'Effort omitted: model support has not been established'
+            else:
+                routing['effortSource'] = 'provider default'
         LOGGER.info('TableForge reasoning: model=%s requested_effort=%s source=%s',
                     model, routing['requestedEffort'], routing['effortSource'])
         if on_metadata:

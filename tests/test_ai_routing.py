@@ -66,6 +66,43 @@ class RoutingTest(unittest.TestCase):
                 self.assertEqual(result.requested_model, 'configured-model')
                 self.assertIsNone(result.reported_model)
 
+    def test_table_play_policy_routes_by_purpose_without_calling_laya(self):
+        os.environ.update(TABLEFORGE_OPENAI_API_KEY='test-key',
+                          TABLEFORGE_ROUTING_POLICY='table-play',
+                          TABLEFORGE_AIDM_MODEL='gpt-6-astra',
+                          TABLEFORGE_ROUTER_URL='http://router/route',
+                          TABLEFORGE_REASONING_EFFORT='xhigh')
+        provider = ai.current_provider()
+        self.assertEqual(ai.runtime_status()['model'], 'gpt-6.2-sol')
+        aftermath = {'id': 'combat-1', 'outcome': 'The party won.', 'skipped': False}
+        requests = [
+            ({'combatOutcomes': [{'body': 'A past fight ended.'}]},
+             'gpt-6.2-sol', 'medium', 'Normal narration'),
+            ({'openingStage': 'exploration'}, 'gpt-6.2-sol', 'medium', 'Normal narration'),
+            ({'startRequest': 'Begin the adventure.'}, 'gpt-6.2-sol', 'high', 'Adventure opening'),
+            ({'openingStage': 'travel'}, 'gpt-6.2-sol', 'high', 'Adventure opening'),
+            ({'combatResume': aftermath}, 'gpt-6.2-sol', 'high', 'Combat aftermath'),
+            ({'purpose': 'ooc', 'question': 'Could I run?', 'combatResume': aftermath},
+             'gpt-6.2-sol', 'low', 'Public OOC question'),
+            ({'purpose': 'ask', 'combatResume': aftermath}, 'gpt-6.2-sol', 'medium', 'Private Pilot Ask'),
+            ({'purpose': 'summary', 'previousSummary': ''}, 'gpt-6-luna', 'medium', 'Campaign summary'),
+        ]
+        for fields, model, effort, reason in requests:
+            with self.subTest(fields=fields):
+                context = {**self.context, **fields}
+                with patch('ai.urllib.request.urlopen', return_value=self.completion(model)) as opened:
+                    result = provider.generate(context)
+                opened.assert_called_once()
+                request = opened.call_args.args[0]
+                self.assertEqual(request.full_url, ai.OPENAI_URL)
+                self.assertEqual(json.loads(request.data), {
+                    'model': model, 'reasoning_effort': effort, 'messages': ai.chat_messages(context)})
+                self.assertEqual(result.routing['policy'], 'table-play')
+                self.assertEqual(result.routing['effortSource'], 'TableForge policy')
+                self.assertEqual(result.routing['reason'], reason)
+                self.assertFalse(result.routing['routerContacted'])
+                self.assertFalse(result.routing['fallback'])
+
     def test_cheap_standard_heavy_routes_capture_and_meter_selected_model(self):
         for tier, model in [('cheap', 'gpt-6-luna'), ('standard', 'gpt-6-sol'), ('heavy', 'gpt-6-astra')]:
             with self.subTest(tier=tier):
@@ -114,6 +151,15 @@ class RoutingTest(unittest.TestCase):
         self.assertEqual(result.requested_model, 'gpt-6-sol')
         self.assertEqual(result.reported_model, 'gpt-6-sol-snapshot')
         self.assertEqual(result.configured_model, 'fallback')
+
+    def test_new_sol_models_price_long_prompts_at_long_context_rates(self):
+        for model in ('gpt-6.1-sol-snapshot', 'gpt-6.2-sol-snapshot'):
+            with self.subTest(model=model):
+                usage = {'prompt_tokens': 272_000, 'completion_tokens': 20,
+                         'prompt_tokens_details': {'cached_tokens': 100_000, 'cache_write_tokens': 100_000}}
+                self.assertAlmostEqual(metering.record(model, usage, 'default')[-2], 0.4042)
+                usage['prompt_tokens'] += 1
+                self.assertAlmostEqual(metering.record(model, usage, 'default')[-2], 0.808304)
 
     def test_router_failures_fall_back_without_leaking_error_body(self):
         failures = [urllib.error.URLError('PRIVATE REQUEST'), TimeoutError('PRIVATE REQUEST'),

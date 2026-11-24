@@ -9,11 +9,12 @@ const TableForgeRequestLog = (() => {
     ? `$${value.toFixed(8).replace(/0+$/, '').replace(/\.$/, '.00')} estimated` : 'Cost unavailable';
   const render = (entry, when = value => value || 'Unavailable') => {
     const route = entry.routing;
+    const tablePlay = route?.policy === 'table-play';
     const tableforgeFallback = route?.tableforgeRouterFallbackUsed ?? route?.fallback;
     const tableforgeReason = route?.tableforgeRouterFallbackReason ?? route?.fallbackReason;
     const internalFallback = route?.routerInternalFallbackUsed;
     const tier = ['cheap', 'standard', 'heavy'].includes(route?.tier) ? route.tier : null;
-    const routeLabel = route?.enabled === false
+    const routeLabel = tablePlay ? 'Table play' : route?.enabled === false
       ? 'Routing disabled' : tier || (tableforgeFallback === true ? 'No router decision'
         : route?.enabled ? 'Routed' : 'Routing unknown');
     const badge = tier || 'unknown';
@@ -32,37 +33,43 @@ const TableForgeRequestLog = (() => {
       </summary>
       <div class="request-details"><dl>
         ${row('Purpose', available(entry.purpose))}
-        ${row('Router enabled', flag(route?.enabled))}
-        ${row('Router contacted', flag(route?.routerContacted))}
-        ${row('Selected tier', available(route?.tier))}
-        ${row('Router-selected model', available(route?.model))}
-        ${row('Router-selected reasoning effort', route?.routerSelectedEffort ?? 'Not recorded / supplied')}
-        ${row('Router reason', available(route?.reason))}
-        ${row('Router scores', scores || 'Unavailable')}
-        ${row('Laya/router fallback', flag(internalFallback))}
-        ${row('Laya/router fallback reason', available(route?.routerInternalFallbackReason))}
-        ${row('TableForge router fallback', flag(tableforgeFallback))}
-        ${row('TableForge router fallback reason', available(tableforgeReason))}
-        ${row('Configured default / fallback model', available(entry.configuredModel))}
+        ${tablePlay ? row('Request route', available(route.reason)) : `
+          ${row('Router enabled', flag(route?.enabled))}
+          ${row('Router contacted', flag(route?.routerContacted))}
+          ${row('Selected tier', available(route?.tier))}
+          ${row('Router-selected model', available(route?.model))}
+          ${row('Router-selected reasoning effort', route?.routerSelectedEffort ?? 'Not recorded / supplied')}
+          ${row('Router reason', available(route?.reason))}
+          ${row('Router scores', scores || 'Unavailable')}
+          ${row('Laya/router fallback', flag(internalFallback))}
+          ${row('Laya/router fallback reason', available(route?.routerInternalFallbackReason))}
+          ${row('TableForge router fallback', flag(tableforgeFallback))}
+          ${row('TableForge router fallback reason', available(tableforgeReason))}
+          ${row('Configured default / fallback model', available(entry.configuredModel))}
+        `}
         ${row(entry.provider === 'mock' ? 'Mock request model' : 'Model requested from OpenAI', available(requested))}
-        ${row('Configured default reasoning effort', route?.configuredEffort ?? 'Not recorded / configured')}
+        ${tablePlay ? '' : row('Configured default reasoning effort', route?.configuredEffort ?? 'Not recorded / configured')}
         ${row('Reasoning effort requested from OpenAI', route?.requestedEffort ?? (route?.effortSource === 'provider default' ? 'Provider default (not sent)' : 'Not recorded / sent'))}
         ${row('Reasoning effort source', route?.effortSource ?? 'Not recorded')}
-        ${row('Router effort reason', route?.effortReason ?? 'Not recorded / supplied')}
-        ${row('Router effort scores', route?.effortScores ? Object.entries(route.effortScores).map(([key, value]) => `${key}: ${value}`).join(' · ') : 'Not recorded / supplied')}
-        ${row('Router effort fallback', flag(route?.effortFallbackUsed))}
+        ${tablePlay ? '' : `
+          ${row('Router effort reason', route?.effortReason ?? 'Not recorded / supplied')}
+          ${row('Router effort scores', route?.effortScores ? Object.entries(route.effortScores).map(([key, value]) => `${key}: ${value}`).join(' · ') : 'Not recorded / supplied')}
+          ${row('Router effort fallback', flag(route?.effortFallbackUsed))}
+        `}
         ${route?.effortNotice ? row('Reasoning effort note', route.effortNotice) : ''}
         ${row('Model reported by OpenAI', available(entry.reportedModel))}
         ${row('OpenAI service tier', available(entry.serviceTier))}
         ${entry.legacy ? row('Metered model (legacy)', available(entry.model)) : ''}
         ${row('Input tokens', available(entry.inputTokens))}
+        ${row('Cache-read input tokens', available(entry.cachedInputTokens))}
+        ${row('Cache-write input tokens', available(entry.cacheWriteTokens))}
         ${row('Output tokens', available(entry.outputTokens))}
         ${row('Total tokens', available(entry.totalTokens))}
         ${row('Estimated request cost', cost(entry.estimatedCostUsd))}
         ${row('Finished', entry.finishedAt ? when(entry.finishedAt) : 'Unavailable')}
       </dl>
       ${fallbackLabel ? '<p class="request-fallback">Fallback layer is separate from the provider generation status above.</p>' : ''}
-      ${route && (route.routerContacted == null || internalFallback == null) ? '<p class="muted">Unknown means this fallback layer or router contact status was not recorded or reported.</p>' : ''}
+      ${!tablePlay && route && (route.routerContacted == null || internalFallback == null) ? '<p class="muted">Unknown means this fallback layer or router contact status was not recorded or reported.</p>' : ''}
       ${entry.legacy ? '<p class="muted">Older record: routing and distinct provider models were not recorded.</p>' : ''}
       ${entry.error ? `<p class="binding-issue" role="alert">${esc(entry.error)}</p>` : ''}
       ${entry.payload ? `<details class="request-payload"><summary>Temporary provider request payload</summary><pre>${esc(entry.payload)}</pre></details>` : '<p class="muted">Full payload unavailable (temporary capture only).</p>'}

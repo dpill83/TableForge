@@ -11,6 +11,9 @@ RATES = {
     'gpt-5.6-terra': (2.00, 0.20, 2.50, 12.00),
     'gpt-6-luna': (0.10, 0.01, 0.125, 0.50),
     'gpt-6-sol': (2.00, 0.20, 2.50, 10.00),
+    # GPT-6.1 and 6.2 Sol Standard rates with 30-minute writes, checked 2026-11-23.
+    'gpt-6.1-sol': (2.00, 0.10, 2.50, 10.00),
+    'gpt-6.2-sol': (2.00, 0.10, 2.50, 10.00),
     'gpt-6-astra': (10.00, 1.00, 12.50, 50.00),
 }
 
@@ -19,9 +22,12 @@ def token_count(value):
     return value if type(value) is int and value >= 0 else None
 
 
-def rate_for(model):
+def rate_for(model, input_tokens=0):
     for name, rates in RATES.items():
         if model == name or model.startswith(name + '-'):
+            if name in ('gpt-6.1-sol', 'gpt-6.2-sol') and input_tokens > 272_000:
+                ordinary, cached, write, output = rates
+                return ordinary * 2, cached * 2, write * 2, output * 1.5
             return rates
     return None
 
@@ -40,7 +46,7 @@ def record(model, usage, service_tier=None):
     total_tokens = reported_total if reported_total is not None else (
         input_tokens + output_tokens if input_tokens is not None and output_tokens is not None else None)
     cost = None
-    rates = rate_for(model)
+    rates = rate_for(model, input_tokens or 0)
     if (rates and input_tokens is not None and output_tokens is not None
             and cached_tokens + write_tokens <= input_tokens
             and service_tier in (None, 'auto', 'default', 'standard')):
@@ -54,7 +60,8 @@ def record(model, usage, service_tier=None):
 def request_usage(row):
     """Request-log API fields from persisted metering, including unavailable values."""
     return {field: row[column] for field, column in (
-        ('inputTokens', 'input_tokens'), ('outputTokens', 'output_tokens'),
+        ('inputTokens', 'input_tokens'), ('cachedInputTokens', 'cached_tokens'),
+        ('cacheWriteTokens', 'cache_write_tokens'), ('outputTokens', 'output_tokens'),
         ('totalTokens', 'total_tokens'), ('estimatedCostUsd', 'estimated_cost_usd'),
         ('serviceTier', 'service_tier'))}
 

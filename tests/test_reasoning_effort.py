@@ -33,8 +33,10 @@ class EffortTests(unittest.TestCase):
                 context, on_request=captures.append, on_metadata=metadata.append)
         return result, json.loads(captures[-1]), metadata[-1]['routing']
 
-    def test_all_nine_model_effort_combinations_reach_openai(self):
-        for tier, model in [('cheap', 'gpt-6-luna'), ('standard', 'gpt-6.1-sol'), ('heavy', 'gpt-6-astra')]:
+    def test_supported_routed_models_keep_their_selected_effort(self):
+        models = [('cheap', 'gpt-6-luna'), ('standard', 'gpt-6.1-sol'),
+                  ('standard', 'gpt-6.2-sol'), ('heavy', 'gpt-6-astra')]
+        for tier, model in models:
             for effort in ('low', 'medium', 'xhigh'):
                 with self.subTest(model=model, effort=effort):
                     result, payload, metadata = self.generate({}, {'tier': tier, 'model': model,

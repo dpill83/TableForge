@@ -703,7 +703,8 @@ def request_log(conn, save_id, player_id, pilot):
     captures = {entry['id']: entry for entry in AI_REQUEST_LOGS.get(save_id, [])}
     entries = []
     rows = conn.execute('''SELECT r.*,s.number AS session_number,
-        u.input_tokens,u.output_tokens,u.total_tokens,u.estimated_cost_usd,u.service_tier
+        u.input_tokens,u.cached_tokens,u.cache_write_tokens,u.output_tokens,u.total_tokens,u.estimated_cost_usd,
+        u.service_tier
         FROM ai_requests r JOIN sessions s ON s.id=r.session_id
         LEFT JOIN ai_usage u ON u.request_id=r.id WHERE r.save_id=? ORDER BY r.rowid''', (save_id,))
     for row in rows:
