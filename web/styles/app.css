@@ -664,6 +664,7 @@ body.sidebar-dragging iframe{pointer-events:none}
   padding:0 2px;
 }
 .attachment-chip button:hover{color:var(--text)}
+.attachment-note{align-self:center;font-size:12px;color:var(--muted)}
 .message-box{
   position:relative;
   min-width:0;

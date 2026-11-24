@@ -538,7 +538,8 @@ George: Not Ready     [ Ready ]
 
 Use one rounded container, ordered: + menu, fixed-width IC/OOC selector,
 divider, expanding text field, Send arrow, Ready. The + menu contains attachments
-and emoji. Keep Ready inside the container and all controls reachable on narrow
+and emoji. Pasting an image into the text field attaches it the same way (one image
+per message; a new one replaces the pending one). Keep Ready inside the container and all controls reachable on narrow
 screens. Longer drafts grow upward. The selector opens upward with checked
 In Character / Out of Character choices. Default to IC; preserve independent
 text and attachment drafts. OOC uses “Ask the AI-DM in table chat…”. A leading
