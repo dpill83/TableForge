@@ -84,3 +84,19 @@ test('lost update acknowledgement with newer typing survives a reload',async()=>
     for(const timer of restored.timers.values())clearTimeout(timer);
   }finally{t.cleanup();}
 });
+
+test('NPC and Location drafts save under their own category; older drafts stay Notes',async()=>{
+  const t=setup();
+  try{
+    const npc=t.session.edit(null,'npc');t.session.input(npc,'Sybil Peti','Cheese-factor');await t.session.flush(npc);
+    assert.equal(t.calls.at(-1).category,'npc');
+    const copy=t.session.copy(npc);assert.equal(copy.category,'npc');
+    const edited=t.session.edit({id:9,category:'location',revision:1,title:'Mill',body:''});
+    assert.equal(edited.category,'location');
+    t.storage.value=JSON.stringify([{key:'old',clientKey:'old',title:'Loot',body:'gold',dirty:true,version:1}]);
+    const restored=new NotesSession(t.opts);const [legacy]=restored.drafts.values();
+    await restored.flush(legacy);
+    assert.equal(t.calls.at(-1).category,'world');
+    for(const timer of restored.timers.values())clearTimeout(timer);
+  }finally{t.cleanup();}
+});
