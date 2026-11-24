@@ -128,6 +128,24 @@ test('unsupported, oversized, or over-total images are refused; valid ones still
   assert.match(t.errors[2],/40 MB/);
 });
 
+test('overlapping attachments cannot push the message past the 40 MB total',async()=>{
+  const t=table();
+  await t.pick([file('ten.png','image/png',10*1024*1024)]);
+  // Two additions start before either has finished reading its file.
+  await Promise.all([t.pick([file('big1.png','image/png',20*1024*1024)]),t.pick([file('big2.png','image/png',20*1024*1024)])]);
+  assert.deepEqual(t.names(),['ten.png','big1.png']);
+  assert.equal(t.errors.length,1);
+  assert.match(t.errors[0],/40 MB/);
+});
+
+test('overlapping pastes cannot push the message past four images',async()=>{
+  const t=table();
+  await t.pick([file('a.png','image/png'),file('b.png','image/png'),file('c.png','image/png')]);
+  await Promise.all([t.paste([png('d.png')]),t.paste([png('e.png')])]);
+  assert.equal(t.names().length,4);
+  assert.deepEqual(t.errors,['Attach up to 4 images per message.']);
+});
+
 test('paste is ignored while attachments are disabled (combat IC, busy)',async()=>{
   const t=table();t.elements.attachmentBtn.disabled=true;
   await t.paste([png('a.png')]);

@@ -1249,22 +1249,27 @@
       return canvas.toDataURL('image/jpeg',0.8);
     }catch{return null;}
   };
-  const attachImages=async entries=>{
+  const limitProblem=file=>state.pendingImages.length>=maxImages?`Attach up to ${maxImages} images per message.`
+    :state.pendingImages.reduce((total,image)=>total+imageBytes(image),0)+file.size>maxImagesTotal?'Attached images must total 40 MB or less.':'';
+  const addImages=async entries=>{
     const problems=new Set();let added=0;
     for(const {file,name=file.name} of entries){
       if(!attachableImage(file)){problems.add('Choose PNG, JPEG, or WebP images up to 20 MB each.');continue;}
-      if(state.pendingImages.length>=maxImages){problems.add(`Attach up to ${maxImages} images per message.`);continue;}
-      if(state.pendingImages.reduce((total,image)=>total+imageBytes(image),0)+file.size>maxImagesTotal){problems.add('Attached images must total 40 MB or less.');continue;}
+      if(limitProblem(file)){problems.add(limitProblem(file));continue;}
       try{
         const [data,thumb]=await Promise.all([bytes64(file),imageThumbnail(file)]);
-        // Another paste may have filled the message while this file was being read.
-        if(state.pendingImages.length>=maxImages){problems.add(`Attach up to ${maxImages} images per message.`);continue;}
+        // Check again just before adding: the pending list may have changed while the file was read.
+        if(limitProblem(file)){problems.add(limitProblem(file));continue;}
         state.pendingImages=[...state.pendingImages,{name,mime:file.type,size:file.size,data,thumb}];added++;
       }catch(error){problems.add(error.message);}
     }
     if(added){if(state.draft)state.draft.requestId=null;renderPending();syncDraft();}
     if(problems.size)notify(Error([...problems].join(' ')));
   };
+  // Pastes and picks are added one batch at a time, so overlapping additions can never
+  // pass the limit checks against the same pending list and exceed the count or total.
+  let attachQueue=Promise.resolve();
+  const attachImages=entries=>attachQueue=attachQueue.then(()=>addImages(entries)).catch(error=>notify(error));
   $('attachmentInput').onchange=async event=>{
     const files=[...(event.target.files||[])];
     event.target.value='';
