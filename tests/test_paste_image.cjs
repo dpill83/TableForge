@@ -20,7 +20,7 @@ function table(){
   const tray=elements.attachmentTray={chips:[],thumbs:[],buttons:[],classList:{hidden:true,toggle(name,on){this.hidden=on;}},
     replaceChildren(){this.chips=[];this.thumbs=[];this.buttons=[];},
     set innerHTML(html){
-      this.chips=[...html.matchAll(/<span>([^<]*)<\/span>/g)].map(m=>m[1]);
+      this.chips=[...html.matchAll(/class=\"attachment-chip\" title=\"([^\"]*)\"/g)].map(m=>m[1]);
       this.thumbs=[...html.matchAll(/class="attachment-thumb" alt="" src="([^"]*)"/g)].map(m=>m[1]);
       this.buttons=[...html.matchAll(/data-index="(\d+)"/g)].map(m=>({dataset:{index:m[1]}}));
     },

@@ -815,16 +815,22 @@
   // text but hold it until the player confirms it still fits the new beat.
   const draftStale=()=>state.composerMode!=='ooc'&&!!state.draft&&!!state.save&&(state.draft.saveId!==state.save.save.id||state.draft.beat!==state.save.save.beat);
   const pendingContribution=()=>!!$('composer').value.trim()||state.pendingImages.length>0;
+  // Pending images show as square tiles inside the composer box, above the text line.
   const renderPending=()=>{
     const tray=$('attachmentTray'),pending=state.pendingImages;
     tray.classList.toggle('hidden',!pending.length);
+    $('composerBody')?.classList.toggle('has-attachments',pending.length>0);
     if(!pending.length){tray.replaceChildren();return;}
     // A small preview per image; drafts saved before previews existed fall back to the full image.
-    tray.innerHTML=pending.map((image,index)=>`<div class="attachment-chip"><img class="attachment-thumb" alt="" src="${esc(image.thumb||`data:${image.mime};base64,${image.data}`)}"><span>${esc(image.name)}</span><button type="button" class="remove-attachment" data-index="${index}" aria-label="Remove ${esc(image.name)}">×</button></div>`).join('');
+    tray.innerHTML=pending.map((image,index)=>`<div class="attachment-chip" title="${esc(image.name)}"><button type="button" class="attachment-preview" data-preview="${index}" aria-label="Preview ${esc(image.name)}"><img class="attachment-thumb" alt="" src="${esc(image.thumb||`data:${image.mime};base64,${image.data}`)}"></button><button type="button" class="remove-attachment" data-index="${index}" aria-label="Remove ${esc(image.name)}">×</button></div>`).join('');
     tray.querySelectorAll('.remove-attachment').forEach(button=>button.onclick=()=>{
       state.pendingImages=state.pendingImages.filter((_,index)=>index!==Number(button.dataset.index));
       if(state.draft)state.draft.requestId=null;renderPending();syncDraft();
     });
+    tray.onclick=event=>{
+      const button=event.target.closest?.('.attachment-preview'),image=button&&state.pendingImages[Number(button.dataset.preview)];
+      if(image)modal(`<h3>${esc(image.name)}</h3><img class="attachment-preview-full" alt="${esc(image.name)}" src="data:${esc(image.mime)};base64,${esc(image.data)}"><div class="actions"><button class="btn" data-close>Close</button></div>`,'wide');
+    };
   };
   const clearPendingImage=()=>{state.pendingImages=[];renderPending();};
   const syncDraft=()=>{
@@ -1233,13 +1239,18 @@
     $('attachmentInput').click();
   };
   document.addEventListener('click',()=>$('attachmentMenu').classList.add('hidden'));
+  // Clicking empty space in the composer box focuses the text field, like other chat apps.
+  $('composerBody').addEventListener('click',event=>{
+    if(event.target.closest('button,textarea,input,a,.attachment-menu')||$('composer').disabled)return;
+    $('composer').focus();
+  });
   // The + picker and clipboard paste share one path: up to 4 PNG, JPEG, or WebP images per
   // message, 20 MB each and 40 MB in total (the server enforces the same limits).
   const maxImages=4,maxImageBytes=20*1024*1024,maxImagesTotal=40*1024*1024;
   const attachableImage=file=>['image/png','image/jpeg','image/webp'].includes(file.type)&&file.size<=maxImageBytes;
   const imageBytes=image=>image.size??Math.floor((image.data?.length||0)*3/4);
   // A small JPEG preview for the tray, so large images do not slow the composer down.
-  const imageThumbnail=async(file,size=96)=>{
+  const imageThumbnail=async(file,size=128)=>{
     if(typeof createImageBitmap!=='function'||typeof document==='undefined')return null;
     try{
       const bitmap=await createImageBitmap(file),scale=Math.min(1,size/Math.max(bitmap.width,bitmap.height));
