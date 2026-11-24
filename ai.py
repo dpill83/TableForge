@@ -480,10 +480,11 @@ def public_question_messages(context):
     background = {k: context.get(k) for k in (
         'title', 'beat', 'character', 'messages', 'publicRulings', 'publicNotes', 'publicOutcomes')}
     content = context['question']
-    image = context.get('questionImage')
-    if image:
-        content = [{'type': 'text', 'text': content},
-                   {'type': 'image_url', 'image_url': {'url': f"data:{image['mime']};base64,{image['data']}"}}]
+    # Questions saved before multi-image support stored a single questionImage.
+    images = context.get('questionImages') or ([context['questionImage']] if context.get('questionImage') else [])
+    if images:
+        content = [{'type': 'text', 'text': content}] + [
+            {'type': 'image_url', 'image_url': {'url': f"data:{image['mime']};base64,{image['data']}"}} for image in images]
     return [{'role': 'system', 'content': instructions + '\n\nPublished table context:\n' + json.dumps(background, ensure_ascii=False)},
             {'role': 'user', 'content': content}]
 

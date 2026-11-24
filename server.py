@@ -55,6 +55,18 @@ MAX_CARTRIDGE_BYTES = 90 * 1024 * 1024
 MAX_UNPACKED_CARTRIDGE_BYTES = 512 * 1024 * 1024
 MAX_PORTRAIT_BYTES = 5 * 1024 * 1024
 MAX_CHAT_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_CHAT_IMAGES = 4
+# Keeps a full message (base64 JSON) under the request limit.
+MAX_CHAT_IMAGES_TOTAL_BYTES = 40 * 1024 * 1024
+CHAT_IMAGES_TABLE = '''CREATE TABLE IF NOT EXISTS {name} (
+                id TEXT PRIMARY KEY, save_id TEXT NOT NULL,
+                message_id INTEGER NOT NULL, player_id TEXT NOT NULL,
+                mime TEXT NOT NULL, image BLOB NOT NULL, created_at TEXT NOT NULL,
+                position INTEGER NOT NULL DEFAULT 0,
+                FOREIGN KEY(save_id) REFERENCES saves(id),
+                FOREIGN KEY(message_id) REFERENCES messages(id),
+                FOREIGN KEY(player_id) REFERENCES players(id)
+            )'''
 PORTRAIT_SIGNATURES = {
     'image/png': lambda data: data.startswith(b'\x89PNG\r\n\x1a\n'),
     'image/jpeg': lambda data: data.startswith(b'\xff\xd8\xff') and data.endswith(b'\xff\xd9'),
@@ -84,23 +96,49 @@ def utc():
     return datetime.now(timezone.utc).isoformat()
 
 
-def decode_chat_image(payload):
-    """Return (mime, bytes) when a chat image is present; None when the field is omitted."""
-    image = payload.get('image')
-    if image is None:
-        return None
-    if not isinstance(image, dict):
-        raise ValueError('Choose a PNG, JPEG, or WebP image up to 20 MB')
-    mime, encoded = image.get('mime'), image.get('data')
-    if mime not in PORTRAIT_SIGNATURES or not isinstance(encoded, str) or len(encoded) > ((MAX_CHAT_IMAGE_BYTES + 2) // 3) * 4:
-        raise ValueError('Choose a PNG, JPEG, or WebP image up to 20 MB')
-    try:
-        data = base64.b64decode(encoded, validate=True)
-    except (binascii.Error, ValueError) as error:
-        raise ValueError('Image data is invalid') from error
-    if not data or len(data) > MAX_CHAT_IMAGE_BYTES or not PORTRAIT_SIGNATURES[mime](data):
-        raise ValueError('Image data is invalid')
-    return mime, data
+def chat_image_payloads(payload):
+    """The images a chat request carries, in order: `images`, or an older client's single `image`."""
+    if payload.get('images') is not None:
+        if not isinstance(payload['images'], list):
+            raise ValueError('Choose a PNG, JPEG, or WebP image up to 20 MB')
+        return payload['images']
+    return [] if payload.get('image') is None else [payload['image']]
+
+
+def decode_chat_images(payload):
+    """Return [(mime, bytes), ...] in attachment order; [] when the message has no images."""
+    images = chat_image_payloads(payload)
+    if len(images) > MAX_CHAT_IMAGES:
+        raise ValueError(f'Attach up to {MAX_CHAT_IMAGES} images per message')
+    decoded = []
+    for image in images:
+        if not isinstance(image, dict):
+            raise ValueError('Choose a PNG, JPEG, or WebP image up to 20 MB')
+        mime, encoded = image.get('mime'), image.get('data')
+        if mime not in PORTRAIT_SIGNATURES or not isinstance(encoded, str) or len(encoded) > ((MAX_CHAT_IMAGE_BYTES + 2) // 3) * 4:
+            raise ValueError('Choose a PNG, JPEG, or WebP image up to 20 MB')
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (binascii.Error, ValueError) as error:
+            raise ValueError('Image data is invalid') from error
+        if not data or len(data) > MAX_CHAT_IMAGE_BYTES or not PORTRAIT_SIGNATURES[mime](data):
+            raise ValueError('Image data is invalid')
+        decoded.append((mime, data))
+    if sum(len(data) for _, data in decoded) > MAX_CHAT_IMAGES_TOTAL_BYTES:
+        raise ValueError('Attached images must total 40 MB or less')
+    return decoded
+
+
+def stored_chat_images(conn, message_id):
+    return [(row['mime'], row['image']) for row in conn.execute(
+        'SELECT mime,image FROM chat_images WHERE message_id=? ORDER BY position', (message_id,))]
+
+
+def insert_chat_images(conn, save_id, message_id, player_id, images):
+    stamp = utc()
+    for position, (mime, data) in enumerate(images):
+        conn.execute('INSERT INTO chat_images (id,save_id,message_id,player_id,mime,image,created_at,position) '
+                     'VALUES (?,?,?,?,?,?,?,?)', (str(uuid.uuid4()), save_id, message_id, player_id, mime, data, stamp, position))
 
 
 @contextmanager
@@ -149,14 +187,6 @@ def initialize():
                 player_id TEXT, kind TEXT NOT NULL, name TEXT NOT NULL,
                 body TEXT NOT NULL, created_at TEXT NOT NULL,
                 FOREIGN KEY(save_id) REFERENCES saves(id)
-            );
-            CREATE TABLE IF NOT EXISTS chat_images (
-                id TEXT PRIMARY KEY, save_id TEXT NOT NULL,
-                message_id INTEGER NOT NULL UNIQUE, player_id TEXT NOT NULL,
-                mime TEXT NOT NULL, image BLOB NOT NULL, created_at TEXT NOT NULL,
-                FOREIGN KEY(save_id) REFERENCES saves(id),
-                FOREIGN KEY(message_id) REFERENCES messages(id),
-                FOREIGN KEY(player_id) REFERENCES players(id)
             );
             CREATE TABLE IF NOT EXISTS pilot_messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, save_id TEXT NOT NULL,
@@ -231,6 +261,17 @@ def initialize():
                 sha256 TEXT PRIMARY KEY, snapshot TEXT NOT NULL
             );
         """)
+        conn.execute(CHAT_IMAGES_TABLE.format(name='chat_images'))
+        # Messages once held at most one image (message_id was UNIQUE). Rebuild those tables
+        # so a message can carry several; existing images keep position 0.
+        if any(index['unique'] and index['origin'] == 'u' for index in conn.execute('PRAGMA index_list(chat_images)')):
+            conn.execute('DROP TABLE IF EXISTS chat_images_multi')
+            conn.execute(CHAT_IMAGES_TABLE.format(name='chat_images_multi'))
+            conn.execute('INSERT INTO chat_images_multi (id,save_id,message_id,player_id,mime,image,created_at,position) '
+                         'SELECT id,save_id,message_id,player_id,mime,image,created_at,0 FROM chat_images')
+            conn.execute('DROP TABLE chat_images')
+            conn.execute('ALTER TABLE chat_images_multi RENAME TO chat_images')
+        conn.execute('CREATE INDEX IF NOT EXISTS chat_images_message ON chat_images(message_id,position)')
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(party_notes)')}
         for name, definition in [('revision', 'INTEGER NOT NULL DEFAULT 1'),
                                  ('client_key', 'TEXT'), ('mutation_id', 'TEXT')]:
@@ -649,9 +690,9 @@ def snapshot(conn, save_id, pilot_player_id=None):
             'SELECT id,category,title,body,created_by,created_at,updated_by,updated_at,revision,client_key FROM party_notes '
             'WHERE save_id=? AND removed_at IS NULL ORDER BY category, title COLLATE NOCASE, id', (save_id,))],
         'activity': activity(save_id),
-        'attachments': [{'id': row['id'], 'messageId': row['message_id'], 'mime': row['mime']}
+        'attachments': [{'id': row['id'], 'messageId': row['message_id'], 'mime': row['mime'], 'position': row['position']}
                         for row in conn.execute(
-                            'SELECT id,message_id,mime FROM chat_images WHERE save_id=? ORDER BY created_at',
+                            'SELECT id,message_id,mime,position FROM chat_images WHERE save_id=? ORDER BY message_id,position',
                             (save_id,))],
         'images': scene_images.list_images(conn, save_id, shared_only=True),
         'imageSettings': scene_images.settings(),
@@ -1417,7 +1458,7 @@ class Handler(BaseHTTPRequestHandler):
                     return self.respond(activity(save_id))
                 state = snapshot(conn, save_id)
                 request_id = None
-                chat_image = decode_chat_image(payload) if action == 'messages' else None
+                chat_images = decode_chat_images(payload) if action == 'messages' else []
                 if action == 'messages' and payload.get('requestId') is not None:
                     try:
                         request_id = str(uuid.UUID(str(payload['requestId'])))
@@ -1426,13 +1467,12 @@ class Handler(BaseHTTPRequestHandler):
                     sent = conn.execute('SELECT id,player_id,body FROM messages WHERE save_id=? AND request_id=?',
                                         (save_id, request_id)).fetchone()
                     if sent:
-                        stored = conn.execute('SELECT image FROM chat_images WHERE message_id=?', (sent['id'],)).fetchone()
-                        incoming = chat_image[1] if chat_image else None
-                        stored_bytes = stored['image'] if stored else None
+                        stored = [data for _, data in stored_chat_images(conn, sent['id'])]
+                        incoming = [data for _, data in chat_images]
                         # A retry of a send that already landed: report the table as it is now.
                         if (sent['player_id'] != payload.get('playerId')
                                 or sent['body'] != str(payload.get('text', '')).strip()
-                                or stored_bytes != incoming):
+                                or stored != incoming):
                             raise ValueError('This message request was already used for a different message')
                         return self.respond(snapshot(conn, save_id))
                 if action == 'notes':
@@ -1519,7 +1559,7 @@ class Handler(BaseHTTPRequestHandler):
                     body = str(payload.get('text', '')).strip()
                     if len(body) > 20000:
                         raise ValueError('Message must contain 1 to 20,000 characters')
-                    if not body and not chat_image:
+                    if not body and not chat_images:
                         raise ValueError('Message must contain 1 to 20,000 characters')
                     # Drafts carry the beat they were started in so they never slip into a later one.
                     if payload.get('beat') is not None and int(payload['beat']) != state['save']['beat']:
@@ -1527,11 +1567,7 @@ class Handler(BaseHTTPRequestHandler):
                     inserted = conn.execute(
                         'INSERT INTO messages (save_id,session_id,player_id,kind,name,body,created_at,request_id) VALUES (?,?,?,?,?,?,?,?)',
                         (save_id, session['id'], player['id'], 'player', player['character'], body, utc(), request_id))
-                    if chat_image:
-                        mime, data = chat_image
-                        conn.execute(
-                            'INSERT INTO chat_images (id,save_id,message_id,player_id,mime,image,created_at) VALUES (?,?,?,?,?,?,?)',
-                            (str(uuid.uuid4()), save_id, inserted.lastrowid, player['id'], mime, data, utc()))
+                    insert_chat_images(conn, save_id, inserted.lastrowid, player['id'], chat_images)
                     # Sending only opts into readiness when this client has auto-ready on.
                     # Otherwise preserve readiness, including an earlier explicit Ready.
                     if payload.get('autoReady') is True:
@@ -2078,15 +2114,14 @@ class Handler(BaseHTTPRequestHandler):
             request_id = str(uuid.UUID(str(payload.get('requestId'))))
             existing = conn.execute('SELECT * FROM public_questions WHERE id=?', (request_id,)).fetchone()
             body = re.sub(r'^OOC:\s*', '', str(payload.get('text') or '').strip(), flags=re.I).strip()
-            image = decode_chat_image(payload)
+            images = decode_chat_images(payload)
             if existing:
                 message = conn.execute('SELECT body FROM messages WHERE id=?', (existing['message_id'],)).fetchone()
                 if existing['save_id'] != save_id or existing['player_id'] != player['id']:
                     raise ValueError('This question belongs to another player')
                 # Transcript retries need only the ID. Draft retries must match the accepted content.
                 if 'text' in payload:
-                    stored = conn.execute('SELECT mime,image FROM chat_images WHERE message_id=?', (existing['message_id'],)).fetchone()
-                    if body != message['body'] or image != ((stored['mime'], stored['image']) if stored else None):
+                    if body != message['body'] or images != stored_chat_images(conn, existing['message_id']):
                         raise ValueError('This request ID was already used for another question')
             else:
                 session = active_session(conn, save_id)
@@ -2096,12 +2131,10 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError('Question must contain 1 to 20,000 characters')
                 source = next((m['id'] for m in reversed(state['messages']) if m['kind'] == 'ai'), None)
                 question_context = public_questions.context(
-                    state, body, payload.get('image'), character=player['character'])
+                    state, body, chat_image_payloads(payload), character=player['character'])
                 inserted = conn.execute('INSERT INTO messages (save_id,session_id,player_id,kind,name,body,created_at,request_id) VALUES (?,?,?,?,?,?,?,?)',
                     (save_id, session['id'], player['id'], 'ooc', player['character'], body, utc(), request_id))
-                if image:
-                    conn.execute('INSERT INTO chat_images (id,save_id,message_id,player_id,mime,image,created_at) VALUES (?,?,?,?,?,?,?)',
-                        (str(uuid.uuid4()), save_id, inserted.lastrowid, player['id'], *image, utc()))
+                insert_chat_images(conn, save_id, inserted.lastrowid, player['id'], images)
                 conn.execute('''INSERT INTO public_questions
                     (id,save_id,player_id,message_id,session_id,beat,source_message_id,context,status)
                     VALUES (?,?,?,?,?,?,?,?,?)''',

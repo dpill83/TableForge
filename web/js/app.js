@@ -3,7 +3,7 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const avatar = (player, className, fallback) => `<div class="${className}">${esc(fallback ?? player?.character?.[0] ?? '?')}${player?.portraitUrl?`<img src="${esc(player.portraitUrl)}" alt="">`:''}</div>`;
   const screens = [...document.querySelectorAll('.screen')];
-  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, draft:null, pendingImage:null, locations:[], generating:false, asking:false, updating:false, bindingRequest:0,composerMode:'ic',publicSending:false};
+  const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, draft:null, pendingImages:[], locations:[], generating:false, asking:false, updating:false, bindingRequest:0,composerMode:'ic',publicSending:false};
   const combatPending=()=>state.save?.save.mode==='combat'||!!(state.save?.combat&&state.save.combat.phase!=='complete');
   const combatTokenKey=()=>`tableforge-combat-editor:${state.save?.save.id}:${state.save?.combat?.id}`;
   const combatToken=()=>sessionStorage.getItem(combatTokenKey());
@@ -87,7 +87,7 @@
     const controller=new AbortController();
     const zip=typeof Blob!=='undefined'&&body instanceof Blob;
     const generating=body!==undefined&&/\/(images|advance|start|ask|summary-draft|combat-outcome|combat-retry|combat-correction)$/.test(path);
-    const bulky=!!body?.image;
+    const bulky=!!body?.image||!!body?.images?.length;
     const timer=setTimeout(()=>controller.abort(),zip?300000:generating?210000:bulky?120000:15000);
     try{
       const response = await fetch('/api/' + path, {method:body === undefined ? 'GET':'POST', signal:controller.signal, headers:{'Content-Type':zip?'application/zip':'application/json'}, body: zip?body:body === undefined ? undefined : JSON.stringify(body)});
@@ -322,7 +322,7 @@
     catch(error){notify(error);}
   };
   const leaveUnavailableSave=async()=>{
-    state.save=null;state.identity=null;state.draft=null;state.pendingImage=null;
+    state.save=null;state.identity=null;state.draft=null;state.pendingImages=[];
     sessionStorage.removeItem('tableforge-player');
     askDialog=null;sceneDialog=null;
     $('modalRoot').replaceChildren();showTool(null);
@@ -638,7 +638,7 @@
     $('partyList').querySelector('.portrait-button')?.addEventListener('click',openPortraitEditor);
     $('illustrateScene').disabled=!state.identity||!s.messages.some(m=>m.kind==='ai');
     // Rebuild the feed only when its content changes, so Ready/typing updates keep the reading position.
-    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,s.messages.map(m=>[m.id,m.body.length,m.ooc,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.find(a=>a.messageId===m.id)?.id]),s.players.map(p=>[p.id,p.character,p.portraitUrl]),s.events.filter(e=>['adventure_start','combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind))]);
+    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,s.messages.map(m=>[m.id,m.body.length,m.ooc,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.filter(a=>a.messageId===m.id).map(a=>a.id).join()]),s.players.map(p=>[p.id,p.character,p.portraitUrl]),s.events.filter(e=>['adventure_start','combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind))]);
     const feedChanged=feedKey!==state.feedKey,sameSave=state.feedSaveId===s.save.id,previousIds=new Set(state.feedKey?[...$('feedInner').children].map(el=>el.id):[]);
     const followLatest=state.followLatest!==false;
     if(feedChanged){
@@ -723,15 +723,21 @@
           row.querySelector('.message-actions').append(source);
         }
       }
-      const attachment=s.attachments?.find(a=>a.messageId===m.id);
-      if(attachment){
-        const link=document.createElement('a');
-        link.href=`/api/saves/${encodeURIComponent(s.save.id)}/attachments/${encodeURIComponent(attachment.id)}`;
-        link.target='_blank';link.rel='noopener';
-        const img=document.createElement('img');img.src=link.href;img.alt=m.body.trim()||'Attached image';
-        img.className='scene-image';img.loading='lazy';link.append(img);
-        img.addEventListener('load',()=>{if(state.followLatest!==false)$('feed').scrollTop=$('feed').scrollHeight;});
-        row.querySelector('.message-body').prepend(link);
+      // A message may carry several images; more than one shows as a small gallery.
+      const attachments=(s.attachments||[]).filter(a=>a.messageId===m.id).sort((a,b)=>(a.position||0)-(b.position||0));
+      if(attachments.length){
+        const holder=document.createElement('div');holder.className=attachments.length>1?'attachment-gallery':'attachment-single';
+        attachments.forEach((attachment,index)=>{
+          const link=document.createElement('a');
+          link.href=`/api/saves/${encodeURIComponent(s.save.id)}/attachments/${encodeURIComponent(attachment.id)}`;
+          link.target='_blank';link.rel='noopener';
+          const img=document.createElement('img');img.src=link.href;
+          img.alt=(m.body.trim()||'Attached image')+(attachments.length>1?` (${index+1} of ${attachments.length})`:'');
+          img.className='scene-image';img.loading='lazy';link.append(img);
+          img.addEventListener('load',()=>{if(state.followLatest!==false)$('feed').scrollTop=$('feed').scrollHeight;});
+          holder.append(link);
+        });
+        row.querySelector('.message-body').prepend(holder);
       }
       row.querySelector('.copy-message').onclick=async event=>{
         const button=event.currentTarget;
@@ -808,15 +814,19 @@
   // A draft belongs to the beat it was started in. If the table moves on, keep the
   // text but hold it until the player confirms it still fits the new beat.
   const draftStale=()=>state.composerMode!=='ooc'&&!!state.draft&&!!state.save&&(state.draft.saveId!==state.save.save.id||state.draft.beat!==state.save.save.beat);
-  const pendingContribution=()=>!!$('composer').value.trim()||!!state.pendingImage;
-  const renderPending=(note='')=>{
-    const tray=$('attachmentTray'),pending=state.pendingImage;
-    tray.classList.toggle('hidden',!pending);
-    if(!pending){tray.replaceChildren();return;}
-    tray.innerHTML=`<div class="attachment-chip"><span>${esc(pending.name)}</span><button type="button" id="removeAttachment" aria-label="Remove attachment">×</button></div>${note?`<span class="attachment-note" role="status">${esc(note)}</span>`:''}`;
-    $('removeAttachment').onclick=()=>{state.pendingImage=null;if(state.draft)state.draft.requestId=null;renderPending();syncDraft();};
+  const pendingContribution=()=>!!$('composer').value.trim()||state.pendingImages.length>0;
+  const renderPending=()=>{
+    const tray=$('attachmentTray'),pending=state.pendingImages;
+    tray.classList.toggle('hidden',!pending.length);
+    if(!pending.length){tray.replaceChildren();return;}
+    // A small preview per image; drafts saved before previews existed fall back to the full image.
+    tray.innerHTML=pending.map((image,index)=>`<div class="attachment-chip"><img class="attachment-thumb" alt="" src="${esc(image.thumb||`data:${image.mime};base64,${image.data}`)}"><span>${esc(image.name)}</span><button type="button" class="remove-attachment" data-index="${index}" aria-label="Remove ${esc(image.name)}">×</button></div>`).join('');
+    tray.querySelectorAll('.remove-attachment').forEach(button=>button.onclick=()=>{
+      state.pendingImages=state.pendingImages.filter((_,index)=>index!==Number(button.dataset.index));
+      if(state.draft)state.draft.requestId=null;renderPending();syncDraft();
+    });
   };
-  const clearPendingImage=()=>{state.pendingImage=null;renderPending();};
+  const clearPendingImage=()=>{state.pendingImages=[];renderPending();};
   const syncDraft=()=>{
     if(!pendingContribution()) state.draft=null;
     else if(!state.draft&&state.save) state.draft={saveId:state.save.save.id,beat:state.save.save.beat,requestId:null};
@@ -830,7 +840,7 @@
   const storeDraft=()=>{
     const key=draftKey();if(!key)return;
     const saved=state.draft&&state.draft.saveId===state.save.save.id&&pendingContribution()
-      ?{text:$('composer').value,image:state.pendingImage,beat:state.draft.beat,requestId:state.draft.requestId}:null;
+      ?{text:$('composer').value,images:state.pendingImages,beat:state.draft.beat,requestId:state.draft.requestId}:null;
     draftCache.set(key,saved);
     try{
       if(saved)
@@ -845,10 +855,12 @@
     try{saved=draftCache.has(key)?draftCache.get(key):JSON.parse(localStorage.getItem(key)||'null');}catch(error){console.error(error);}
     // A send whose reply was lost may have landed; the save is the record of what was sent.
     if(saved?.requestId&&state.save.messages.some(m=>m.request_id===saved.requestId)) saved=null;
-    const usable=saved&&typeof saved.text==='string'&&(saved.text.trim()||saved.image)&&Number.isInteger(saved.beat);
+    // Drafts saved before multi-image support hold a single `image`.
+    const savedImages=Array.isArray(saved?.images)?saved.images:saved?.image?[saved.image]:[];
+    const usable=saved&&typeof saved.text==='string'&&(saved.text.trim()||savedImages.length)&&Number.isInteger(saved.beat);
     $('composer').value=usable?saved.text:'';
     state.draft=usable?{saveId:state.save.save.id,beat:saved.beat,requestId:saved.requestId||null}:null;
-    state.pendingImage=usable?saved.image||null:null;renderPending();
+    state.pendingImages=usable?savedImages:[];renderPending();
     storeDraft();resize();renderDraft();
   };
   const clearDraft=()=>{$('composer').value='';state.draft=null;clearPendingImage();storeDraft();resize();renderDraft();};
@@ -866,7 +878,7 @@
     syncDraft();state.draft.requestId||=newRequestId();storeDraft();
     const saveId=state.save.save.id,playerId=state.identity,requestId=state.draft.requestId;
     const payload={playerId,requestId,text:body};
-    if(state.pendingImage)payload.image={mime:state.pendingImage.mime,data:state.pendingImage.data};
+    if(state.pendingImages.length)payload.images=state.pendingImages.map(({mime,data})=>({mime,data}));
     state.publicSending=true;render();
     let sent=false;
     try{await request(`saves/${saveId}/public-question`,payload);sent=true;}
@@ -941,7 +953,7 @@
   $('sendBtn').onclick=async()=>{
     if(state.composerMode==='ooc'){if(!$('sendBtn').disabled)await sendPublicQuestion();return;}
     if(combatPending()||$('sendBtn').disabled)return;
-    const field=$('composer'),body=field.value.trim(),image=state.pendingImage;if(!body&&!image)return;
+    const field=$('composer'),body=field.value.trim(),images=state.pendingImages;if(!body&&!images.length)return;
     syncDraft();
     if(draftStale()) return;
     const staleBeat=error=>{
@@ -969,7 +981,7 @@
       return true;
     };
     const payload={playerId:state.identity,text:body,beat:state.draft.beat,requestId,autoReady:autoReadyEnabled()};
-    if(image) payload.image={mime:image.mime,data:image.data};
+    if(images.length) payload.images=images.map(({mime,data})=>({mime,data}));
     try {
       if(await update('messages',payload,landed)) {
         typingSentAt=0;
@@ -1181,8 +1193,8 @@
   // Editing makes it a different contribution, so a later send gets a fresh request ID.
   field.addEventListener('input',()=>{
     if(state.composerMode!=='ooc'&&/^\s*OOC:/i.test(field.value)){
-      const text=field.value.replace(/^\s*OOC:\s*/i,''),image=state.pendingImage;
-      clearDraft();switchComposerMode('ooc');field.value=text;state.pendingImage=image;state.draft=null;renderPending();
+      const text=field.value.replace(/^\s*OOC:\s*/i,''),images=state.pendingImages;
+      clearDraft();switchComposerMode('ooc');field.value=text;state.pendingImages=images;state.draft=null;renderPending();
     }
     if(state.draft)state.draft.requestId=null;resize();syncDraft();
   });
@@ -1221,35 +1233,60 @@
     $('attachmentInput').click();
   };
   document.addEventListener('click',()=>$('attachmentMenu').classList.add('hidden'));
-  // The + picker and clipboard paste share one path: one PNG, JPEG, or WebP image per message.
-  const attachableImage=file=>['image/png','image/jpeg','image/webp'].includes(file.type)&&file.size<=20*1024*1024;
-  const attachImage=async(file,name=file.name)=>{
-    if(!attachableImage(file)){notify(Error('Choose a PNG, JPEG, or WebP image up to 20 MB.'));return;}
+  // The + picker and clipboard paste share one path: up to 4 PNG, JPEG, or WebP images per
+  // message, 20 MB each and 40 MB in total (the server enforces the same limits).
+  const maxImages=4,maxImageBytes=20*1024*1024,maxImagesTotal=40*1024*1024;
+  const attachableImage=file=>['image/png','image/jpeg','image/webp'].includes(file.type)&&file.size<=maxImageBytes;
+  const imageBytes=image=>image.size??Math.floor((image.data?.length||0)*3/4);
+  // A small JPEG preview for the tray, so large images do not slow the composer down.
+  const imageThumbnail=async(file,size=96)=>{
+    if(typeof createImageBitmap!=='function'||typeof document==='undefined')return null;
     try{
-      const replaced=!!state.pendingImage;
-      state.pendingImage={name,mime:file.type,data:await bytes64(file)};
-      if(state.draft)state.draft.requestId=null;
-      renderPending(replaced?'Replaced the previous image (one image per message).':'');
-      syncDraft();
-    }catch(error){notify(error);}
+      const bitmap=await createImageBitmap(file),scale=Math.min(1,size/Math.max(bitmap.width,bitmap.height));
+      const canvas=document.createElement('canvas');
+      canvas.width=Math.max(1,Math.round(bitmap.width*scale));canvas.height=Math.max(1,Math.round(bitmap.height*scale));
+      canvas.getContext('2d').drawImage(bitmap,0,0,canvas.width,canvas.height);bitmap.close?.();
+      return canvas.toDataURL('image/jpeg',0.8);
+    }catch{return null;}
   };
+  const limitProblem=file=>state.pendingImages.length>=maxImages?`Attach up to ${maxImages} images per message.`
+    :state.pendingImages.reduce((total,image)=>total+imageBytes(image),0)+file.size>maxImagesTotal?'Attached images must total 40 MB or less.':'';
+  const addImages=async entries=>{
+    const problems=new Set();let added=0;
+    for(const {file,name=file.name} of entries){
+      if(!attachableImage(file)){problems.add('Choose PNG, JPEG, or WebP images up to 20 MB each.');continue;}
+      if(limitProblem(file)){problems.add(limitProblem(file));continue;}
+      try{
+        const [data,thumb]=await Promise.all([bytes64(file),imageThumbnail(file)]);
+        // Check again just before adding: the pending list may have changed while the file was read.
+        if(limitProblem(file)){problems.add(limitProblem(file));continue;}
+        state.pendingImages=[...state.pendingImages,{name,mime:file.type,size:file.size,data,thumb}];added++;
+      }catch(error){problems.add(error.message);}
+    }
+    if(added){if(state.draft)state.draft.requestId=null;renderPending();syncDraft();}
+    if(problems.size)notify(Error([...problems].join(' ')));
+  };
+  // Pastes and picks are added one batch at a time, so overlapping additions can never
+  // pass the limit checks against the same pending list and exceed the count or total.
+  let attachQueue=Promise.resolve();
+  const attachImages=entries=>attachQueue=attachQueue.then(()=>addImages(entries)).catch(error=>notify(error));
   $('attachmentInput').onchange=async event=>{
-    const file=event.target.files?.[0];
+    const files=[...(event.target.files||[])];
     event.target.value='';
-    if(file)await attachImage(file);
+    if(files.length)await attachImages(files.map(file=>({file})));
   };
   // Clipboard images get a readable name; browsers usually call every one "image.png".
-  const pastedImageName=(mime,now=new Date())=>{
+  const pastedImageName=(mime,now=new Date(),number=0)=>{
     const pad=n=>String(n).padStart(2,'0');
-    return `Pasted image ${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}.${{'image/jpeg':'jpg','image/webp':'webp'}[mime]||'png'}`;
+    return `Pasted image ${pad(now.getHours())}-${pad(now.getMinutes())}-${pad(now.getSeconds())}${number?` (${number})`:''}.${{'image/jpeg':'jpg','image/webp':'webp'}[mime]||'png'}`;
   };
-  // Pasting an image attaches it like the + picker; pasting text is unchanged.
+  // Pasting images attaches them like the + picker; pasting text is unchanged.
   $('composer').addEventListener('paste',event=>{
-    const file=[...(event.clipboardData?.items||[])].filter(item=>item.kind==='file'&&item.type.startsWith('image/')).map(item=>item.getAsFile()).find(Boolean);
-    if(!file)return;
+    const files=[...(event.clipboardData?.items||[])].filter(item=>item.kind==='file'&&item.type.startsWith('image/')).map(item=>item.getAsFile()).filter(Boolean);
+    if(!files.length)return;
     event.preventDefault();
     if($('attachmentBtn').disabled)return;
-    attachImage(file,pastedImageName(file.type));
+    attachImages(files.map((file,index)=>({file,name:pastedImageName(file.type,new Date(),files.length>1?index+1:0)})));
   });
   const modal=(html,size='')=>{const root=$('modalRoot');root.innerHTML=`<div class="overlay"><div class="modal ${size}">${html}</div></div>`;root.querySelectorAll('[data-close]').forEach(b=>b.onclick=()=>root.replaceChildren());root.querySelector('.overlay').onclick=e=>{if(e.target.classList.contains('overlay'))root.replaceChildren();};};
   const openSceneSource=messageId=>{
