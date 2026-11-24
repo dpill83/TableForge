@@ -238,10 +238,32 @@ class PublicQuestionsTest(unittest.TestCase):
             self.wait(sid)
         repeated = self.api(f'/api/saves/{sid}/public-question', payload)
         self.assertEqual(len(repeated['attachments']), 1)
-        self.assertEqual(provider.context['questionImage'], image)
+        self.assertEqual(provider.context['questionImages'], [image])
         self.assertEqual(ai.chat_messages(provider.context)[1]['content'][1]['type'], 'image_url')
+        # Questions saved before multi-image support hold a single questionImage.
+        legacy = {key: value for key, value in provider.context.items() if key != 'questionImages'}
+        legacy['questionImage'] = image
+        self.assertEqual(ai.chat_messages(legacy)[1]['content'][1]['image_url']['url'],
+                         f"data:image/png;base64,{image['data']}")
         changed = {**payload, 'image': {**image, 'data': base64.b64encode(b'\x89PNG\r\n\x1a\nother').decode()}}
         self.assertIn('another question', self.api_error(f'/api/saves/{sid}/public-question', changed)['error'])
+
+    def test_question_with_several_images_sends_each_to_the_ai(self):
+        sid = self.ready_save()
+        pid = self.api(f'/api/saves/{sid}')['players'][0]['id']
+        images = [{'mime': 'image/png', 'data': base64.b64encode(b'\x89PNG\r\n\x1a\n' + name).decode()}
+                  for name in (b'first', b'second')]
+        payload = {'playerId': pid, 'text': 'Which of these is the rune?', 'requestId': str(uuid.uuid4()), 'images': images}
+        provider = test_flow.FakeProvider('Public explanation')
+        with patch('ai.current_provider', return_value=provider):
+            result = self.api(f'/api/saves/{sid}/public-question', payload)
+            self.wait(sid)
+        self.assertEqual([a['position'] for a in result['attachments']], [0, 1])
+        content = ai.chat_messages(provider.context)[1]['content']
+        self.assertEqual([part['type'] for part in content], ['text', 'image_url', 'image_url'])
+        self.assertTrue(content[2]['image_url']['url'].endswith(images[1]['data']))
+        swapped = {**payload, 'images': images[::-1]}
+        self.assertIn('another question', self.api_error(f'/api/saves/{sid}/public-question', swapped)['error'])
 
 
 if __name__ == '__main__':

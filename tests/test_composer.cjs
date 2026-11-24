@@ -33,11 +33,11 @@ function table({autoReady=false}={}){
       {letter:'C',text:'I keep watch.'},
     ]},
   ]}};
-  const state={identity:'first',draft:null,pendingImage:null,
+  const state={identity:'first',draft:null,pendingImages:[],
     save:{save:{id:'save',beat:2,mode:'normal'},sessions:[{id:'session',ended_at:null}],
       players:[{id:'first',ready:false},{id:'second',ready:false}],messages:[message],activity:{}},
   };
-  const pendingContribution=()=>!!field.value.trim()||!!state.pendingImage;
+  const pendingContribution=()=>!!field.value.trim()||state.pendingImages.length>0;
   const combatPending=()=>state.save.save.mode==='combat'||!!(state.save.combat&&state.save.combat.phase!=='complete');
   const draftStale=()=>!!state.draft&&state.draft.beat!==state.save.save.beat;
   const syncDraft=()=>{
@@ -54,7 +54,7 @@ function table({autoReady=false}={}){
     storeDraft:()=>{},newRequestId:()=> 'request',typingSentAt:0,
     render:()=>{},
     notify:error=>{throw error;},
-    clearDraft:()=>{field.value='';state.draft=null;state.pendingImage=null;},
+    clearDraft:()=>{field.value='';state.draft=null;state.pendingImages=[];},
     update:async(action,payload)=>{
       requests.push({action,payload});
       if(action==='messages'){
@@ -111,10 +111,10 @@ test('Enter on Ready readies without sending or discarding a draft',async()=>{
 
 test('choice appends to a draft and preserves an attachment',async()=>{
   const t=table();t.field.value='I greet the crew.';
-  t.state.pendingImage={mime:'image/png',data:'test-image'};t.choose('C');
+  t.state.pendingImages=[{name:'a.png',mime:'image/png',data:'test-image',thumb:'preview'},{mime:'image/jpeg',data:'second'}];t.choose('C');
   await t.press(t.field);
   assert.equal(t.requests[0].payload.text,'I greet the crew.\nI keep watch.');
-  assert.equal(t.requests[0].payload.image.data,'test-image');
+  assert.deepEqual(JSON.parse(JSON.stringify(t.requests[0].payload.images)),[{mime:'image/png',data:'test-image'},{mime:'image/jpeg',data:'second'}]);
 });
 
 test('Ready remains usable without a contribution, by keyboard or ordinary click',async()=>{

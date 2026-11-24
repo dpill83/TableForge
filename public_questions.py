@@ -34,7 +34,7 @@ def recent_rulings(messages):
     ][-20:]
 
 
-def context(state, question, image=None, *, character):
+def context(state, question, images=None, *, character):
     # Deliberately never load a cartridge, summary, private thread, or pending IC actions.
     published = [m for m in state['messages'] if m['kind'] == 'ai'][-20:]
     result = {'purpose': 'ooc', 'title': state['cartridge']['title'],
@@ -44,8 +44,8 @@ def context(state, question, image=None, *, character):
               'publicNotes': [{'title': n['title'], 'body': n['body']} for n in state.get('notes', [])],
               'publicOutcomes': [e['body'] for e in state.get('events', [])
                                  if e['kind'] in ('combat_outcome', 'combat_correction')]}
-    if image:
-        result['questionImage'] = image
+    if images:
+        result['questionImages'] = [{'mime': image['mime'], 'data': image['data']} for image in images]
     return result
 
 
