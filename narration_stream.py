@@ -8,16 +8,17 @@ import time
 # A control marker can begin mid-line (Location), span chunks, or arrive
 # malformed. Hold everything from a known marker until final publication.
 CONTROL = re.compile(
-    r'\[\s*(?:opening|location)\s*:|\[\[\s*tableforge'
+    r'\[\s*(?:opening|location|chapter)\s*:|\[\[\s*tableforge'
     r'|^[ \t]*(?:\x60{3,}|~{3,})[ \t]*tableforge', re.IGNORECASE | re.MULTILINE
 )
 PARTIAL_CONTROL = re.compile(
     r'\[\[\s*[a-z_]*\Z|\[\s*[a-z]*\s*\Z'
     r'|^[ \t]*(?:\x60+|~+)[ \t]*[a-z-]*\Z', re.IGNORECASE | re.MULTILINE
 )
-CONTROL_NAMES = ('opening', 'location')
+# Chapter suggestions are for Pilots to confirm; players never see them stream.
+CONTROL_NAMES = ('opening', 'location', 'chapter')
 UNFINISHED_CONTROL = re.compile(
-    r'\[\s*(?:open(?:i(?:n(?:g)?)?)?|loca(?:t(?:i(?:o(?:n)?)?)?)?)\s*\Z'
+    r'\[\s*(?:open(?:i(?:n(?:g)?)?)?|loca(?:t(?:i(?:o(?:n)?)?)?)?|chap(?:t(?:e(?:r)?)?)?)\s*\Z'
     r'|\[\[\s*table[a-z_]*\Z|^[ \t]*(?:\x60{3,}|~{3,})[ \t]*tableforge(?:-[a-z]*)?\Z',
     re.IGNORECASE | re.MULTILINE,
 )

@@ -604,6 +604,35 @@ class FlowTest(unittest.TestCase):
         self.assertEqual([p['ready'] for p in after['players']], [p['ready'] for p in before['players']])
         self.assertNotIn(save_id, server.GENERATING)
 
+    def test_large_backlog_takes_several_summaries_before_narration(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        self.play_without_memory(save_id, first, beats=6)
+        # Each summary request is bounded, so this backlog needs more than one.
+        with patch.object(ai, 'SUMMARY_INPUT_CAP', 16_000), patch.object(server, 'schedule_summary'):
+            fake = FakeProvider()
+            real = ai.current_provider
+            with patch.object(ai, 'current_provider',
+                              side_effect=lambda *a: fake if server.GENERATING.get(save_id) == 'advance' else real()):
+                self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
+        self.assertGreaterEqual(len(self.summary_rows()), 2)
+        self.assertEqual(self.api(f'/api/saves/{save_id}/context')['report']['transcript']['omitted'], 0)
+        self.assertIsNotNone(fake.context)
+
+    def test_partial_catch_up_never_narrates_with_chat_left_out(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        self.play_without_memory(save_id, first, beats=6)
+        before = self.api(f'/api/saves/{save_id}')
+        with patch.object(ai, 'SUMMARY_INPUT_CAP', 16_000), patch.object(server, 'AUTO_SUMMARY_ROUNDS', 1), \
+                patch.object(ai, 'TRANSCRIPT_CEILING', 70_000), patch.object(server, 'schedule_summary'):
+            error = self.api_error(f'/api/saves/{save_id}/advance', self.override(save_id))
+        # The one summary that ran succeeded, but chat would still have been dropped.
+        self.assertEqual(len(self.summary_rows()), 1)
+        self.assertIn('Nothing was lost', error['error'])
+        self.assertEqual(self.api(f'/api/saves/{save_id}')['save']['beat'], before['save']['beat'])
+        self.assertNotIn(save_id, server.GENERATING)
+
     def test_advance_that_would_be_rejected_does_not_summarize(self):
         save_id = self.ready_save()
         first = self.api(f'/api/saves/{save_id}')['players'][0]['id']

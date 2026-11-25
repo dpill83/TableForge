@@ -50,6 +50,7 @@ GENERATING = {}
 AUTO_SUMMARY = {}
 AUTO_SUMMARIES = True
 AUTO_SUMMARY_WAIT = 120
+AUTO_SUMMARY_ROUNDS = 6
 # save_id -> {player_id: monotonic expiry}; presence only, never saved.
 TYPING = {}
 TYPING_SECONDS = 6
@@ -1107,24 +1108,32 @@ def ensure_memory(save_id, payload):
         check_advance(conn, save_id, state, payload)
         GENERATING[save_id] = 'summary-advance'
         running = AUTO_SUMMARY.get(save_id)
-    failed = False
     try:
         if running:
             running.wait(AUTO_SUMMARY_WAIT)
-        try:
-            summarize_now(save_id, ai.TRANSCRIPT_CAP)
-        except Exception:
-            failed = True
+        # One request covers at most SUMMARY_INPUT_CAP characters, so an older save with a
+        # large backlog needs several. Stop when the history fits, a job fails, or none is due.
+        for _ in range(AUTO_SUMMARY_ROUNDS):
+            with LOCK, db() as conn:
+                state = snapshot(conn, save_id)
+                if (ai.unsummarized_chars(state['messages'], ai.effective_summary(state)) < ai.TRANSCRIPT_CAP
+                        or not ai.memory_due(state, ai.TRANSCRIPT_CAP)):
+                    break
+            try:
+                if summarize_now(save_id, ai.TRANSCRIPT_CAP) is not True:
+                    break
+            except Exception:
+                break
     finally:
         with LOCK:
             if GENERATING.get(save_id) == 'summary-advance':
                 GENERATING.pop(save_id, None)
-    if failed:
-        with LOCK, db() as conn:
-            state = snapshot(conn, save_id)
-            if ai.unsummarized_chars(state['messages'], ai.effective_summary(state)) >= ai.TRANSCRIPT_CEILING:
-                raise ValueError('Summarizing the adventure failed, so the AI-DM did not respond. '
-                                 'Nothing was lost. Advance again to retry.')
+    # However the catch-up ended, never narrate while uncovered chat would be left out.
+    with LOCK, db() as conn:
+        state = snapshot(conn, save_id)
+        if ai.unsummarized_chars(state['messages'], ai.effective_summary(state)) >= ai.TRANSCRIPT_CEILING:
+            raise ValueError('Summarizing the adventure did not finish, so the AI-DM did not respond. '
+                             'Nothing was lost. Advance again to retry.')
 
 
 def change_chapters(conn, state, payload):
