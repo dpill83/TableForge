@@ -74,6 +74,11 @@ def extract(text, players, beat):
     return prose, {'beat': beat, 'groups': groups}
 
 
+def option_lines(group):
+    return '\n'.join(
+        f"- **{option['letter']}.** {markdown_text(option['text'])}" for option in group['options'])
+
+
 def public_body(prose, choices, players):
     if not choices:
         return prose
@@ -81,6 +86,21 @@ def public_body(prose, choices, players):
     lists = []
     for group in choices['groups']:
         label = audiences[group['playerId']] if group['playerId'] is not None else 'Party'
-        lists.append('**' + markdown_text(label) + '**\n\n' + '\n'.join(
-            f"- **{option['letter']}.** {markdown_text(option['text'])}" for option in group['options']))
+        lists.append('**' + markdown_text(label) + '**\n\n' + option_lines(group))
     return '\n\n'.join([prose, *lists]).strip()
+
+
+def prose_for_read_aloud(body, choices):
+    """Remove only a complete footer that matches the stored structured choices."""
+    if not choices:
+        return body
+    groups = choices['groups']
+    parts = body.rsplit('\n\n', 2 * len(groups))
+    if len(parts) != 2 * len(groups) + 1:
+        return body
+    for index, group in enumerate(groups):
+        heading, lines = parts[2 * index + 1:2 * index + 3]
+        # The saved heading can contain a character name that has since changed.
+        if not (heading.startswith('**') and heading.endswith('**') and lines == option_lines(group)):
+            return body
+    return parts[0]

@@ -197,7 +197,7 @@ Ordinary save responses exclude Ask history. Pilot Mode loads the selected playe
 
 Set `TABLEFORGE_STREAM_NARRATION=1` before starting the server to see live AI-DM narration during adventure openings, regular advances, and combat aftermath. TableForge saves each message after validation. The mock provider supplies a delayed response when no OpenAI key is configured. The flag is off by default.
 
-With [Kokoro Read Aloud enabled](deploy/kilo/README.md#enable-kokoro-read-aloud), join the table and click the speaker next to Copy on any saved AI-DM narration. The same button pauses and resumes. Use the square button to stop or select a different message to switch. Each player starts playback on their own browser. Kokoro starts on demand and keeps recent completed audio in memory for replay.
+With [Kokoro Read Aloud enabled](deploy/kilo/README.md#enable-kokoro-read-aloud), join the table and click the speaker next to Copy on any saved AI-DM narration. The same button pauses and resumes. Use the square button to stop or select a different message to switch. Each player starts playback on their own browser. Playback reads the narration through the closing question and skips the suggested choices below it. Kokoro starts on demand and keeps recent completed audio in memory for replay.
 
 Run the HTTP workflow tests with `python3 -m unittest discover -s tests -v`.
 Run frontend tests with `node --test tests/*.cjs` and syntax checks with `node --check web/js/app.js` and `node --check web/js/request-log.js`.
