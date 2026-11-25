@@ -1,6 +1,16 @@
 (() => {
   const $ = id => document.getElementById(id);
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  // Chat timestamp: time only for today, date + time otherwise; full date/time on hover.
+  const chatTime = value => {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return '';
+    const now = new Date(), sameDay = date.toDateString() === now.toDateString();
+    const label = sameDay
+      ? date.toLocaleTimeString([], {hour:'numeric', minute:'2-digit'})
+      : date.toLocaleString([], {month:'short', day:'numeric', ...(date.getFullYear() !== now.getFullYear() ? {year:'numeric'} : {}), hour:'numeric', minute:'2-digit'});
+    return `<time class="time" datetime="${esc(value)}" title="${esc(date.toLocaleString([], {dateStyle:'full', timeStyle:'short'}))}">${esc(label)}</time>`;
+  };
   const avatar = (player, className, fallback) => `<div class="${className}">${esc(fallback ?? player?.character?.[0] ?? '?')}${player?.portraitUrl?`<img src="${esc(player.portraitUrl)}" alt="">`:''}</div>`;
   const screens = [...document.querySelectorAll('.screen')];
   const state = {cartridge:null, save:null, identity:sessionStorage.getItem('tableforge-player'), pilot:false, draft:null, pendingImages:[], locations:[], generating:false, asking:false, updating:false, bindingRequest:0,composerMode:'ic',publicSending:false};
@@ -746,7 +756,7 @@
     const appendCombatEvent=e=>{
       const row=document.createElement('div');row.className='message combat-event';row.id='event-'+e.id;
       const label=e.kind==='adventure_start'?(e.body?'started the adventure with these notes':'started the adventure'):e.kind==='combat_correction'?'corrected the combat outcome':e.kind==='combat_outcome'?'reported the combat outcome':e.kind==='combat_skipped'?'skipped the combat outcome':'used Combat Finished Override';
-      row.innerHTML=`<div class="avatar">${e.kind==='adventure_start'?'▶':'✓'}</div><div><div class="message-head"><strong>${esc(character(e.player_id))} ${label}</strong><span class="time">${new Date(e.created_at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</span></div><div class="message-body markdown-body"></div></div>`;
+      row.innerHTML=`<div class="avatar">${e.kind==='adventure_start'?'▶':'✓'}</div><div><div class="message-head"><strong>${esc(character(e.player_id))} ${label}</strong>${chatTime(e.created_at)}</div><div class="message-body markdown-body"></div></div>`;
       if(['adventure_start','combat_outcome','combat_correction'].includes(e.kind))row.querySelector('.message-body').innerHTML=TableForgeMarkdown.render(e.body);
       row.dataset.searchText=(character(e.player_id)+' '+label+' '+(['adventure_start','combat_outcome'].includes(e.kind)?e.body:'')).toLowerCase();
       $('feedInner').append(row);
@@ -754,7 +764,7 @@
     for(const m of s.messages){
       while(combatEventIndex<combatEvents.length&&combatEvents[combatEventIndex].created_at<=m.created_at)appendCombatEvent(combatEvents[combatEventIndex++]);
       const row=document.createElement('div');row.className='message '+(m.kind==='ai'?'ai':'player');
-      row.innerHTML=`${avatar(s.players.find(p=>p.id===m.player_id),'avatar',m.kind==='ai'?'AI':m.name[0])}<div><div class="message-head"><strong>${esc(m.name)}</strong><span class="time">${new Date(m.created_at).toLocaleTimeString([], {hour:'numeric',minute:'2-digit'})}</span></div><div class="message-body"></div><div class="message-actions"><button class="copy-message" type="button" title="Copy message" aria-label="Copy message">${TableForgeMessageActions.copyIcon}</button></div></div>`;
+      row.innerHTML=`${avatar(s.players.find(p=>p.id===m.player_id),'avatar',m.kind==='ai'?'AI':m.name[0])}<div><div class="message-head"><strong>${esc(m.name)}</strong>${chatTime(m.created_at)}</div><div class="message-body"></div><div class="message-actions"><button class="copy-message" type="button" title="Copy message" aria-label="Copy message">${TableForgeMessageActions.copyIcon}</button></div></div>`;
       row.querySelector('.message-body').innerHTML=TableForgeMarkdown.render(m.body);
       row.querySelector('.message-body').classList.add('markdown-body');
       if(m.ooc){
