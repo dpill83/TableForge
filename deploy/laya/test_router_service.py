@@ -1,14 +1,25 @@
 """Run with the router's FastAPI environment; all HTTP is mocked."""
 import io
 import json
+import os
+import tempfile
 import unittest
 import urllib.error
 from unittest.mock import patch
 
 import router_service as router
+import routing_settings
 
 
 class RouterServiceTests(unittest.TestCase):
+    def setUp(self):
+        area = tempfile.TemporaryDirectory()
+        self.addCleanup(area.cleanup)
+        self.data = area.name
+        env = patch.dict(os.environ, {'LAYA_ROUTING_DATA': self.data})
+        env.start()
+        self.addCleanup(env.stop)
+
     def classify(self, result):
         response = io.BytesIO(json.dumps(result).encode())
         with patch.object(router.urllib.request, 'urlopen', return_value=response) as opened:
@@ -62,6 +73,35 @@ class RouterServiceTests(unittest.TestCase):
         self.assertEqual(route['tier'], 'standard')
         self.assertEqual(route['reason'], 'defaulted to standard because routing was uncertain')
         self.assertEqual(route['reasoning_effort'], 'low')
+
+    def test_service_defaults_endpoint_gives_the_environment_baseline(self):
+        self.assertEqual(router.routing_defaults(), {'models': router.MODEL_MAP})
+
+    def test_saved_service_settings_change_router_replies_on_the_next_request(self):
+        result = {'answers': {'model_tier': {
+            'probabilities': {'cheap': .15, 'standard': .7, 'heavy': .15}},
+            'reasoning_effort': {'probabilities': {'light': .8, 'normal': .1, 'hard': .1}}}}
+        route, _ = self.classify(result)
+        self.assertEqual(route['model'], router.MODEL_MAP['standard'])
+        self.assertEqual(route['reasoning_effort'], 'low')
+
+        routing_settings.save(self.data, {'tiers': {'standard': {
+            'model': 'gpt-6.2-sol', 'effort': 'high',
+        }}, 'requests': {}})
+        route, _ = self.classify(result)
+        self.assertEqual((route['model'], route['reasoning_effort']), ('gpt-6.2-sol', 'high'))
+        self.assertEqual(route['effort_override'], 'high')
+        self.assertEqual(route['effort_reason'], 'Laya standard tier setting')
+
+    def test_service_settings_apply_to_the_standard_internal_fallback(self):
+        routing_settings.save(self.data, {'tiers': {'standard': {
+            'model': 'gpt-6.2-sol', 'effort': 'default',
+        }}, 'requests': {}})
+        route, _ = self.classify({})
+        self.assertTrue(route['router_internal_fallback_used'])
+        self.assertEqual(route['model'], 'gpt-6.2-sol')
+        self.assertEqual(route['effort_override'], 'default')
+        self.assertIsNone(route['reasoning_effort'])
 
 
 if __name__ == '__main__':

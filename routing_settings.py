@@ -1,6 +1,7 @@
 """Host-wide OpenAI overrides for TableForge requests and Laya tiers."""
 from contextlib import closing
 import json
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -16,6 +17,10 @@ REQUESTS = {
 }
 EFFORTS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
 MODEL_ID = re.compile(r'[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}')
+
+
+def laya_data_path():
+    return Path(os.environ.get('LAYA_ROUTING_DATA', '/var/lib/laya-router'))
 
 
 def path_for(data_path):
