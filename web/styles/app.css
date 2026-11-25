@@ -425,7 +425,7 @@ body.sidebar-dragging iframe{pointer-events:none}
 .markdown-body .markdown-align-center{text-align:center}
 .markdown-body .markdown-align-right{text-align:right}
 .message-actions{display:flex;align-items:center;flex-wrap:wrap;gap:7px;margin-top:8px}
-.copy-message{
+:is(.copy-message,.read-aloud-button){
   min-height:28px;
   padding:0 8px;
   border:1px solid transparent;
@@ -435,7 +435,7 @@ body.sidebar-dragging iframe{pointer-events:none}
   cursor:pointer;
   font-size:12px;
 }
-.copy-message:hover,.copy-message:focus-visible{
+:is(.copy-message,.read-aloud-button):is(:hover,:focus-visible){
   color:#d8dde3;
   background:#171b21;
   border-color:var(--border);
@@ -443,8 +443,10 @@ body.sidebar-dragging iframe{pointer-events:none}
 }
 .copy-message.copied{color:var(--good)}
 .copy-message.copy-failed{color:var(--bad)}
-.copy-message{display:inline-flex;align-items:center;justify-content:center;min-width:32px}
-.copy-message svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+:is(.copy-message,.read-aloud-button){display:inline-flex;align-items:center;justify-content:center;min-width:32px}
+:is(.copy-message,.read-aloud-button) svg{width:17px;height:17px;fill:none;stroke:currentColor;stroke-width:1.7;stroke-linecap:round;stroke-linejoin:round}
+.read-aloud-controls{display:inline-flex;align-items:center;gap:3px;font-size:12px}
+.read-aloud-button:disabled{cursor:default;opacity:.65}
 .choice-group{display:inline-flex;align-items:center;flex-wrap:wrap;gap:5px}
 .choice-audience{font-size:11px;color:var(--muted);margin:0 3px 0 5px}
 .choice-button{min-width:32px;min-height:30px;padding:0 8px;border:1px solid var(--border);border-radius:7px;background:transparent;color:inherit;font:inherit;font-size:12px;cursor:pointer}
@@ -466,8 +468,8 @@ body.sidebar-dragging iframe{pointer-events:none}
 }
 .message.ai .message-head strong{color:#efc980}
 .message.ai .message-body{color:#f0e7d8}
-.message.ai .copy-message{color:#a89575}
-.message.ai .copy-message:hover{color:#ead5ad;background:rgba(201,154,87,.08)}
+.message.ai :is(.copy-message,.read-aloud-button){color:#a89575}
+.message.ai :is(.copy-message,.read-aloud-button):hover{color:#ead5ad;background:rgba(201,154,87,.08)}
 .message.ai .copy-message.copied{color:var(--good)}
 .message.ai .copy-message.copy-failed{color:var(--bad)}
 

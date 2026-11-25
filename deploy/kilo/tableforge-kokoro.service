@@ -1,0 +1,19 @@
+[Unit]
+Description=Kokoro Read Aloud for TableForge
+After=local-fs.target
+
+[Service]
+Type=simple
+User=tableforge
+Group=tableforge
+ExecStart=/opt/tableforge/kokoro/venv/bin/python -B /opt/tableforge/repo/kokoro_service.py --model-dir /opt/tableforge/kokoro/kokoro-multi-lang-v1_0
+Restart=on-failure
+RestartSec=5
+Nice=10
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
