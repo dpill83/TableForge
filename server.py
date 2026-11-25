@@ -1456,11 +1456,12 @@ class Handler(BaseHTTPRequestHandler):
                                   (save_id, player_id)).fetchone()
             if not player:
                 return self.respond({'error': 'Join this table to use Read Aloud.'}, 403)
-            message = conn.execute("SELECT body FROM messages WHERE save_id=? AND id=? AND kind='ai'",
+            message = conn.execute("SELECT body,choices_json FROM messages WHERE save_id=? AND id=? AND kind='ai'",
                                    (save_id, message_id)).fetchone()
         if not message:
             return self.respond({'error': 'Choose a saved AI-DM message.'}, 404)
-        text = read_aloud.spoken_text(message['body'])
+        choices = json.loads(message['choices_json'] or 'null')
+        text = read_aloud.spoken_text(narration_choices.prose_for_read_aloud(message['body'], choices))
         if len(text) > read_aloud.MAX_TEXT or not any(c.isalnum() for c in text):
             return self.respond({'error': 'This narration cannot be read aloud.'}, 422)
         try:

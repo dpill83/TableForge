@@ -1,5 +1,6 @@
 """Read Aloud HTTP access, incremental delivery, and cache behavior."""
 from contextlib import contextmanager
+import json
 import os
 import threading
 import unittest
@@ -8,6 +9,7 @@ from unittest.mock import patch
 
 import ai
 from kokoro_service import SpeechServer
+from narration_choices import prose_for_read_aloud, public_body
 from read_aloud import spoken_text
 import test_flow
 
@@ -41,12 +43,17 @@ class ReadAloudTest(unittest.TestCase):
 
     def test_only_saved_ai_narration_can_stream_and_replay(self):
         line = 'The lantern sputters as the group reaches the last steps of the bridge.'
-        body = '**'+line+'**\n\n'+('A whisper floats out from beneath the walkway. '*4).strip()
+        prose = '**'+line+'**\n\n'+('A whisper floats out from beneath the walkway. '*4)+'What do you do?'
         save_id = self.ready_save()
         url = f'/api/saves/{save_id}'
+        player = self.api(url)['players'][0]['id']
+        groups = [{'playerId': None, 'options': ['Call to the guard.']},
+                  {'playerId': player, 'options': ['Inspect the *loose* stone.']}]
+        body = prose + '\n\n\x60\x60\x60tableforge-choices\n' + json.dumps({'groups': groups}) + '\n\x60\x60\x60'
         with patch.object(ai, 'current_provider', return_value=test_flow.FakeProvider(body)):
             saved = self.api(url+'/advance', {})
-        player = saved['players'][0]['id']
+        self.assertIn('Call to the guard.', saved['messages'][-1]['body'])
+        self.assertEqual(len(saved['messages'][-1]['choices']['groups']), 2)
         message = saved['messages'][-1]['id']
         audio_url = f'{url}/read-aloud/{message}?playerId={player}'
         with patch.dict(os.environ, {'TABLEFORGE_KOKORO_PORT': ''}):
@@ -93,3 +100,13 @@ class ReadAloudTest(unittest.TestCase):
                 self.assertFalse(replay.chunked)
             self.assertEqual(content, ''.join(engine.calls).encode())
             self.assertGreaterEqual(len(engine.calls), 2)
+            self.assertEqual(' '.join(engine.calls), ' '.join(spoken_text(prose).split()))
+
+    def test_only_exact_structured_footer_is_removed(self):
+        prose = 'The sign has two lines.\n\n- Keep left.\n- Stay dry.\n\nWhat now?'
+        choices = {'groups': [{'playerId': 'p1', 'options': [{'letter': 'A', 'text': 'Cross [carefully].'}]}]}
+        saved = public_body(prose, choices, [{'id': 'p1', 'character': 'Character at the time'}])
+        self.assertEqual(prose_for_read_aloud(saved, choices), prose)
+        self.assertEqual(prose_for_read_aloud(saved, None), saved)
+        changed = saved + '\n\nA final ray of light falls across the door.'
+        self.assertEqual(prose_for_read_aloud(changed, choices), changed)
