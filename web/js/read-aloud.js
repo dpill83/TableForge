@@ -76,7 +76,24 @@ const TableForgeReadAloud = (() => {
     return {toggle, stop, status};
   };
 
-  return {icons, create};
+  const voicePreference = storage => {
+    const key = 'tableforge-read-aloud-voice';
+    let voice = '';
+    try { voice = storage.getItem(key) || ''; } catch { /* Use the table default. */ }
+    return {
+      get: () => voice,
+      set(value) {
+        voice = value;
+        try {
+          if (voice) storage.setItem(key, voice);
+          else storage.removeItem(key);
+        } catch { /* Keep the choice for this tab. */ }
+      },
+      url: base => voice ? base + '&voice=' + encodeURIComponent(voice) : base
+    };
+  };
+
+  return {icons, create, voicePreference};
 })();
 
 if (typeof module !== 'undefined') module.exports = TableForgeReadAloud;

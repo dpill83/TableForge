@@ -139,6 +139,7 @@
     const info = await request('runtime');
     $('runtimeProvider').textContent = info.provider === 'openai' ? 'OpenAI' : 'Mock AI';
     $('runtimeModel').textContent = info.model;
+    if($('options').classList.contains('active'))renderReadAloudVoice($('titleReadAloudVoice'),info.readAloudVoices);
     return info;
   };
   const showUsage = async () => {
@@ -697,9 +698,23 @@
       try{localStorage.setItem('tableforge-map-width',String(width));}catch{/* Not remembered. */}
     };
   };
+  const voicePreference=TableForgeReadAloud.voicePreference(localStorage);
+  const readAloudUrl=controls=>voicePreference.url(controls.dataset.readAloud);
+  const renderReadAloudVoice=(container,voices=[])=>{
+    container.classList.toggle('hidden',!voices.length);
+    if(!voices.length){container.replaceChildren();return;}
+    container.innerHTML='<label>Read Aloud Voice <select><option value="">Table default</option>'+
+      voices.map(voice=>`<option value="${esc(voice.id)}">${esc(voice.label)}</option>`).join('')+'</select></label>';
+    const select=container.querySelector('select');
+    select.value=voices.some(voice=>voice.id===voicePreference.get())?voicePreference.get():'';
+    select.onchange=()=>{
+      readAloud.stop();
+      voicePreference.set(select.value);
+    };
+  };
   const updateReadAloud=()=>{
     for(const controls of $('feedInner').querySelectorAll('[data-read-aloud]')){
-      const mode=readAloud.status(controls.dataset.readAloud);
+      const mode=readAloud.status(readAloudUrl(controls));
       const button=controls.querySelector('button');
       const label=mode==='loading'?'Preparing audio':mode==='playing'?'Pause Read Aloud':mode==='paused'?'Resume Read Aloud':'Read Aloud';
       button.innerHTML=TableForgeReadAloud.icons[mode==='playing'?'pause':mode==='paused'?'play':'speaker'];
@@ -848,7 +863,7 @@
         controls.innerHTML='<button class="read-aloud-button" type="button"></button>'+
           '<button class="read-aloud-button read-aloud-stop hidden" type="button" title="Stop Read Aloud" aria-label="Stop Read Aloud">'+
           TableForgeReadAloud.icons.stop+'</button><span class="muted" role="status"></span>';
-        controls.querySelector('button').onclick=()=>readAloud.toggle(controls.dataset.readAloud);
+        controls.querySelector('button').onclick=()=>readAloud.toggle(readAloudUrl(controls));
         controls.querySelector('.read-aloud-stop').onclick=readAloud.stop;
         row.querySelector('.copy-message').after(controls);
       }
@@ -1529,6 +1544,7 @@
       const usage=state.save?.usage,imageUsage=state.save?.imageUsage;
       modal(`<div id="optionsDialog"><h3>Options</h3><p>${esc(runtimeLabel(info))} · Local saves · TableForge</p>
         <h4>Preferences</h4>
+        <div class="binding voice-setting hidden" id="tableReadAloudVoice"></div>
         <div class="binding notification-setting"><label class="context-option" for="aiMessageNotifications"><input id="aiMessageNotifications" data-ai-notification-toggle type="checkbox"><span><strong>AI-DM message notifications</strong><span>Play a sound and show a browser notification when a new AI-DM message arrives while TableForge is in a background tab.</span></span></label><div data-ai-notification-status class="muted" role="status" aria-live="polite">Notifications are off.</div></div>
         ${state.save?`<h4>Session</h4>
           <p>${esc(state.save.save.name)} · Session ${state.save.sessions.at(-1)?.number||1}</p>
@@ -1539,6 +1555,7 @@
         <div class="actions"><button class="btn" data-close>Close</button></div></div>`);
       if($('endSession'))$('endSession').onclick=openEndSession;
       if($('aiRequestLog'))$('aiRequestLog').onclick=openAIRequestLog;
+      renderReadAloudVoice($('tableReadAloudVoice'),info.readAloudVoices);
       renderAINotificationOption();
     } catch(error) { notify(error); }
   };

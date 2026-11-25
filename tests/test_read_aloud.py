@@ -64,10 +64,12 @@ class ReadAloudTest(unittest.TestCase):
         release = threading.Event()
 
         class Engine:
+            speaker = 3
+
             def __init__(self):
                 self.calls = []
 
-            def encode(self, text):
+            def encode(self, text, speaker):
                 self.calls.append(text)
                 if len(self.calls) == 2:
                     started_second.set()
@@ -110,3 +112,30 @@ class ReadAloudTest(unittest.TestCase):
         self.assertEqual(prose_for_read_aloud(saved, None), saved)
         changed = saved + '\n\nA final ray of light falls across the door.'
         self.assertEqual(prose_for_read_aloud(changed, choices), changed)
+
+    def test_selected_voices_are_discoverable_and_cached_independently(self):
+        save_id = self.ready_save()
+        url = f'/api/saves/{save_id}'
+        with patch.object(ai, 'current_provider', return_value=test_flow.FakeProvider('A fox stops.')):
+            saved = self.api(url+'/advance', {})
+        player = saved['players'][0]['id']
+        message = saved['messages'][-1]['id']
+        audio_url = f'{url}/read-aloud/{message}?playerId={player}'
+        calls = []
+
+        class Engine:
+            speaker = 25
+
+            def encode(self, text, speaker):
+                calls.append(speaker)
+                return f'{speaker}:{text}'.encode()
+
+        with self.speech(Engine()):
+            voices = self.api('/api/runtime')['readAloudVoices']
+            self.assertEqual([voice['id'] for voice in voices], ['heart', 'daniel', 'george', 'fable'])
+            self.assertIn('available Read Aloud voice', self.api_error(audio_url+'&voice=unknown')['error'])
+            for suffix, speaker in [('', 25), ('&voice=george', 26), ('&voice=daniel', 24),
+                                    ('&voice=george', 26), ('&voice=fable', 25)]:
+                with urllib.request.urlopen(self.base+audio_url+suffix, timeout=5) as audio:
+                    self.assertEqual(audio.read(), f'{speaker}:A fox stops.'.encode())
+            self.assertEqual(calls, [25, 26, 24])

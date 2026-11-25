@@ -9,6 +9,8 @@ from narration_stream import contains_control, preview_text
 MAX_TEXT = 24_000
 MAX_AUDIO = 12 * 1024 * 1024
 CHUNK_SIZE = 8192
+VOICES = {'heart': (3, 'Heart'), 'daniel': (24, 'Daniel'),
+          'george': (26, 'George'), 'fable': (25, 'Fable')}
 
 
 def port():
@@ -35,10 +37,32 @@ def spoken_text(body):
     return re.sub(r'[ \t]*\|[ \t]*', ', ', text).strip()
 
 
-def connect(service_port, text):
+def available_voices():
+    service_port = port()
+    if service_port is None:
+        return []
+    conn = http.client.HTTPConnection('127.0.0.1', service_port, timeout=1)
+    try:
+        conn.request('GET', '/voices')
+        with conn.getresponse() as response:
+            if response.status != 200:
+                return []
+            supported = json.loads(response.read(512))
+            if not isinstance(supported, list):
+                return []
+            return [{'id': voice, 'label': label} for voice, (_, label) in VOICES.items()
+                    if voice in supported]
+    except (OSError, http.client.HTTPException, ValueError):
+        return []
+    finally:
+        conn.close()
+
+
+def connect(service_port, text, voice=None):
     conn = http.client.HTTPConnection('127.0.0.1', service_port, timeout=15)
     try:
-        conn.request('POST', '/speech', json.dumps({'text': text}).encode(),
+        path = '/speech' if voice is None else '/speech/' + voice
+        conn.request('POST', path, json.dumps({'text': text}).encode(),
                      {'Content-Type': 'application/json', 'Connection': 'close'})
         return conn, conn.getresponse()
     except BaseException:

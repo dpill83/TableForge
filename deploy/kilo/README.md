@@ -116,6 +116,8 @@ sudo journalctl -u tableforge-kokoro.service -n 10 --no-pager
 
 Once the journal shows that Kokoro is listening, set `TABLEFORGE_KOKORO_PORT=8770` in `/etc/tableforge/tableforge.env` and restart `tableforge.service`. Join the table and try the speaker on an existing AI-DM message. The GitHub deployment continues to build the TableForge application from `main`. The local model and its venv live outside the checkout.
 
+For an existing Kokoro installation, run `sudo systemctl restart tableforge-kokoro.service` once after the voice-picker update deploys. Reopen **Options** to load the available voices. The existing service-level `--speaker` setting still controls **Table default**.
+
 ## Edit AI routing
 
 On KILO, run the terminal editor with the same environment file and account as the deployed service.

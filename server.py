@@ -1447,10 +1447,12 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
-    def stream_read_aloud(self, save_id, message_id, player_id):
+    def stream_read_aloud(self, save_id, message_id, player_id, voice=None):
         port = read_aloud.port()
         if port is None:
             return self.respond({'error': 'Read Aloud is disabled.'}, 404)
+        if voice is not None and voice not in read_aloud.VOICES:
+            return self.respond({'error': 'Choose an available Read Aloud voice.'}, 400)
         with LOCK, db() as conn:
             player = conn.execute('SELECT 1 FROM players WHERE save_id=? AND id=?',
                                   (save_id, player_id)).fetchone()
@@ -1465,7 +1467,7 @@ class Handler(BaseHTTPRequestHandler):
         if len(text) > read_aloud.MAX_TEXT or not any(c.isalnum() for c in text):
             return self.respond({'error': 'This narration cannot be read aloud.'}, 422)
         try:
-            upstream, audio = read_aloud.connect(port, text)
+            upstream, audio = read_aloud.connect(port, text, voice)
         except (OSError, http.client.HTTPException):
             return self.respond({'error': 'Read Aloud is unavailable. Try again in a moment.'}, 503)
         try:
@@ -1490,8 +1492,9 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'narration':
                 return self.stream_narration(parts[2])
             if len(parts) == 5 and parts[:2] == ['api', 'saves'] and parts[3] == 'read-aloud':
-                player = parse_qs(url.query).get('playerId', [None])[0]
-                return self.stream_read_aloud(parts[2], parts[4], player)
+                query = parse_qs(url.query)
+                return self.stream_read_aloud(parts[2], parts[4], query.get('playerId', [None])[0],
+                                              query.get('voice', [None])[0])
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'chat.md':
                 with LOCK, db() as conn:
                     filename, content = chat_export.export_chat(conn, parts[2])
@@ -1526,7 +1529,11 @@ class Handler(BaseHTTPRequestHandler):
             if len(parts) == 5 and parts[:2] == ['api', 'saves'] and parts[3] == 'attachments':
                 return self.get_attachment(parts[2], parts[4])
             if path == '/api/runtime':
-                return self.respond(ai.runtime_status())
+                info = ai.runtime_status()
+                voices = read_aloud.available_voices()
+                if voices:
+                    info['readAloudVoices'] = voices
+                return self.respond(info)
             if path == '/api/version':
                 return self.respond(build_info.status())
             if path == '/api/backups':
