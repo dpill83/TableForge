@@ -513,6 +513,9 @@ body.sidebar-dragging iframe{pointer-events:none}
 .pilot-panel .section-title{margin-bottom:8px}
 .pilot-panel .btn{width:100%;margin-bottom:7px}
 .pilot-panel .btn.flagged{border-color:var(--warn);color:var(--warn)}
+.pilot-panel .btn[data-memory]{box-shadow:inset 4px 0 0 var(--good)}
+.pilot-panel .btn[data-memory="soft"]{box-shadow:inset 4px 0 0 var(--warn)}
+.pilot-panel .btn[data-memory="cap"]{box-shadow:inset 4px 0 0 var(--bad)}
 .pilot-location{display:block;margin-bottom:9px}
 .pilot-location select{display:block;width:100%;margin-top:4px}
 .context-sections{list-style:none;margin:8px 0;padding:0;display:grid;gap:4px;font-size:13px}
@@ -852,6 +855,25 @@ body.sidebar-dragging iframe{pointer-events:none}
 .note-card .markdown-body{margin-top:6px;font-size:14px}
 .note-meta{margin-top:6px;font-size:12px}
 .note-actions{display:flex;gap:6px}
+.journal-facts{display:grid;gap:12px;margin:8px 0 12px}
+.journal-group h4{margin:0 0 6px;font-size:13px;color:var(--muted);text-transform:uppercase;letter-spacing:.04em}
+.journal-group ul,.journal-resolved ul{list-style:none;margin:0;padding:0;display:grid;gap:6px}
+.journal-fact{padding:8px 10px;border:1px solid var(--border);border-radius:9px;background:#101318}
+.journal-fact .row{display:flex;justify-content:space-between;gap:10px;align-items:flex-start}
+.journal-fact.editing{display:grid;gap:6px}
+.journal-resolved summary{cursor:pointer;color:var(--muted);font-size:13px;margin-bottom:6px}
+.journal-add{display:flex;gap:6px;align-items:center}
+.journal-add select{flex:none;width:auto;max-width:42%}
+.journal-add input{flex:1;min-width:0;width:auto}
+.journal-add .btn{white-space:nowrap}
+.journal-chapter{padding:10px 12px;border:1px solid var(--border);border-radius:10px;background:#101318}
+.journal-chapter h4{margin:0 0 6px;font-size:15px}
+.journal-chapter .markdown-body{font-size:14px}
+.journal-chapter.current{border-style:dashed}
+.journal-story{display:grid;gap:10px;margin:8px 0 14px}
+.chapter-suggestion{margin:0 0 7px;padding:9px 10px;border:1px solid var(--accent2);border-radius:9px;font-size:13px}
+.chapter-suggestion .actions{margin-top:7px;display:flex;gap:6px}
+.chapter-suggestion .btn{width:auto;margin:0}
 .note-form{display:grid;gap:10px;margin-top:10px}
 .note-form input,.note-form textarea{width:100%}
 

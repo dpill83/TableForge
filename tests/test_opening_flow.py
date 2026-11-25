@@ -276,6 +276,12 @@ class OpeningFlowTest(unittest.TestCase):
         result = self.advance(save_id, 'You step into the intake cut.\n[Opening: exploration]\n[Location: Area 1]')
         self.assertEqual(result['save']['opening_stage'], 'exploration')
         self.assertEqual(result['save']['location'], 1)
+        # Entering the site ends the prologue; the entry narration opens Chapter 2.
+        prologue, chapter = result['chapters']
+        self.assertEqual((prologue['number'], prologue['title'], prologue['closed_source']), (1, 'Prologue', 'opening'))
+        self.assertEqual((chapter['number'], chapter['ended_through']), (2, None))
+        self.assertEqual(prologue['ended_through'], result['messages'][-2]['id'])
+        self.assertLess(prologue['ended_through'], result['messages'][-1]['id'])
         self.assertNotIn('authoritative opening state', self.api(
             f'/api/saves/{save_id}/context')['messages'][0]['content'])
 

@@ -36,6 +36,7 @@ class PrefixTest(unittest.TestCase):
         controls = [
             '[ Location \n : Area 4; Arrival: hidden door]',
             '[Opening: arrival]',
+            '[Chapter: The Hidden Traitor]',
             combat.MARKER,
             '\x60\x60\x60tableforge-choices\n{"secret":"next encounter"}\n\x60\x60\x60',
         ]
@@ -51,6 +52,8 @@ class PrefixTest(unittest.TestCase):
         self.assertIn('[location notes]', preview_text(text))
         self.assertTrue(contains_control('The door swings open. [ Location: unfinished'))
         self.assertTrue(contains_control('The door swings open. [[TABLEF'))
+        self.assertTrue(contains_control('The road ends here.\n[Chap'))
+        self.assertEqual(preview_text('The road ends here.\n[Chapter: The Hidden Traitor]'), 'The road ends here.')
 
 
 class NarrationFlowTest(unittest.TestCase):
