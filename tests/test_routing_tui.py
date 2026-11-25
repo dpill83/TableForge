@@ -51,7 +51,7 @@ class TerminalMenuTest(unittest.TestCase):
         menu = TerminalMenu(screen, KEYS)
         models = []
         loaded = ['gpt-6.1-sol', 'gpt-6.2-astra', 'gpt-6.2-sol']
-        picked = menu.choose_model('gpt-6.1-sol', True, models, lambda: loaded)
+        picked = menu.choose_model('gpt-6.1-sol', 'Use the model from Laya', models, lambda: loaded)
         self.assertEqual(picked, (True, 'gpt-6.2-sol'))
         self.assertEqual(models, loaded)
         self.assertIn(('Filter: 6.2', KEYS.A_BOLD), screen.frames[-1].values())

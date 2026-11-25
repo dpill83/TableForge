@@ -100,3 +100,19 @@ class RoutingSettingsTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'Another editor saved'):
             routing_settings.save(self.data, before, expected=before)
         self.assertEqual(routing_settings.load(self.data), after)
+
+    def test_service_scope_checks_inherited_model_and_stores_it_separately(self):
+        with tempfile.TemporaryDirectory() as laya_dir:
+            routing_settings.path_for(laya_dir).touch()
+            os.environ['LAYA_ROUTING_DATA'] = laya_dir
+            reply = {'models': {'cheap': 'gpt-6-luna', 'standard': 'gpt-6.1-sol', 'heavy': 'gpt-6-astra'}}
+            with patch('builtins.input', side_effect=['2', '2', '-', '6', '4', '1']), \
+                    patch('builtins.print'), patch.object(editor.urllib.request, 'urlopen',
+                                                        return_value=response(reply)) as defaults, \
+                    patch.object(editor, 'openai_json', return_value={'choices': [{}]}) as probe:
+                editor.run_editor(self.data, editor.NumberedMenu(), scope=None)
+            self.assertEqual(defaults.call_args.args[0], 'http://router/routing-defaults')
+            self.assertEqual(probe.call_args.args[1]['model'], 'gpt-6.1-sol')
+            self.assertEqual(probe.call_args.args[1]['reasoning_effort'], 'medium')
+            self.assertEqual(routing_settings.load(laya_dir)['tiers'], {'standard': {'effort': 'medium'}})
+            self.assertEqual(routing_settings.load(self.data), {'tiers': {}, 'requests': {}})

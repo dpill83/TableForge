@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import urllib.error
 import urllib.request
+from urllib.parse import urlsplit, urlunsplit
 
 import ai
 from local_config import load_env
@@ -19,6 +20,7 @@ EFFORT_LABELS = {
     'default': 'OpenAI model default',
     **{effort: effort for effort in settings.EFFORTS},
 }
+LAYA_EFFORT_LABELS = {**EFFORT_LABELS, 'auto': 'Let Laya choose the effort'}
 
 
 def openai_json(url, payload=None):
@@ -48,6 +50,26 @@ def available_models():
                    and isinstance(row.get('id'), str) and settings.MODEL_ID.fullmatch(row['id'])})
 
 
+def laya_base_models():
+    url = os.environ.get('TABLEFORGE_ROUTER_URL', '').strip()
+    try:
+        origin = urlsplit(url)
+        if origin.scheme not in ('http', 'https') or not origin.netloc:
+            raise ValueError
+        endpoint = urlunsplit((origin.scheme, origin.netloc,
+                               origin.path.rstrip('/').rpartition('/')[0] + '/routing-defaults', '', ''))
+        with urllib.request.urlopen(endpoint, timeout=ai.ROUTER_TIMEOUT) as response:
+            data = json.loads(response.read(ai.ROUTER_RESPONSE_CAP))
+        models = data.get('models') if isinstance(data, dict) else None
+        if (not isinstance(models, dict) or models.keys() != set(settings.TIERS)
+                or any(not isinstance(model, str) or not settings.MODEL_ID.fullmatch(model)
+                       for model in models.values())):
+            raise ValueError
+        return models
+    except (OSError, ValueError):
+        raise ValueError('Cannot read Laya service defaults. Check TABLEFORGE_ROUTER_URL and the Laya router update.') from None
+
+
 def probe_models(choices, verified, progress):
     """Check the selected model and concrete effort using a short, synthetic prompt."""
     for model, effort in choices:
@@ -69,9 +91,16 @@ def probe_models(choices, verified, progress):
         verified.add((model, effort))
 
 
-def model_choices(config):
-    return {(row['model'], 'default' if row.get('effort', 'auto') == 'auto' else row['effort'])
-            for group in config.values() for row in group.values() if row.get('model')}
+def model_choices(config, laya_models=None):
+    choices = set()
+    defaults = laya_models or {}
+    for group in config.values():
+        for name, row in group.items():
+            model = row.get('model') or defaults.get(name)
+            if model:
+                effort = row.get('effort', 'auto')
+                choices.add((model, 'default' if effort == 'auto' else effort))
+    return choices
 
 
 def choose(label, choices, current=None):
@@ -89,14 +118,14 @@ def choose(label, choices, current=None):
         print('Enter a number from the list.')
 
 
-def choose_model(current, allow_laya, models, load_models):
-    shortcut = ', - for the model from Laya' if allow_laya else ''
+def choose_model(current, inherited_label, models, load_models):
+    shortcut = f', - to {inherited_label.lower()}' if inherited_label else ''
     while True:
         previous = f' [{current}]' if current else ''
         term = input(f'Model search{previous} (* for all{shortcut}, or B to go back)> ').strip()
         if term.casefold() == 'b':
             return False, current
-        if term == '-' and allow_laya:
+        if term == '-' and inherited_label:
             return True, None
         if not term and current:
             return True, current
@@ -114,15 +143,18 @@ def choose_model(current, allow_laya, models, load_models):
 
 
 class NumberedMenu:
-    def setup(self, path, policy, fallback):
+    def setup(self, path, policy, fallback=None):
         print(f'TableForge AI routing\nSettings file | {path}')
-        print(f'Inherited policy | {policy}\nServer fallback model | {fallback}')
+        if fallback:
+            print(f'Inherited policy | {policy}\nServer fallback model | {fallback}')
+        else:
+            print(policy)
 
     def choose(self, label, choices, current=None, *, detail='', sections=None):
         return choose(label, choices, None if sections else current)
 
-    def choose_model(self, current, allow_laya, models, load_models, *, detail=''):
-        return choose_model(current, allow_laya, models, load_models)
+    def choose_model(self, current, inherited_label, models, load_models, *, detail=''):
+        return choose_model(current, inherited_label, models, load_models)
 
     def notice(self, message):
         print(message, flush=True)
@@ -133,7 +165,7 @@ class NumberedMenu:
         return True
 
 
-def edit_row(group, label, row, models, laya_enabled, menu):
+def edit_row(group, label, row, models, laya_enabled, menu, *, service_model=None):
     if group == 'requests':
         modes = {'inherit': 'Inherit the server policy', 'laya': 'Route through Laya', 'fixed': 'Use a fixed model'}
         mode = menu.choose('Routing', modes, row.get('mode', 'inherit'), detail=label)
@@ -148,13 +180,19 @@ def edit_row(group, label, row, models, laya_enabled, menu):
 
     model = None
     if mode != 'laya':
-        accepted, model = menu.choose_model(row.get('model'), group == 'tiers', models, available_models,
+        inherited = None
+        if service_model:
+            inherited = f'Use service default ({service_model})'
+        elif group == 'tiers':
+            inherited = 'Use the model from Laya'
+        accepted, model = menu.choose_model(row.get('model'), inherited, models, available_models,
                                             detail=label)
         if not accepted:
             return row
-    efforts = {key: label for key, label in EFFORT_LABELS.items() if mode != 'fixed' or key != 'auto'}
+    labels = LAYA_EFFORT_LABELS if service_model else EFFORT_LABELS
+    efforts = {key: text for key, text in labels.items() if mode != 'fixed' or key != 'auto'}
     effort = menu.choose('Reasoning effort', efforts, row.get('effort', 'default' if mode == 'fixed' else 'auto'),
-                         detail=f'{label} | {model or "Model from Laya"}')
+                         detail=f'{label} | {model or service_model or "Model from Laya"}')
     if effort is CANCEL:
         return row
     if mode:
@@ -166,10 +204,11 @@ def edit_row(group, label, row, models, laya_enabled, menu):
     return result
 
 
-def describe(group, name, row, table_play, laya_enabled):
+def describe(group, name, row, table_play, laya_enabled, *, service_model=None):
     if group == 'tiers':
-        model = row.get('model', 'Model from Laya')
-        return f'{model} / {EFFORT_LABELS[row.get("effort", "auto")]}'
+        model = row.get('model') or service_model or 'Model from Laya'
+        labels = LAYA_EFFORT_LABELS if service_model else EFFORT_LABELS
+        return f'{model} / {labels[row.get("effort", "auto")]}'
     if row:
         model = row.get('model', 'Laya')
         return f'{model} / {EFFORT_LABELS[row.get("effort", "auto")]}'
@@ -179,28 +218,36 @@ def describe(group, name, row, table_play, laya_enabled):
     return 'Inherit Laya' if laya_enabled else f'Inherit server default / {ai.configured_model()}'
 
 
-def run(data_path, menu=None):
+def run(data_path, menu=None, *, laya_models=None):
     menu = menu if menu is not None else NumberedMenu()
     original = settings.load(data_path)
     config = deepcopy(original)
     models = []
     verified = set()
-    table_play = ai.table_play_routing()
+    table_play = laya_models is None and ai.table_play_routing()
     laya_enabled = bool(os.environ.get('TABLEFORGE_ROUTER_URL', '').strip())
-    inherited_policy = 'Table play' if table_play else 'Laya' if laya_enabled else 'Server default'
-    menu.setup(settings.path_for(data_path), inherited_policy, ai.configured_model())
-    choices = {
-        **{('tiers', tier): f'Laya / {tier.title()}' for tier in settings.TIERS},
-        **{('requests', name): label for name, label in settings.REQUESTS.items()},
-    }
-    sections = {('tiers', 'cheap'): 'LAYA TIERS', ('requests', 'advance'): 'TABLEFORGE REQUEST TYPES',
-                'save': 'ACTIONS'}
+    service_models = laya_models or {}
+    choices = {('tiers', tier): f'Laya / {tier.title()}' for tier in settings.TIERS}
+    if laya_models is None:
+        title = 'TableForge routing'
+        inherited_policy = 'Table play' if table_play else 'Laya' if laya_enabled else 'Server default'
+        menu.setup(settings.path_for(data_path), inherited_policy, ai.configured_model())
+        choices.update({('requests', name): label for name, label in settings.REQUESTS.items()})
+        sections = {('tiers', 'cheap'): 'TABLEFORGE OVERRIDES FOR LAYA TIERS',
+                    ('requests', 'advance'): 'TABLEFORGE REQUEST TYPES', 'save': 'ACTIONS'}
+    else:
+        title = 'Laya service defaults'
+        menu.setup(settings.path_for(data_path), 'Shared settings for all clients of this Laya router')
+        sections = {('tiers', 'cheap'): 'SHARED LAYA TIERS', 'save': 'ACTIONS'}
     focus = next(iter(choices))
     while True:
-        rows = {key: f'{label:<24} | {describe(*key, config[key[0]].get(key[1], {}), table_play, laya_enabled)}'
-                for key, label in choices.items()}
+        rows = {}
+        for (group, name), label in choices.items():
+            description = describe(group, name, config[group].get(name, {}), table_play, laya_enabled,
+                                   service_model=service_models.get(name))
+            rows[group, name] = f'{label:<24} | {description}'
         dirty = config != original
-        action = menu.choose('AI routing', {
+        action = menu.choose(title, {
             **rows, 'save': 'Save and exit', 'quit': 'Exit without saving',
         }, focus, detail='Unsaved changes' if dirty else 'All settings saved', sections=sections)
         try:
@@ -211,7 +258,7 @@ def run(data_path, menu=None):
             focus = action
             if action == 'save':
                 if dirty:
-                    pending = model_choices(config) - model_choices(original) - verified
+                    pending = model_choices(config, laya_models) - model_choices(original, laya_models) - verified
                     if pending:
                         menu.notice(f'OpenAI will receive {len(pending)} short compatibility check(s) before saving. '
                                     'These use API tokens.')
@@ -220,10 +267,12 @@ def run(data_path, menu=None):
                             continue
                         probe_models(sorted(pending), verified, menu.progress)
                     settings.save(data_path, config, expected=original)
-                    return 'Saved. TableForge reads the changes on the next AI request.'
+                    return ('Saved. Laya reads the changes on the next routing request.' if laya_models
+                            else 'Saved. TableForge reads the changes on the next AI request.')
                 return
             group, name = action
-            row = edit_row(group, choices[action], config[group].get(name, {}), models, laya_enabled, menu)
+            row = edit_row(group, choices[action], config[group].get(name, {}), models, laya_enabled, menu,
+                           service_model=service_models.get(name))
             if row:
                 config[group][name] = row
             else:
@@ -232,20 +281,47 @@ def run(data_path, menu=None):
             menu.notice(str(error))
 
 
+def run_editor(data_path, menu, scope):
+    laya_data = settings.laya_data_path()
+    ready = settings.path_for(laya_data).is_file()
+    while scope != 'tableforge' and (scope == 'laya' or ready):
+        choice = scope or menu.choose('Choose routing settings', {
+            'tableforge': 'TableForge routing',
+            'laya': 'Laya service defaults',
+        }, 'tableforge')
+        if choice is CANCEL:
+            return
+        if choice == 'tableforge':
+            break
+        if not ready:
+            raise ValueError('Laya service settings are not installed. See deploy/laya/README.md.')
+        try:
+            menu.progress('Reading Laya service defaults...')
+            models = laya_base_models()
+        except ValueError as error:
+            if scope == 'laya':
+                raise
+            menu.notice(str(error))
+            continue
+        return run(laya_data, menu, laya_models=models)
+    return run(data_path, menu)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--env-file', type=Path, default=ROOT / '.env',
                         help='Load the same settings file used by the TableForge server.')
     parser.add_argument('--plain', action='store_true', help='Use numbered prompts.')
+    parser.add_argument('--scope', choices=('tableforge', 'laya'), help='Open a specific settings menu.')
     args = parser.parse_args()
     try:
         load_env(args.env_file)
         data_path = Path(os.environ.get('TABLEFORGE_DATA', ROOT / 'data'))
         curses = None if args.plain else terminal_library()
         if curses is None:
-            result = run(data_path)
+            result = run_editor(data_path, NumberedMenu(), args.scope)
         else:
-            result = curses.wrapper(lambda screen: run(data_path, TerminalMenu(screen, curses)))
+            result = curses.wrapper(lambda screen: run_editor(data_path, TerminalMenu(screen, curses), args.scope))
         if result:
             print(result, flush=True)
     except (EOFError, KeyboardInterrupt):

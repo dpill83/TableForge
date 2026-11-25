@@ -17,7 +17,7 @@ spec.loader.exec_module(policy)
 
 
 class EffortTests(unittest.TestCase):
-    def generate(self, env, route=None, model='gpt-6-luna'):
+    def generate(self, env, route=None, model='gpt-6-luna', *, overrides=None):
         context = {'purpose': 'ask', 'text': 'Explain the rule.', 'messages': [], 'title': 'Private',
                    'module': 'Synthetic module', 'askMessages': []}
         completion = {'choices': [{'message': {'content': 'Answer'}}], 'model': model + '-snapshot'}
@@ -29,7 +29,8 @@ class EffortTests(unittest.TestCase):
         captures, metadata = [], []
         with patch.dict(os.environ, env, clear=True), \
                 patch('ai.urllib.request.urlopen', side_effect=responses):
-            result = ai.OpenAIProvider('private-key', model, 'http://router' if route is not None else '').generate(
+            result = ai.OpenAIProvider('private-key', model, 'http://router' if route is not None else '',
+                                       overrides=overrides).generate(
                 context, on_request=captures.append, on_metadata=metadata.append)
         return result, json.loads(captures[-1]), metadata[-1]['routing']
 
@@ -82,6 +83,23 @@ class EffortTests(unittest.TestCase):
             self.assertNotIn('reasoning_effort', payload)
             self.assertIn('invalid', metadata['effortNotice'])
             self.assertNotIn('<private>', json.dumps(metadata))
+
+    def test_respects_service_selected_effort_and_provider_default(self):
+        route = {'tier': 'standard', 'model': 'gpt-6.2-sol'}
+        env = {'TABLEFORGE_REASONING_EFFORT': 'low'}
+        _, payload, routing = self.generate(env, {**route, 'effort_override': 'default', 'reasoning_effort': None})
+        self.assertNotIn('reasoning_effort', payload)
+        self.assertEqual(routing['routerEffortOverride'], 'default')
+        self.assertEqual(routing['effortSource'], 'Laya service settings')
+
+        _, payload, routing = self.generate(env, {**route, 'effort_override': 'max', 'reasoning_effort': 'max'})
+        self.assertEqual(payload['reasoning_effort'], 'max')
+        self.assertEqual(routing['routerSelectedEffort'], 'max')
+
+        _, payload, routing = self.generate(env, {**route, 'effort_override': 'max', 'reasoning_effort': 'max'},
+                                            overrides={'tiers': {'standard': {'effort': 'medium'}}})
+        self.assertEqual(payload['reasoning_effort'], 'medium')
+        self.assertEqual(routing['effortSource'], 'Laya tier settings')
 
     def test_unknown_model_omits_effort_and_preserves_model(self):
         _, payload, metadata = self.generate({'TABLEFORGE_REASONING_EFFORT': 'low'}, model='unknown-model')

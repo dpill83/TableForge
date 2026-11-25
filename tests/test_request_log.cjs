@@ -81,6 +81,13 @@ test('custom routing shows fixed models and keeps Laya and TableForge picks dist
   assert.match(routed, /Reasoning effort source<\/dt><dd>Laya tier settings/);
 });
 
+test('Laya service can explicitly select the OpenAI model default effort', () => {
+  const html = render({...entry, routing: {...entry.routing, routerEffortOverride: 'default',
+    effortSource: 'Laya service settings'}});
+  assert.match(html, /Router-selected reasoning effort<\/dt><dd>OpenAI model default/);
+  assert.match(html, /Provider default \(not sent\)/);
+});
+
 test('router-internal fallback retains the tier badge and gets its own indicator', () => {
   const reason = 'Laya unavailable, using safe fallback';
   const html = render({...entry, routing: {...entry.routing, routerInternalFallbackUsed: true,

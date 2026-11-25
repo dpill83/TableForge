@@ -22,28 +22,18 @@ The response adds `reasoning_effort`, `effortLevel`, `effort_reason`, `effort_sc
 and `effort_fallback_used`. TableForge validates effort, sends `reasoning_effort` in
 Chat Completions, and persists selected/requested effort and diagnostics in routing JSON.
 
-## Applying on Kilo
+## Enable the Laya service editor on Kilo
 
-Deploy the TableForge provider update to the actual host first. Old TableForge code
-ignores router effort. These files have not been installed on the running router.
+After deploying the TableForge update, run this once on Kilo between requests.
 
-Between AI requests, back up `/opt/laya/router_service.py` to a new dated filename,
-then copy both `router_service.py` and `router_policy.py` from this directory into
-`/opt/laya/`. Preserve the existing virtual environment and service settings.
-The optional `test_router_service.py` can be run with that virtual environment
-before restarting; it mocks all Laya HTTP calls and covers all nine combinations.
-Check the configured `LAYA_URL` if Laya runs at a different address; this bundle
-retains the inspected router's LAN endpoint as its default.
+```bash
+sudo bash /opt/tableforge/repo/deploy/laya/install-routing-settings.sh
+```
 
-Review `/etc/systemd/system/laya-router.service.d/override.conf`: if the models were
-temporarily changed to Luna/Luna/Sol, restore the three model settings in
-`override.conf.example` to activate the requested matrix. Preserve unrelated overrides.
+The installer backs up the router source, gives the Laya and TableForge service accounts access to the shared routing settings file, and briefly restarts the Laya router. It verifies the new read-only settings endpoint and restores the previous source if setup fails.
 
-Run `sudo systemctl daemon-reload` if the override changed, then
-`sudo systemctl restart laya-router`. Confirm `/health` reports version `0.2.0`,
-then check a synthetic routing request and the next real AI Request Log entry.
-This restarts only the router, but requests made during restart can use TableForge's
-configured fallback. No TableForge generations are required for a router smoke test.
+Open the [TableForge routing editor](../kilo/README.md#edit-ai-routing) and choose **Laya service defaults**. Pick a model and reasoning effort for each Cheap, Standard, or Heavy tier. **Use service default** takes the model from the Laya systemd environment, and **Let Laya choose the effort** uses the Light, Normal, and Hard mapping above. Saved choices apply to every client on the next routing request.
 
-Roll back by restoring the backed-up service source and original override and
-restarting the router. Old router responses remain compatible with new TableForge.
+**TableForge routing** shows this app's own overrides. An explicit TableForge model or effort takes priority for its requests. Use `--scope laya` or `--scope tableforge` to open a specific menu directly.
+
+The optional router tests use the Laya FastAPI environment and mock the classifier calls. Run from the repository root with `python -m unittest discover -s deploy/laya`.

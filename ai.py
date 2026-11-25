@@ -744,7 +744,11 @@ class OpenAIProvider:
             routing.update(routerInternalFallbackUsed=internal_used,
                            routerInternalFallbackReason=internal_reason)
             effort = data.get('reasoning_effort')
-            if isinstance(effort, str) and effort in REASONING_EFFORTS:
+            override = data.get('effort_override')
+            if (override in routing_settings.EFFORTS and effort == override
+                    or override == 'default' and effort is None):
+                routing['routerEffortOverride'] = override
+            if routing.get('routerEffortOverride') or effort in REASONING_EFFORTS:
                 routing['routerSelectedEffort'] = effort
                 routing['effortReason'] = (' '.join(data['effort_reason'].split())[:240]
                                           if isinstance(data.get('effort_reason'), str) else None)
@@ -795,6 +799,14 @@ class OpenAIProvider:
             effort = routing['effortOverride']
             if effort != 'default':
                 routing['requestedEffort'] = effort
+        elif routing.get('routerEffortOverride'):
+            effort = routing['routerEffortOverride']
+            routing['effortSource'] = 'Laya service settings'
+            if effort != 'default':
+                if model == routing['model'] or supports_effort(model):
+                    routing['requestedEffort'] = effort
+                else:
+                    routing['effortNotice'] = 'Effort omitted: override model support has not been established'
         elif not routing['requestedEffort']:
             tier_effort = self.tier_efforts.get(routing['tier']) if not routing['fallback'] else None
             effort = routing['routerSelectedEffort'] or tier_effort or self.effort

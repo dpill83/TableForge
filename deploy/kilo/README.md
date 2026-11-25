@@ -104,7 +104,7 @@ sudo -u tableforge /opt/tableforge/venv/bin/python -B /opt/tableforge/repo/confi
 
 Use the arrow keys to move, Enter to select, and Escape to go back. Type part of a model ID to filter the model picker. Select **Save and exit** to apply your changes. Add `--plain` to use the numbered menu.
 
-The editor saves to `/var/lib/tableforge/ai-routing.sqlite3` with the default KILO data path. Settings apply to the next TableForge AI request. Laya tier overrides apply to requests from this TableForge host.
+**TableForge routing** saves this host's overrides to `/var/lib/tableforge/ai-routing.sqlite3`. After the [one-time Laya update](../laya/README.md#enable-the-laya-service-editor-on-kilo), the same editor also offers **Laya service defaults**, which saves to `/var/lib/laya-router/ai-routing.sqlite3` for all clients of that router. Each change applies on the next request.
 
 ## Register GitHub runner
 

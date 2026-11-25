@@ -37,8 +37,8 @@ class TerminalMenu:
             pass
         curses.set_escdelay(100)
 
-    def setup(self, _path, policy, fallback):
-        self.details = f'Inherited policy: {policy}   |   Server fallback: {fallback}'
+    def setup(self, _path, policy, fallback=None):
+        self.details = f'Inherited policy: {policy}   |   Server fallback: {fallback}' if fallback else policy
 
     def notice(self, message):
         self.message = message
@@ -91,20 +91,20 @@ class TerminalMenu:
                 elif isinstance(key, str) and key.isprintable() and len(query) < 200:
                     query += key
 
-    def choose_model(self, current, allow_laya, models, load_models, *, detail=''):
+    def choose_model(self, current, inherited_label, models, load_models, *, detail=''):
         if not models:
             self.progress('Loading models from OpenAI...')
             try:
                 models.extend(load_models())
             except ValueError as error:
-                if not (allow_laya or current):
+                if not (inherited_label or current):
                     raise
                 self.notice(str(error))
         choices = {model: model for model in models}
         if current and current not in choices:
             choices = {current: current, **choices}
-        if allow_laya:
-            choices = {None: 'Use the model from Laya', **choices}
+        if inherited_label:
+            choices = {None: inherited_label, **choices}
         if not choices:
             raise ValueError('OpenAI returned no model IDs.')
         model = self.choose('Select model', choices, current, detail=detail, search=True)

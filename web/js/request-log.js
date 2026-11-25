@@ -43,7 +43,8 @@ const TableForgeRequestLog = (() => {
           ${row('Router contacted', flag(route?.routerContacted))}
           ${row('Selected tier', available(route?.tier))}
           ${row('Router-selected model', available(route?.model))}
-          ${row('Router-selected reasoning effort', route?.routerSelectedEffort ?? 'Not recorded / supplied')}
+          ${row('Router-selected reasoning effort', route?.routerSelectedEffort ??
+            (route?.routerEffortOverride === 'default' ? 'OpenAI model default' : 'Not recorded / supplied'))}
           ${row('Router reason', available(route?.reason))}
           ${row('Router scores', scores || 'Unavailable')}
           ${row('Laya/router fallback', flag(internalFallback))}
@@ -54,7 +55,10 @@ const TableForgeRequestLog = (() => {
         `}
         ${row(entry.provider === 'mock' ? 'Mock request model' : 'Model requested from OpenAI', available(requested))}
         ${direct ? '' : row('Configured default reasoning effort', route?.configuredEffort ?? 'Not recorded / configured')}
-        ${row('Reasoning effort requested from OpenAI', route?.requestedEffort ?? (route?.effortSource === 'provider default' || route?.effortOverride === 'default' ? 'Provider default (not sent)' : 'Not recorded / sent'))}
+        ${row('Reasoning effort requested from OpenAI', route?.requestedEffort ??
+          (route?.effortSource === 'provider default' || route?.effortOverride === 'default' ||
+            (route?.effortSource === 'Laya service settings' && route?.routerEffortOverride === 'default')
+            ? 'Provider default (not sent)' : 'Not recorded / sent'))}
         ${row('Reasoning effort source', route?.effortSource ?? 'Not recorded')}
         ${direct ? '' : `
           ${row('Router effort reason', route?.effortReason ?? 'Not recorded / supplied')}
