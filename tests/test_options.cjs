@@ -16,9 +16,10 @@ function client(pilot=false){
     imageUsage:{session:{label:'session images'},save:{label:'all images'}},
   }};
   const context=vm.createContext({state,$:id=>nodes[id],
-    showRuntime:async()=>({}),esc:String,runtimeLabel:()=> 'Mock',
+    showRuntime:async()=>({readAloudVoices:[{id:'george',label:'George'}]}),esc:String,runtimeLabel:()=> 'Mock',
     usageLine:usage=>`${usage.totalTokens} tokens`,tokenLabel:String,imageUsageLine:usage=>usage.label,
     modal:html=>{clear();markup=html;for(const [,id] of html.matchAll(/id="([^"]+)"/g))nodes[id]={value:'',disabled:new RegExp(`id="${id}" disabled`).test(html)};},
+    renderReadAloudVoice(node,voices){node.voices=voices;},
     renderAINotificationOption(){},notify(error){throw error;},
     openAIRequestLog(){logOpened++;},update:async(action,payload)=>{calls.push({action,payload});return true;},
     show:async(screen)=>calls.push({screen}),
@@ -38,6 +39,7 @@ test('Options exposes public utilities and all usage details without Pilot contr
   assert.match(c.html(),/20 input · 14 output/);
   assert.match(c.html(),/session images/);assert.match(c.html(),/all images/);
   assert.ok(c.nodes.aiMessageNotifications);
+  assert.equal(c.nodes.tableReadAloudVoice.voices[0].id,'george');
   assert.equal(c.nodes.endSession,undefined);assert.equal(c.nodes.aiRequestLog,undefined);
 });
 

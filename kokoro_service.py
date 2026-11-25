@@ -12,7 +12,7 @@ import textwrap
 import threading
 import time
 
-from read_aloud import MAX_AUDIO, MAX_TEXT, send_audio
+from read_aloud import MAX_AUDIO, MAX_TEXT, VOICES, send_audio
 
 MAX_CACHED_MESSAGES = 8
 MAX_CACHED_AUDIO = 3 * 1024 * 1024
@@ -61,8 +61,8 @@ class Kokoro:
         if not 0 <= speaker < self.tts.num_speakers:
             raise ValueError('Kokoro speaker ID is out of range.')
 
-    def encode(self, text):
-        audio = self.tts.generate(text, sid=self.speaker, speed=1.0)
+    def encode(self, text, speaker):
+        audio = self.tts.generate(text, sid=speaker, speed=1.0)
         if not audio.samples:
             raise ValueError('Kokoro returned no speech.')
         samples = array('f', audio.samples)
@@ -86,24 +86,40 @@ class SpeechServer(ThreadingHTTPServer):
         self.cache = OrderedDict()
         self.cache_lock = threading.Lock()
 
-    def cached(self, text):
+    def cached(self, key):
         with self.cache_lock:
-            audio = self.cache.get(text)
+            audio = self.cache.get(key)
             if audio is not None:
-                self.cache.move_to_end(text)
+                self.cache.move_to_end(key)
             return audio
 
-    def remember(self, text, audio):
+    def remember(self, key, audio):
         with self.cache_lock:
-            self.cache[text] = audio
+            self.cache[key] = audio
             if len(self.cache) > MAX_CACHED_MESSAGES:
                 self.cache.popitem(last=False)
 
 
 class SpeechHandler(BaseHTTPRequestHandler):
-    def do_POST(self):
-        if self.path != '/speech' or self.headers.get('Host') != f'127.0.0.1:{self.server.server_port}':
+    def local_host(self):
+        return self.headers.get('Host') == f'127.0.0.1:{self.server.server_port}'
+
+    def do_GET(self):
+        if self.path != '/voices' or not self.local_host():
             return self.send_error(404)
+        body = json.dumps(list(VOICES)).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def do_POST(self):
+        voice = self.path.removeprefix('/speech/')
+        if not self.local_host() or not (self.path == '/speech' or
+                self.path.startswith('/speech/') and voice in VOICES):
+            return self.send_error(404)
+        speaker = self.server.engine.speaker if self.path == '/speech' else VOICES[voice][0]
         if self.headers.get_content_type() != 'application/json':
             return self.send_error(415)
         self.connection.settimeout(5)
@@ -116,7 +132,8 @@ class SpeechHandler(BaseHTTPRequestHandler):
                 raise ValueError
         except (KeyError, OSError, TypeError, ValueError):
             return self.send_error(400)
-        cached = self.server.cached(text)
+        key = (speaker, text)
+        cached = self.server.cached(key)
         if cached is not None:
             return self.send_cached(cached)
         if not self.server.slots.acquire(blocking=False):
@@ -125,10 +142,10 @@ class SpeechHandler(BaseHTTPRequestHandler):
             if not self.server.generate_lock.acquire(timeout=8):
                 return self.send_error(503)
             try:
-                cached = self.server.cached(text)
+                cached = self.server.cached(key)
                 if cached is not None:
                     return self.send_cached(cached)
-                self.synthesize(text)
+                self.synthesize(speaker, text)
             finally:
                 self.server.generate_lock.release()
         finally:
@@ -140,10 +157,10 @@ class SpeechHandler(BaseHTTPRequestHandler):
         except OSError:
             pass
 
-    def synthesize(self, text):
+    def synthesize(self, speaker, text):
         source = iter(segments(text))
         try:
-            first = self.server.engine.encode(next(source))
+            first = self.server.engine.encode(next(source), speaker)
         except (OSError, RuntimeError, StopIteration, ValueError, subprocess.SubprocessError):
             self.log_error('Kokoro could not start speech synthesis')
             return self.send_error(503)
@@ -166,7 +183,7 @@ class SpeechHandler(BaseHTTPRequestHandler):
                     return
                 if time.monotonic() >= deadline:
                     raise ValueError('Kokoro generation timed out')
-                chunk = self.server.engine.encode(segment)
+                chunk = self.server.engine.encode(segment, speaker)
 
         try:
             send_audio(self, stream())
@@ -176,7 +193,7 @@ class SpeechHandler(BaseHTTPRequestHandler):
             self.log_error('Kokoro speech stream ended early')
             return
         if total <= MAX_CACHED_AUDIO:
-            self.server.remember(text, bytes(retained))
+            self.server.remember((speaker, text), bytes(retained))
 
 
 if __name__ == '__main__':

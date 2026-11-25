@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const {create} = require('../web/js/read-aloud.js');
+const {create, voicePreference} = require('../web/js/read-aloud.js');
 
 const setup = () => {
   const devices = [];
@@ -52,4 +52,19 @@ test('switching and stopping release the old audio, and playback errors permit r
   player.stop();
   assert.equal(devices[2].resets, 1);
   assert.equal(player.status('second'), 'idle');
+});
+
+test('voice choice persists for this browser and can return to the table default', () => {
+  const saved = new Map();
+  const storage = {getItem: key => saved.get(key), setItem: (key, value) => saved.set(key, value),
+    removeItem: key => saved.delete(key)};
+  const endpoint = '/api/saves/save/read-aloud/7?playerId=player';
+  const preference = voicePreference(storage);
+  assert.equal(preference.url(endpoint), endpoint);
+  preference.set('george');
+  const reopened = voicePreference(storage);
+  assert.equal(reopened.get(), 'george');
+  assert.equal(reopened.url(endpoint), endpoint + '&voice=george');
+  reopened.set('');
+  assert.equal(voicePreference(storage).url(endpoint), endpoint);
 });
