@@ -14,7 +14,10 @@ RATES = {
     # GPT-6.1 and 6.2 Sol Standard rates with 30-minute writes, checked 2026-11-23.
     'gpt-6.1-sol': (2.00, 0.10, 2.50, 10.00),
     'gpt-6.2-sol': (2.00, 0.10, 2.50, 10.00),
+    # GPT-6.1 Terra and 6.2 Astra Standard rates with 30-minute writes, checked 2026-11-25.
+    'gpt-6.1-terra': (1.00, 0.05, 1.25, 5.00),
     'gpt-6-astra': (10.00, 1.00, 12.50, 50.00),
+    'gpt-6.2-astra': (8.00, 0.40, 10.00, 40.00),
 }
 
 

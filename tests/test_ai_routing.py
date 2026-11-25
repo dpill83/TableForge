@@ -161,6 +161,13 @@ class RoutingTest(unittest.TestCase):
                 usage['prompt_tokens'] += 1
                 self.assertAlmostEqual(metering.record(model, usage, 'default')[-2], 0.808304)
 
+    def test_terra_and_new_astra_have_standard_rates(self):
+        usage = {'prompt_tokens': 100_000, 'completion_tokens': 1_000,
+                 'prompt_tokens_details': {'cached_tokens': 40_000, 'cache_write_tokens': 50_000}}
+        for model, cost in (('gpt-6.1-terra', 0.0795), ('gpt-6.2-astra', 0.636)):
+            with self.subTest(model=model):
+                self.assertAlmostEqual(metering.record(model, usage, 'default')[-2], cost)
+
     def test_router_failures_fall_back_without_leaking_error_body(self):
         failures = [urllib.error.URLError('PRIVATE REQUEST'), TimeoutError('PRIVATE REQUEST'),
                     OSError('PRIVATE REQUEST'),
