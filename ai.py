@@ -37,10 +37,11 @@ STAGE3_START_REQUEST = (
     'Begin the adventure. This is the first AI-DM narration. '
     'This session is already running in TableForge; do not ask whether TableForge is being used. '
     'Use the saved character assignments and skip relay setup and party-sheet confirmation. '
-    'Present only the first playable opening beat, beginning with the character establishing '
-    'round. The hook, acceptance, travel, and arrival happen across later beats as players '
-    'respond; they are not a checklist for this response. Stop when you ask what the players '
-    'do, without narrating an outcome or the next scene. Honor any player contributions above.'
+    'Present only the first playable opening beat. '
+    'Set the scene briefly, then ask one plain-text question about where the characters are, '
+    'what they are doing, and who they are with. End the public narration with that question '
+    'and wait for the players to answer. The hook, acceptance, travel, and arrival happen '
+    'across later beats as players respond. Honor any player contributions above.'
 )
 GENERIC_START_REQUEST = (
     'Begin the adventure. This is the first AI-DM narration. '

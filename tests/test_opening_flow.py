@@ -216,6 +216,31 @@ class OpeningFlowTest(unittest.TestCase):
         self.assertEqual(unchanged['save']['opening_stage'], 'establishing')
         self.assertEqual(unchanged['messages'], [])
 
+    def test_start_without_notes_can_retry_with_a_formatted_establishing_question(self):
+        state = self.new_save()
+        save_id = state['save']['id']
+        start_url = f'/api/saves/{save_id}/start'
+        payload = {'playerId': state['players'][0]['id'], 'beat': 1}
+        prose = 'A quiet lane stretches before you.\n\n**Where are your characters this morning?**'
+        with patch.object(ai, 'current_provider', return_value=test_flow.FakeProvider(
+                prose + '\nThe party then arrives at the mine.\n[Opening: hook]')):
+            error = self.api_error(start_url, payload)
+        self.assertIn('continued the opening', error['error'])
+        self.assertFalse(self.api(f'/api/saves/{save_id}')['started'])
+
+        provider = test_flow.FakeProvider(prose + '\n[Opening: hook]')
+        with patch.object(ai, 'current_provider', return_value=provider):
+            result = self.api(start_url, payload)
+        self.assertTrue(result['started'])
+        self.assertEqual(result['save']['opening_stage'], 'hook')
+        self.assertEqual([message['body'] for message in result['messages']], [prose])
+        self.assertEqual([event['body'] for event in result['events']
+                          if event['kind'] == 'adventure_start'], [''])
+        messages = ai.chat_messages(provider.context)
+        self.assertIn('End the public prose with that question', messages[0]['content'])
+        self.assertIn('Set the scene briefly, then ask one plain-text question', messages[-1]['content'])
+        self.assertIn('End the public narration with that question', messages[-1]['content'])
+
     def test_stage_progress_survives_restart_and_ready_cannot_accept_a_job(self):
         state = self.new_save()
         save_id, player = state['save']['id'], state['players'][0]['id']

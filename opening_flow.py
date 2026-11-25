@@ -18,6 +18,7 @@ ESTABLISHING_QUESTION = re.compile(
     r'|who\b[^?]{0,120}\b(?:with|alongside|accompanies)\b[^?]{0,80}'
     r'|how\b[^?]{0,120}\b(?:begin|start|positioned|introduce)\b[^?]{0,80})\?', re.IGNORECASE,
 )
+INLINE_EMPHASIS = re.compile(r'(?<!\w)(\*{1,3}|_{1,3})(?=\S)([^*_\n]+?)(?<=\S)\1(?!\w)')
 
 
 def supported(run_data):
@@ -74,6 +75,9 @@ def instructions(stage, first=False, has_player_input=False):
         '\n\nTableForge authoritative opening state: ' + stage + '. '
         + ('This is the very first public AI-DM response. ' if first else '')
         + GUIDANCE[stage] + pending
+        + (' Put any scene-setting before the character-establishing question. '
+           'End the public prose with that question and wait for the players to answer.'
+           if first and stage == 'establishing' else '')
         + '\nOpening stages are permissions for what may happen, not objectives '
         'to complete quickly. Keep the current stage if the interaction is still '
         'developing; do not force extra dialogue beats just to delay a natural '
@@ -125,13 +129,15 @@ def prepare(text, stage, *, first=False, has_player_input=False, require_opening
         raise ValueError('No player entered the site. No narration was published. Retry the beat.')
     clean = remaining.strip()
     if require_opening_contract and first:
-        question = ESTABLISHING_QUESTION.search(clean)
+        # Ignore Markdown emphasis during validation and keep it in the published text.
+        prose = INLINE_EMPHASIS.sub(r'\2', clean)
+        question = ESTABLISHING_QUESTION.search(prose)
         if not question:
             raise ValueError(
                 'The AI-DM skipped character establishment and began a later scene. '
                 'No narration was published. Retry the beat or review its context in Pilot Mode.'
             )
-        if not narration_pacing.is_clarification(clean[question.end():]):
+        if not narration_pacing.is_clarification(prose[question.end():]):
             raise ValueError(
                 'The AI-DM continued the opening after asking players to establish their characters. '
                 'No narration was published. Retry the beat.'

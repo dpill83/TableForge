@@ -88,7 +88,7 @@ class PromptFlowTest(unittest.TestCase):
         self.assertIn('already running in TableForge; do not ask whether TableForge is being used', opening)
         self.assertIn('Use the saved character assignments and skip relay setup and party-sheet confirmation', opening)
         self.assertIn('Present only the first playable opening beat', opening)
-        self.assertIn('they are not a checklist for this response', opening)
+        self.assertIn('The hook, acceptance, travel, and arrival happen across later beats', opening)
         self.assertIn(narration_pacing.INSTRUCTIONS, preview['messages'][0]['content'])
         self.assertIn(narration_pacing.PUBLIC_CHECK_INSTRUCTIONS, preview['messages'][0]['content'])
         self.assertEqual(preview['report']['narrationPrompt']['version'], '2.1.1')
