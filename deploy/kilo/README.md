@@ -102,6 +102,8 @@ On KILO, run the terminal editor with the same environment file and account as t
 sudo -u tableforge /opt/tableforge/venv/bin/python -B /opt/tableforge/repo/configure_ai_routing.py --env-file /etc/tableforge/tableforge.env
 ```
 
+Use the arrow keys to move, Enter to select, and Escape to go back. Type part of a model ID to filter the model picker. Select **Save and exit** to apply your changes. Add `--plain` to use the numbered menu.
+
 The editor saves to `/var/lib/tableforge/ai-routing.sqlite3` with the default KILO data path. Settings apply to the next TableForge AI request. Laya tier overrides apply to requests from this TableForge host.
 
 ## Register GitHub runner
