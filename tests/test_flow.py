@@ -13,13 +13,14 @@ import urllib.error
 import urllib.request
 import zipfile
 import zlib
-from contextlib import closing
+from contextlib import closing, nullcontext
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
 import ai
 import metering
+import routing_settings
 import server
 import runtime_prompts
 
@@ -1041,7 +1042,7 @@ Flyman block.
         self.assertIsNotNone(row['estimated_cost_usd'])
 
     def logged_openai(self, save_id, route, *, reported='gpt-6-luna-snapshot', purpose='advance',
-                      failure=False, service_tier='default', publish_failure=False):
+                      failure=False, service_tier='default', publish_failure=False, use_host_settings=False):
         """Keep real localhost HTTP calls; stub only router and OpenAI boundaries."""
         real_urlopen = urllib.request.urlopen
         sent = []
@@ -1068,8 +1069,8 @@ Flyman block.
                                      '' if route is None else 'http://router/route')
         path = {'advance': 'advance', 'ask': 'ask', 'summary': 'summary-draft'}[purpose]
         payload = {'playerId': first, 'pilot': True, 'override': True, 'text': 'What happens?'}
-        with patch.object(ai, 'current_provider', return_value=provider), \
-                patch('ai.urllib.request.urlopen', side_effect=opened):
+        factory = nullcontext() if use_host_settings else patch.object(ai, 'current_provider', return_value=provider)
+        with factory, patch('ai.urllib.request.urlopen', side_effect=opened):
             result = (self.api_error if failure or publish_failure else self.api)(f'/api/saves/{save_id}/{path}', payload)
         entry = self.api(f'/api/saves/{save_id}/request-log?playerId={first}&pilot=true')['entries'][-1]
         return entry, sent, result
@@ -1144,6 +1145,31 @@ Flyman block.
                     self.assertEqual(entry['routing']['policy'], 'table-play')
                     self.assertEqual(entry['routing']['reason'], expected_reason)
                     self.assertFalse(entry['routing']['routerContacted'])
+
+    def test_live_host_routing_changes_apply_on_the_next_advance(self):
+        save_id = self.ready_save()
+        route = {'tier': 'standard', 'model': 'gpt-6.1-sol', 'reasoning_effort': 'low'}
+        env = {'TABLEFORGE_OPENAI_API_KEY': 'test-key', 'TABLEFORGE_ROUTER_URL': 'http://router/route',
+               'TABLEFORGE_AIDM_MODEL': 'gpt-6.1-sol', 'TABLEFORGE_ROUTING_POLICY': ''}
+        with patch.dict(os.environ, env):
+            routing_settings.save(server.DATA, {'tiers': {}, 'requests': {'opening': {
+                'mode': 'fixed', 'model': 'gpt-6-astra', 'effort': 'high',
+            }}})
+            opening, sent, _ = self.logged_openai(save_id, route, use_host_settings=True,
+                                                  reported='gpt-6-astra')
+            self.assertEqual((sent[0]['model'], sent[0]['reasoning_effort']), ('gpt-6-astra', 'high'))
+            self.assertEqual(opening['routing']['requestRoute'], 'Adventure opening')
+            self.assertFalse(opening['routing']['routerContacted'])
+
+            routing_settings.save(server.DATA, {'tiers': {
+                'standard': {'model': 'gpt-6.2-sol', 'effort': 'medium'},
+            }, 'requests': {}})
+            narration, sent, _ = self.logged_openai(save_id, route, use_host_settings=True,
+                                                    reported='gpt-6.2-sol-snapshot')
+            self.assertEqual((sent[0]['model'], sent[0]['reasoning_effort']), ('gpt-6.2-sol', 'medium'))
+            self.assertTrue(narration['routing']['routerContacted'])
+            self.assertEqual(narration['routing']['model'], 'gpt-6.1-sol')
+            self.assertEqual(narration['reportedModel'], 'gpt-6.2-sol-snapshot')
 
     def test_request_log_router_fallback_succeeds_and_retains_safe_reason(self):
         save_id = self.ready_save()

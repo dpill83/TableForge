@@ -65,6 +65,22 @@ test('table play policy shows its reason and selected effort without LAN router 
   assert.doesNotMatch(html, /Router contacted|Laya\/router fallback/);
 });
 
+test('custom routing shows fixed models and keeps Laya and TableForge picks distinct', () => {
+  const fixed = render({...entry, routing: {policy: 'custom', requestMode: 'fixed',
+    requestRoute: 'Adventure opening', effortOverride: 'default', effortSource: 'request settings'}});
+  assert.match(fixed, /Fixed model/);
+  assert.match(fixed, /Request route<\/dt><dd>Adventure opening/);
+  assert.match(fixed, /Provider default \(not sent\)/);
+  assert.doesNotMatch(fixed, /Router contacted/);
+
+  const routed = render({...entry, routing: {...entry.routing, policy: 'custom', requestMode: 'laya',
+    requestRoute: 'Normal narration', modelOverride: 'requested-model', requestedEffort: 'high',
+    effortSource: 'Laya tier settings'}});
+  assert.match(routed, /Router-selected model<\/dt><dd>router-model/);
+  assert.match(routed, /TableForge model override<\/dt><dd>requested-model/);
+  assert.match(routed, /Reasoning effort source<\/dt><dd>Laya tier settings/);
+});
+
 test('router-internal fallback retains the tier badge and gets its own indicator', () => {
   const reason = 'Laya unavailable, using safe fallback';
   const html = render({...entry, routing: {...entry.routing, routerInternalFallbackUsed: true,

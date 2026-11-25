@@ -10,11 +10,14 @@ const TableForgeRequestLog = (() => {
   const render = (entry, when = value => value || 'Unavailable') => {
     const route = entry.routing;
     const tablePlay = route?.policy === 'table-play';
+    const custom = route?.policy === 'custom';
+    const fixed = custom && route.requestMode === 'fixed';
+    const direct = tablePlay || fixed;
     const tableforgeFallback = route?.tableforgeRouterFallbackUsed ?? route?.fallback;
     const tableforgeReason = route?.tableforgeRouterFallbackReason ?? route?.fallbackReason;
     const internalFallback = route?.routerInternalFallbackUsed;
     const tier = ['cheap', 'standard', 'heavy'].includes(route?.tier) ? route.tier : null;
-    const routeLabel = tablePlay ? 'Table play' : route?.enabled === false
+    const routeLabel = tablePlay ? 'Table play' : fixed ? 'Fixed model' : route?.enabled === false
       ? 'Routing disabled' : tier || (tableforgeFallback === true ? 'No router decision'
         : route?.enabled ? 'Routed' : 'Routing unknown');
     const badge = tier || 'unknown';
@@ -33,7 +36,9 @@ const TableForgeRequestLog = (() => {
       </summary>
       <div class="request-details"><dl>
         ${row('Purpose', available(entry.purpose))}
-        ${tablePlay ? row('Request route', available(route.reason)) : `
+        ${tablePlay || custom ? row('Request route', available(route.requestRoute ?? route.reason)) : ''}
+        ${custom && route.modelOverride ? row('TableForge model override', route.modelOverride) : ''}
+        ${direct ? '' : `
           ${row('Router enabled', flag(route?.enabled))}
           ${row('Router contacted', flag(route?.routerContacted))}
           ${row('Selected tier', available(route?.tier))}
@@ -48,10 +53,10 @@ const TableForgeRequestLog = (() => {
           ${row('Configured default / fallback model', available(entry.configuredModel))}
         `}
         ${row(entry.provider === 'mock' ? 'Mock request model' : 'Model requested from OpenAI', available(requested))}
-        ${tablePlay ? '' : row('Configured default reasoning effort', route?.configuredEffort ?? 'Not recorded / configured')}
-        ${row('Reasoning effort requested from OpenAI', route?.requestedEffort ?? (route?.effortSource === 'provider default' ? 'Provider default (not sent)' : 'Not recorded / sent'))}
+        ${direct ? '' : row('Configured default reasoning effort', route?.configuredEffort ?? 'Not recorded / configured')}
+        ${row('Reasoning effort requested from OpenAI', route?.requestedEffort ?? (route?.effortSource === 'provider default' || route?.effortOverride === 'default' ? 'Provider default (not sent)' : 'Not recorded / sent'))}
         ${row('Reasoning effort source', route?.effortSource ?? 'Not recorded')}
-        ${tablePlay ? '' : `
+        ${direct ? '' : `
           ${row('Router effort reason', route?.effortReason ?? 'Not recorded / supplied')}
           ${row('Router effort scores', route?.effortScores ? Object.entries(route.effortScores).map(([key, value]) => `${key}: ${value}`).join(' · ') : 'Not recorded / supplied')}
           ${row('Router effort fallback', flag(route?.effortFallbackUsed))}
@@ -69,7 +74,7 @@ const TableForgeRequestLog = (() => {
         ${row('Finished', entry.finishedAt ? when(entry.finishedAt) : 'Unavailable')}
       </dl>
       ${fallbackLabel ? '<p class="request-fallback">Fallback layer is separate from the provider generation status above.</p>' : ''}
-      ${!tablePlay && route && (route.routerContacted == null || internalFallback == null) ? '<p class="muted">Unknown means this fallback layer or router contact status was not recorded or reported.</p>' : ''}
+      ${!direct && route && (route.routerContacted == null || internalFallback == null) ? '<p class="muted">Unknown means this fallback layer or router contact status was not recorded or reported.</p>' : ''}
       ${entry.legacy ? '<p class="muted">Older record: routing and distinct provider models were not recorded.</p>' : ''}
       ${entry.error ? `<p class="binding-issue" role="alert">${esc(entry.error)}</p>` : ''}
       ${entry.payload ? `<details class="request-payload"><summary>Temporary provider request payload</summary><pre>${esc(entry.payload)}</pre></details>` : '<p class="muted">Full payload unavailable (temporary capture only).</p>'}

@@ -1106,7 +1106,7 @@ def answer_public_question(save_id, request_id, token, context, session_id):
     audit_id = str(uuid.uuid4())
     def generate():
         try:
-            provider = ai.current_provider()
+            provider = ai.current_provider(DATA)
             results.put((provider.generate(context), None))
         except Exception as error:
             results.put((None, error))
@@ -1828,7 +1828,7 @@ class Handler(BaseHTTPRequestHandler):
                              'purpose': context.get('purpose', 'advance'), 'startedAt': utc(),
                              'status': 'sending', 'error': None}
         try:
-            provider = ai.current_provider()
+            provider = ai.current_provider(DATA)
             runtime = ai.runtime_status()
             provider_name = ('openai' if isinstance(provider, ai.OpenAIProvider) else runtime['provider'])
             configured_model = getattr(provider, 'model', runtime['model'])
