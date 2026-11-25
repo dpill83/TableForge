@@ -49,8 +49,9 @@ test('failure keeps the dialog usable and does not remove the save list entry',a
 });
 
 test('another browser leaves a deleted playthrough on the next table refresh',async()=>{
-  const from=source.indexOf('  let refreshingTable=false;');
-  const to=source.indexOf('  },2500);',from)+'  },2500);'.length;
+  const from=source.indexOf('  let refreshingTable=false,');
+  const end='  setInterval(refreshTable,2500);';
+  const to=source.indexOf(end,from)+end.length;
   let poll,left=0,notification='';
   const state={save:{save:{id:'deleted'}}};
   const context=vm.createContext({state,document:{hidden:false},

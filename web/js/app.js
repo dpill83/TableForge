@@ -189,6 +189,7 @@
   };
   const show = async id => {
     screens.forEach(el => el.classList.toggle('active', el.id === id));
+    syncNarrationView();
     if(id === 'load') await refreshSaves();
     if(id === 'options') {renderAINotificationOption();await showRuntime();await showUsage();await showBackups();}
     if(id === 'play') scrollFeedToLatest();
@@ -490,14 +491,16 @@
     refreshChoiceButtons();
     const s=state.save,el=$('typingIndicator');if(!s||!el)return;
     const names=s.players.filter(p=>p.id!==state.identity&&s.activity?.typing?.includes(p.id)).map(p=>p.character);
-    const who=aiDmBusy('advance')?'AI-DM':names.length>2?'Several players':names.join(' and ');
+    const live=currentNarration();
+    const narrating=(aiDmBusy('advance')||live?.status==='waiting'||live?.status==='streaming')&&live?.status!=='failed';
+    const who=narrating&&!live?.text?'AI-DM':names.length>2?'Several players':names.join(' and ');
     const text=who?`${who} ${names.length>1&&who!=='AI-DM'?'are':'is'} typing`:'';
     if(el.dataset.text!==text){
       el.dataset.text=text;
       el.classList.toggle('ai',who==='AI-DM');
       el.innerHTML=text?`<strong>${esc(who)}</strong>${esc(text.slice(who.length))} ${dots()}`:'';
     }
-    $('tableStatus').textContent=aiDmBusy('advance')?'The AI-DM is typing':`Session ${s.sessions.at(-1)?.number || 1} · ${combatPending()?'Combat paused':`${s.players.filter(p=>p.ready).length} of ${s.players.length} Ready`}`;
+    $('tableStatus').textContent=narrating?(live?.text?'The AI-DM is narrating':'The AI-DM is typing'):`Session ${s.sessions.at(-1)?.number || 1} · ${combatPending()?'Combat paused':`${s.players.filter(p=>p.ready).length} of ${s.players.length} Ready`}`;
     const status=$('pilotAskStatus');
     if(status) status.innerHTML=aiDmBusy('ask')?'The AI-DM is typing '+dots():'';
   };
@@ -512,6 +515,67 @@
     button.textContent=state.feedHasNew?'New messages · Jump to latest ↓':'Back to latest ↓';
   };
   const scrollFeedToLatest=()=>{$('feed').scrollTop=$('feed').scrollHeight;state.followLatest=true;syncJumpLatest();};
+
+  // The live row sits outside saved history. Save polling stays authoritative.
+  let narrationView=null;
+  const currentNarration=()=>{
+    const event=narrationView?.event;
+    const save=state.save,session=save?.sessions.at(-1);
+    if(!event||narrationView.saveId!==save?.save.id||event.beat!==save.save.beat||
+      event.sessionId!==session?.id||session.ended_at)return null;
+    return event;
+  };
+  const renderNarration=()=>{
+    const event=currentNarration(),row=$('narrationPreview'),body=$('narrationPreviewBody');
+    const text=event?.text||'';
+    const changed=body.narrationText!==text;
+    if(changed){
+      body.narrationText=text;
+      body.innerHTML=text?TableForgeMarkdown.render(text,{preview:true}):'';
+    }
+    row.classList.toggle('hidden',!text);
+    const status=$('narrationFailure');
+    const failure=event?.status==='failed'?'The AI-DM narration was discarded. Use Ready or Ready Override to retry.':'';
+    if(status.textContent!==failure)status.textContent=failure;
+    if(changed&&text){
+      if(state.followLatest!==false)scrollFeedToLatest();
+      else{state.feedHasNew=true;syncJumpLatest();}
+    }
+  };
+  const syncNarrationView=()=>{
+    const save=state.save;
+    const watch=save?.activity?.narrationStream && $('play').classList.contains('active') &&
+      !document.hidden && typeof EventSource==='function';
+    const saveId=watch?save.save.id:null;
+    if((narrationView?.saveId??null)===saveId)return;
+    if(narrationView)narrationView.source.close();
+    narrationView=null;
+    renderNarration();
+    if(!saveId)return;
+
+    const source=new EventSource('/api/saves/'+encodeURIComponent(saveId)+'/narration');
+    const view={saveId,source,event:null};
+    narrationView=view;
+    source.onmessage=message=>{
+      if(narrationView!==view || state.save?.save.id!==saveId)return;
+      const next=JSON.parse(message.data),previous=view.event;
+      if(next && previous?.attempt===next.attempt && previous.revision>=next.revision)return;
+      if(next?.status==='committed' && previous?.attempt===next.attempt)next.text=previous.text;
+      view.event=next;
+      renderNarration();
+      renderActivity();
+      if(next && next.status!=='streaming')refreshTable(true);
+    };
+    source.onerror=()=>{
+      if(narrationView!==view || state.save?.save.id!==saveId)return;
+      view.event=null;
+      renderNarration();
+      renderActivity();
+      refreshTable(true);
+    };
+  };
+  document.addEventListener('visibilitychange',syncNarrationView);
+
   // Single left sidebar. Every width change TableForge makes first captures the
   // paragraph being read; a resize observer restores it after the text reflows.
   const feedAnchor=new TableForgeLayout.FeedAnchor({feed:$('feed'),isFollowing:()=>state.followLatest!==false});
@@ -632,6 +696,8 @@
   };
   const render=()=>{
     const s=state.save;if(!s)return;
+    syncNarrationView();
+    renderNarration();
     restoreTableMap();syncTableMap();
     $('play').querySelector('.top-title strong').textContent=s.cartridge.title;
     $('partyList').innerHTML=s.players.map(p=>`<div class="party-card" style="${p.id===state.identity?'border-color:var(--accent2)':''}"><div class="party-top">${p.id===state.identity?`<button class="portrait-button" type="button" title="Edit ${esc(p.character)} portrait" aria-label="Edit ${esc(p.character)} portrait">${avatar(p,'party-avatar')}</button>`:avatar(p,'party-avatar')}<div class="party-name"><strong>${esc(p.character)}</strong><span>${esc(p.name)}</span></div><span class="ready-badge ${p.ready?'ready':''}">${combatPending()?'Combat':(p.ready?'Ready':'Not Ready')}</span></div></div>`).join('');
@@ -1959,14 +2025,17 @@
   $('messageSearch').onkeydown=e=>{if(e.key==='Escape'){$('messageSearch').value='';applySearch();}if(e.key==='Enter')document.querySelector('.search-match')?.scrollIntoView({block:'center'});};
   // Typing dots cycle . .. ... together wherever they appear.
   setInterval(()=>{dotCount=dotCount%3+1;document.querySelectorAll('.typing-dots').forEach(el=>el.textContent='.'.repeat(dotCount));},450);
-  // Simple polling synchronizes browsers while WebSocket transport is pending.
-  let refreshingTable=false;
-  setInterval(async()=>{
-    if(refreshingTable||(document.hidden&&!aiNotificationsEnabled())||!state.save||!$('play').classList.contains('active'))return;
-    const saveId=state.save.save.id;refreshingTable=true;
+  // Reconcile saved state independently of the optional narration stream.
+  let refreshingTable=false, refreshRequested=false;
+  const refreshTable=async(urgent=false)=>{
+    if(refreshingTable){ if(urgent)refreshRequested=true; return; }
+    if((document.hidden&&!aiNotificationsEnabled())||!state.save||!$('play').classList.contains('active'))return;
+    const previous=state.save,saveId=previous.save.id;
+    refreshingTable=true;
     try{
       const next=await request('saves/'+saveId);
       if(state.save?.save.id!==saveId)return;
+      if(state.save!==previous&&next.save.updated_at<state.save.save.updated_at)return;
       if(next.save.updated_at!==state.save.save.updated_at){state.save=next;render();}
       else if(JSON.stringify(next.activity)!==JSON.stringify(state.save.activity)){state.save.activity=next.activity;render();}
       syncCombatDialog();
@@ -1975,6 +2044,10 @@
         await leaveUnavailableSave();notify(Error('This playthrough was deleted or is no longer available.'));
       }else console.error(error);
     }
-    finally{refreshingTable=false;}
-  },2500);
+    finally{
+      refreshingTable=false;
+      if(refreshRequested){refreshRequested=false;refreshTable();}
+    }
+  };
+  setInterval(refreshTable,2500);
 })();
