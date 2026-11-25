@@ -16,6 +16,17 @@ test('escapes message HTML and rejects unsafe links', () => {
     '<p><a href="https://example.com/?a=1&amp;b=2" target="_blank" rel="noopener noreferrer">safe</a></p>');
 });
 
+test('the live preview formats a partially received emphasis span', () => {
+  assert.equal(render('The **bridge', {preview:true}), '<p>The <strong>bridge</strong></p>');
+  assert.equal(render('The **bridge'), '<p>The **bridge</p>');
+});
+
+test('a partially received link stays escaped and inactive until closed', () => {
+  assert.equal(render('Read [<notes>](https://example.com', {preview:true}),
+    '<p>Read &lt;notes&gt;</p>');
+  assert.match(render('Read [notes](https://example.com)', {preview:true}), /href="https:\/\/example\.com"/);
+});
+
 const xpTable = `| Opponent | CR | Standard XP |
 |---|---:|---:|
 | Sahuagin Baron | 5 | 1,800 |

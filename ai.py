@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -58,6 +59,7 @@ SUMMARY_INPUT_CAP = 120_000
 COMBAT_OUTCOME_LIMIT = 5
 OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
 OPENAI_TIMEOUT = 60
+NARRATION_STREAM_SECONDS = 180
 ROUTER_TIMEOUT = 4
 ROUTER_PROMPT_CAP = 2400
 ROUTER_RESPONSE_CAP = 16_384
@@ -584,8 +586,16 @@ def routing_description(context):
     return '\n'.join(parts)[:ROUTER_PROMPT_CAP]
 
 
+class RejectedNarration(ValueError):
+    """A terminal provider response that reports usage but cannot be published."""
+
+    def __init__(self, generation):
+        super().__init__('AI-DM narration was incomplete. Retry the beat.')
+        self.generation = generation
+
+
 class MockProvider:
-    def generate(self, context, on_request=None):
+    def generate(self, context, on_request=None, on_text=None):
         if on_request:
             on_request(json.dumps({'model': runtime_status()['model'], 'messages': chat_messages(context)}))
         if context.get('purpose') == 'summary':
@@ -610,6 +620,11 @@ class MockProvider:
         if context.get('locationInstructions'):
             where = context.get('location')
             text += '\n\n[Location: ' + ('Approach' if where is None else f'Area {where}') + ']'
+        if on_text:
+            # A delayed fixture makes the local staging path testable without a paid request.
+            for chunk in re.findall(r'.{1,55}(?:\s|$)|\S+|\s+', text, re.DOTALL):
+                on_text(chunk)
+                time.sleep(0.45)
         return text
 
 
@@ -669,6 +684,61 @@ def router_internal_fallback(data, reason):
                                        'fallback_reason', 'fallbackReason')
                    if isinstance(data.get(key), str) and data[key].strip()), reason)
     return used, ' '.join(detail.split())[:240] if used is True and detail else None
+
+
+def read_narration_stream(response, on_text, deadline):
+    """Read Chat Completions SSE through its successful terminal event."""
+    data_lines = []
+    wire_bytes = 0
+    text_chars = 0
+    content = []
+    metadata = {}
+    finish_reason = None
+    while True:
+        if time.monotonic() >= deadline:
+            raise ValueError('AI-DM narration reached its time limit. Retry the beat.')
+        line = response.readline(262_145)
+        if time.monotonic() >= deadline:
+            raise ValueError('AI-DM narration reached its time limit. Retry the beat.')
+        if not line:
+            raise ValueError('AI-DM narration ended before it finished. Retry the beat.')
+        wire_bytes += len(line)
+        if len(line) > 262_144 or wire_bytes > 8 * 1024 * 1024:
+            raise ValueError('AI-DM narration exceeded the stream size limit.')
+        if line.startswith(b'data:'):
+            data_lines.append(line[5:].removeprefix(b' ').rstrip(b'\r\n'))
+            continue
+        if line.strip() or not data_lines:
+            continue
+        event = b'\n'.join(data_lines)
+        data_lines.clear()
+        if event == b'[DONE]':
+            if finish_reason is None:
+                raise ValueError('AI-DM narration ended without a complete reply. Retry the beat.')
+            return {**metadata, 'choices': [{'message': {'content': ''.join(content)},
+                                             'finish_reason': finish_reason}]}
+        chunk = json.loads(event)
+        if not isinstance(chunk, dict) or chunk.get('error') or chunk.get('type') == 'error':
+            raise ValueError('The AI provider reported a narration stream error. Retry the beat.')
+        for name in ('model', 'service_tier', 'usage'):
+            if chunk.get(name) is not None:
+                metadata[name] = chunk[name]
+        for choice in chunk.get('choices', []):
+            if choice.get('index') != 0:
+                continue
+            delta = choice.get('delta') or {}
+            if delta.get('refusal') or delta.get('tool_calls') or delta.get('function_call'):
+                raise ValueError('The AI provider did not return public narration. Retry the beat.')
+            text = delta.get('content')
+            if isinstance(text, str) and text:
+                text_chars += len(text)
+                if finish_reason is not None or text_chars > 65_536:
+                    raise ValueError('AI-DM narration exceeded the stream limits.')
+                content.append(text)
+                on_text(text)
+            reason = choice.get('finish_reason')
+            if reason is not None:
+                finish_reason = reason
 
 
 class OpenAIProvider:
@@ -792,7 +862,7 @@ class OpenAIProvider:
                    routing['tableforgeRouterFallbackUsed'], routing['tableforgeRouterFallbackReason'])
         return self.fallback_model if routing['fallback'] else routing['model'], routing
 
-    def generate(self, context, on_request=None, on_metadata=None):
+    def generate(self, context, on_request=None, on_metadata=None, on_text=None):
         model, routing = self.select_model(context)
         routing['configuredEffort'] = self.effort
         if routing.get('effortOverride'):
@@ -826,6 +896,8 @@ class OpenAIProvider:
         payload_data = {'model': model, 'messages': chat_messages(context)}
         if routing['requestedEffort']:
             payload_data['reasoning_effort'] = routing['requestedEffort']
+        if on_text is not None:
+            payload_data.update(stream=True, stream_options={'include_usage': True})
         payload_text = json.dumps(payload_data)
         if on_request:
             on_request(payload_text)
@@ -836,20 +908,38 @@ class OpenAIProvider:
             headers={'Authorization': 'Bearer ' + self.key, 'Content-Type': 'application/json'},
         )
         try:
+            deadline = time.monotonic() + NARRATION_STREAM_SECONDS
             with urllib.request.urlopen(request, timeout=OPENAI_TIMEOUT) as response:
-                data = json.loads(response.read().decode())
+                if on_text is None:
+                    data = json.loads(response.read().decode())
+                elif response.headers.get_content_type() == 'text/event-stream':
+                    data = read_narration_stream(response, on_text, deadline)
+                elif response.headers.get_content_type() == 'application/json':
+                    data = json.loads(response.read(8 * 1024 * 1024).decode())
+                else:
+                    raise ValueError('The AI provider returned an unexpected narration response.')
         except urllib.error.HTTPError as error:
+            if on_text is not None:
+                error.close()
+                raise ValueError(f'OpenAI narration stream failed ({error.code}).') from error
             detail = error.read().decode('utf-8', 'replace')[:400]
             raise ValueError(f'OpenAI request failed ({error.code}): {detail}') from error
-        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError) as error:
+        except (urllib.error.URLError, TimeoutError, http.client.HTTPException,
+                json.JSONDecodeError, UnicodeDecodeError, OSError) as error:
+            if on_text is not None:
+                raise ValueError('The AI-DM narration connection ended. Retry the beat.') from error
             raise ValueError(f'OpenAI request failed: {error}') from error
         choices = data.get('choices') if isinstance(data, dict) else None
         if not choices:
             raise ValueError('OpenAI returned no choices')
-        text = str((choices[0].get('message') or {}).get('content') or '').strip()
+        choice = choices[0]
+        text = str((choice.get('message') or {}).get('content') or '').strip()
+        completed = GeneratedText(text, usage=data.get('usage'), model=data.get('model') or model,
+                                  service_tier=data.get('service_tier'), routing=routing,
+                                  configured_model=default_model, requested_model=model,
+                                  reported_model=data.get('model'))
+        if on_text is not None and choice.get('finish_reason') not in (None, 'stop'):
+            raise RejectedNarration(completed)
         if not text:
             raise ValueError('OpenAI returned an empty response')
-        return GeneratedText(text, usage=data.get('usage'), model=data.get('model') or model,
-                             service_tier=data.get('service_tier'), routing=routing,
-                             configured_model=default_model, requested_model=model,
-                             reported_model=data.get('model'))
+        return completed

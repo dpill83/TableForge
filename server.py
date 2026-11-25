@@ -30,6 +30,7 @@ import module_context
 import cartridge_geometry
 import narration_choices
 import narration_pacing
+from narration_stream import NarrationPreviews, contains_control, preview_text
 import opening_flow
 import runtime_prompts
 import table_map
@@ -48,6 +49,7 @@ TYPING = {}
 TYPING_SECONDS = 6
 # save_id -> temporary full payload captures; audit metadata is persisted separately.
 AI_REQUEST_LOGS = {}
+NARRATION_PREVIEWS = NarrationPreviews()
 COMBAT_GENERATION_TIMEOUT = 180
 MAX_REQUEST = 32 * 1024 * 1024
 # Keep ZIP uploads below the public proxy's request limit without base64 overhead.
@@ -726,8 +728,15 @@ def typing_players(save_id):
     return sorted(typing)
 
 
+def narration_stream_enabled():
+    return os.environ.get('TABLEFORGE_STREAM_NARRATION') == '1'
+
+
 def activity(save_id):
-    return {'aiDm': GENERATING.get(save_id), 'typing': typing_players(save_id)}
+    result = {'aiDm': GENERATING.get(save_id), 'typing': typing_players(save_id)}
+    if narration_stream_enabled():
+        result['narrationStream'] = True
+    return result
 
 
 def private_ask_messages(conn, save_id, player_id):
@@ -1035,7 +1044,8 @@ def set_location(conn, state, location, player_id, source, arrival=None, arrival
                               **({'arrivalConnectionId': arrival} if arrival is not None or previous is not None else {})}), utc()))
 
 
-def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=False, start=None):
+def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=False, start=None,
+                    *, streamed=False):
     session = active_session(conn, save_id)
     state = snapshot(conn, save_id)
     text, combat_started = combat.extract(text)
@@ -1064,11 +1074,13 @@ def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=
     if not text:
         raise ValueError('The AI-DM returned an empty response')
     narration_pacing.validate_public_narration(text)
+    text = narration_choices.public_body(text, choices, state['players'])
+    if streamed and contains_control(text):
+        raise ValueError('The AI-DM returned unfinished control metadata. Retry the beat.')
     if marked:
         adventure = adventure_for(state)
         if adventure.focused and adventure.valid(location):
             set_location(conn, state, location, None, 'ai-dm', arrival, arrival_marked)
-    text = narration_choices.public_body(text, choices, state['players'])
     stamp = utc()
     message_id = conn.execute(
         'INSERT INTO messages (save_id,session_id,kind,name,body,created_at,choices_json) VALUES (?,?,?,?,?,?,?)',
@@ -1174,10 +1186,45 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError('Request too large')
         return json.loads(self.rfile.read(length))
 
+    def stream_narration(self, save_id):
+        if not narration_stream_enabled():
+            return self.respond({'error': 'Live narration is disabled.'}, 404)
+        with LOCK, db() as conn:
+            exists = conn.execute('SELECT 1 FROM saves WHERE id=?', (save_id,)).fetchone()
+        if not exists:
+            return self.respond({'error': 'This playthrough is no longer available.'}, 404)
+
+        with NARRATION_PREVIEWS.subscribe() as subscribed:
+            if not subscribed:
+                return self.respond({'error': 'Too many live narration viewers.'}, 503)
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream; charset=utf-8')
+            self.send_header('Cache-Control', 'no-store')
+            self.send_header('X-Content-Type-Options', 'nosniff')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            # An observer never owns the generation. A slow or lost connection can leave independently.
+            self.connection.settimeout(5)
+            previous = object()
+            try:
+                while True:
+                    data = NARRATION_PREVIEWS.wait(save_id, previous, 10)
+                    if data is previous:
+                        frame = b': heartbeat\n\n'
+                    else:
+                        previous = data
+                        frame = f'data: {json.dumps(data)}\n\n'.encode('utf-8')
+                    self.wfile.write(frame)
+                    self.wfile.flush()
+            except OSError:
+                pass
+
     def do_GET(self):
         path = urlparse(self.path).path
         try:
             parts = path.strip('/').split('/')
+            if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'narration':
+                return self.stream_narration(parts[2])
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'chat.md':
                 with LOCK, db() as conn:
                     filename, content = chat_export.export_chat(conn, parts[2])
@@ -1818,7 +1865,7 @@ class Handler(BaseHTTPRequestHandler):
             result = {'images': scene_images.list_images(conn, save_id)}
         return self.respond(result)
 
-    def run_generation(self, save_id, begin, publish, payload):
+    def run_generation(self, save_id, begin, publish, payload, *, allow_preview=False):
         with LOCK, db() as conn:
             context = begin(conn, save_id, payload)
             if context is None:
@@ -1827,6 +1874,24 @@ class Handler(BaseHTTPRequestHandler):
             request_entry = {'id': str(uuid.uuid4()), 'sessionId': session['id'],
                              'purpose': context.get('purpose', 'advance'), 'startedAt': utc(),
                              'status': 'sending', 'error': None}
+        attempt = request_entry['id']
+        streaming = False
+
+        def record_usage(conn, generated):
+            session = active_session(conn, save_id)
+            if not session:
+                raise ValueError('Start the next session before playing')
+            values = metering.record(generated.model or 'unknown', generated.usage, generated.service_tier)
+            conn.execute('''INSERT INTO ai_usage
+                (save_id,session_id,purpose,model,input_tokens,cached_tokens,cache_write_tokens,
+                 output_tokens,total_tokens,estimated_cost_usd,service_tier,created_at,request_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (save_id, session['id'], context['purpose'], *values, utc(), attempt))
+            conn.execute('''UPDATE ai_requests SET configured_model=COALESCE(?,configured_model),
+                requested_model=COALESCE(?,requested_model),reported_model=?,routing=COALESCE(?,routing)
+                WHERE id=?''', (generated.configured_model, generated.requested_model, generated.reported_model,
+                                json.dumps(generated.routing) if generated.routing is not None else None, attempt))
+
         try:
             provider = ai.current_provider(DATA)
             runtime = ai.runtime_status()
@@ -1856,13 +1921,34 @@ class Handler(BaseHTTPRequestHandler):
                         request_entry['payload'] = body
                         AI_REQUEST_LOGS.setdefault(save_id, []).append(request_entry)
 
+            streaming = (allow_preview and narration_stream_enabled() and ai.request_type(context) == 'advance'
+                         and isinstance(provider, (ai.OpenAIProvider, ai.MockProvider)))
+            if streaming:
+                NARRATION_PREVIEWS.start(save_id, attempt, session['id'], context['beat'])
+            draft = ''
+            visible = ''
+            last_update = 0
+
+            def capture_text(delta):
+                nonlocal draft, visible, last_update
+                draft += delta
+                now = time.monotonic()
+                if now - last_update < 0.1:
+                    return
+                safe = preview_text(draft)
+                if safe and safe != visible:
+                    NARRATION_PREVIEWS.update(save_id, attempt, safe)
+                    visible, last_update = safe, now
+
             def generate():
+                callbacks = {'on_text': capture_text} if streaming else {}
                 if isinstance(provider, ai.OpenAIProvider):
-                    return provider.generate(context, on_request=capture_request, on_metadata=capture_metadata)
+                    return provider.generate(context, on_request=capture_request, on_metadata=capture_metadata,
+                                             **callbacks)
                 elif isinstance(provider, ai.MockProvider):
                     capture_metadata({'configuredModel': configured_model, 'requestedModel': configured_model,
                                       'routing': ai.routing_state(False)})
-                    return provider.generate(context, on_request=capture_request)
+                    return provider.generate(context, on_request=capture_request, **callbacks)
                 else:
                     return provider.generate(context)
             if context.get('combatResume'):
@@ -1885,46 +1971,48 @@ class Handler(BaseHTTPRequestHandler):
             if not text:
                 raise ValueError('The AI-DM returned an empty response')
         except Exception as error:
-            with LOCK, db() as conn:
-                request_entry['status'] = 'failed'
-                request_entry['error'] = str(error)
-                # Preserve the intentional transient error capture, but no arbitrary
-                # exception bodies (which may contain private context) in durable logs.
-                conn.execute("UPDATE ai_requests SET status='failed',finished_at=?,error=? WHERE id=?",
-                             (utc(), 'AI provider request failed', request_entry['id']))
-                fail_combat_resume(conn, save_id, context)
-                GENERATING.pop(save_id, None)
+            with LOCK:
+                try:
+                    with db() as conn:
+                        request_entry['status'] = 'failed'
+                        request_entry['error'] = str(error)
+                        # Preserve provider usage for a completed but truncated stream.
+                        if isinstance(error, ai.RejectedNarration) and error.generation.usage is not None:
+                            record_usage(conn, error.generation)
+                        conn.execute("UPDATE ai_requests SET status='failed',finished_at=?,error=? WHERE id=?",
+                                     (utc(), 'AI provider request failed', attempt))
+                        fail_combat_resume(conn, save_id, context)
+                finally:
+                    GENERATING.pop(save_id, None)
+                    if streaming:
+                        NARRATION_PREVIEWS.finish(save_id, attempt)
             if isinstance(error, ValueError):
                 raise
             raise ValueError(f'AI-DM request failed: {error}') from error
         with LOCK:
+            message_id = None
             try:
                 with db() as conn:
                     if isinstance(generated, ai.GeneratedText):
-                        session = active_session(conn, save_id)
-                        if not session:
-                            raise ValueError('Start the next session before playing')
-                        values = metering.record(generated.model or 'unknown', generated.usage,
-                                                 generated.service_tier)
-                        conn.execute('''INSERT INTO ai_usage
-                            (save_id,session_id,purpose,model,input_tokens,cached_tokens,cache_write_tokens,
-                             output_tokens,total_tokens,estimated_cost_usd,service_tier,created_at,request_id)
-                            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
-                            (save_id, session['id'], context['purpose'], *values, utc(), request_entry['id']))
-                        conn.execute('''UPDATE ai_requests SET configured_model=COALESCE(?,configured_model),
-                            requested_model=COALESCE(?,requested_model),reported_model=?,routing=COALESCE(?,routing)
-                            WHERE id=?''', (generated.configured_model, generated.requested_model,
-                                           generated.reported_model,
-                                           json.dumps(generated.routing) if generated.routing is not None else None,
-                                           request_entry['id']))
+                        record_usage(conn, generated)
                     conn.execute("UPDATE ai_requests SET status='complete',finished_at=? WHERE id=?",
                                  (utc(), request_entry['id']))
                 # Provider usage is billable even if saving the narration later fails.
                 # Commit the audit before publishing so it remains useful in that case.
                 with db() as conn:
-                    result = publish(conn, save_id, text)
-                    request_entry['status'] = 'complete'
-                    request_entry['finishedAt'] = utc()
+                    if streaming:
+                        saved_beat = conn.execute('SELECT beat FROM saves WHERE id=?', (save_id,)).fetchone()
+                        session = active_session(conn, save_id)
+                        if (not saved_beat or saved_beat['beat'] != context['beat'] or not session or
+                                session['id'] != request_entry['sessionId']):
+                            raise ValueError('This narration is no longer for the current beat.')
+                        result = publish(conn, save_id, text, streamed=True)
+                    else:
+                        result = publish(conn, save_id, text)
+                if streaming:
+                    message_id = result['messages'][-1]['id']
+                request_entry['status'] = 'complete'
+                request_entry['finishedAt'] = utc()
             except Exception:
                 with db() as conn:
                     conn.execute("UPDATE ai_requests SET status='failed',finished_at=?,error=? WHERE id=?",
@@ -1933,6 +2021,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise
             finally:
                 GENERATING.pop(save_id, None)
+                if streaming:
+                    NARRATION_PREVIEWS.finish(save_id, attempt, message_id)
             result['activity'] = activity(save_id)
         return self.respond(result)
 
@@ -1989,6 +2079,7 @@ class Handler(BaseHTTPRequestHandler):
             result = backups.restore(DATA, name)
             TYPING.clear()
             AI_REQUEST_LOGS.clear()
+            NARRATION_PREVIEWS.clear()
             # Bring an older backup's schema up to date, then prove the live database matches it.
             initialize()
             live = backups.inspect(DATA, DATA / backups.DATABASE)
@@ -2005,10 +2096,10 @@ class Handler(BaseHTTPRequestHandler):
             override.update(context.pop('override', {}))
             return context
 
-        def publish(conn, save_id, text):
-            return publish_advance(conn, save_id, text, override or None)
+        def publish(conn, save_id, text, *, streamed=False):
+            return publish_advance(conn, save_id, text, override or None, streamed=streamed)
 
-        return self.run_generation(save_id, begin, publish, payload)
+        return self.run_generation(save_id, begin, publish, payload, allow_preview=True)
 
     def handle_start(self, save_id, payload):
         start = {}

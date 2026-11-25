@@ -367,6 +367,8 @@ body.sidebar-dragging iframe{pointer-events:none}
 }
 .jump-latest:hover{background:#252b34}
 .feed-inner{max-width:900px;margin:0 auto}
+.narration-failure{padding:8px 0}
+.narration-failure:empty{display:none}
 .start-card{
   max-width:620px;margin:8vh auto 0;padding:28px 30px;text-align:center;
   border:1px solid var(--border);border-radius:14px;background:var(--panel)

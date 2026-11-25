@@ -4,7 +4,7 @@ const TableForgeMarkdown = (() => {
     '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
   }[char]));
 
-  const inline = source => {
+  const inline = (source, preview=false) => {
     let html = '';
     for (let i = 0; i < source.length;) {
       const rest = source.slice(i);
@@ -18,11 +18,25 @@ const TableForgeMarkdown = (() => {
         html += `<a href="${escapeHtml(link[2])}" target="_blank" rel="noopener noreferrer">${inline(link[1])}</a>`;
         i += link[0].length; continue;
       }
+      if(preview){
+        const pendingLink=/^\[([^\]\n]+)(?:\](?:\([^)\n]*)?)?$/.exec(rest);
+        if(pendingLink){ html+=inline(pendingLink[1]); break; }
+        const pendingCode=/^\x60([^\x60\n]*)$/.exec(rest);
+        if(pendingCode){ html+=`<code>${escapeHtml(pendingCode[1])}</code>`; break; }
+      }
       let matched = false;
       for (const [mark, tag] of [['**', 'strong'], ['__', 'strong'], ['~~', 'del'], ['*', 'em'], ['_', 'em']]) {
         if (!rest.startsWith(mark)) continue;
         const end = rest.indexOf(mark, mark.length);
-        if (end <= mark.length) continue;
+        if (end <= mark.length) {
+          if(preview && end===-1 && (i===0 || /\W/.test(source[i-1]))){
+            html += `<${tag}>${inline(rest.slice(mark.length))}</${tag}>`;
+            i=source.length;
+            matched=true;
+            break;
+          }
+          continue;
+        }
         html += `<${tag}>${inline(rest.slice(mark.length, end))}</${tag}>`;
         i += end + mark.length;
         matched = true;
@@ -60,7 +74,8 @@ const TableForgeMarkdown = (() => {
       cell.startsWith(':') ? (cell.endsWith(':') ? 'center' : 'left') : (cell.endsWith(':') ? 'right' : null))};
   };
 
-  const render = source => {
+  const render = (source,{preview=false}={}) => {
+    const renderInline=source=>inline(source,preview);
     const lines = String(source ?? '').replace(/\r\n?/g, '\n').split('\n');
     const out = [];
     const special = line => /^(#{1,6}\s|>\s?|[-*+]\s|\d+[.)]\s|```)/.test(line);
@@ -76,11 +91,11 @@ const TableForgeMarkdown = (() => {
         continue;
       }
       const heading = /^(#{1,6})\s+(.+)$/.exec(lines[i]);
-      if (heading) { out.push(`<h${heading[1].length}>${inline(heading[2])}</h${heading[1].length}>`); i++; continue; }
+      if (heading) { out.push(`<h${heading[1].length}>${renderInline(heading[2])}</h${heading[1].length}>`); i++; continue; }
       if (/^>\s?/.test(lines[i])) {
         const quote = [];
         while (i < lines.length && /^>\s?/.test(lines[i])) quote.push(lines[i++].replace(/^>\s?/, ''));
-        out.push(`<blockquote>${quote.map(inline).join('<br>')}</blockquote>`);
+        out.push(`<blockquote>${quote.map(renderInline).join('<br>')}</blockquote>`);
         continue;
       }
       const bullet = /^\s*([-*+]|\d+[.)])\s+/.exec(lines[i]);
@@ -88,14 +103,14 @@ const TableForgeMarkdown = (() => {
         const ordered = /^\d/.test(bullet[1]);
         const pattern = ordered ? /^\s*\d+[.)]\s+/ : /^\s*[-*+]\s+/;
         const items = [];
-        while (i < lines.length && pattern.test(lines[i])) items.push(`<li>${inline(lines[i++].replace(pattern, ''))}</li>`);
+        while (i < lines.length && pattern.test(lines[i])) items.push(`<li>${renderInline(lines[i++].replace(pattern, ''))}</li>`);
         const tag = ordered ? 'ol' : 'ul';
         out.push(`<${tag}>${items.join('')}</${tag}>`);
         continue;
       }
       const table = tableHeader(lines, i);
       if (table) {
-        const cellHtml = (cell, index, tag) => `<${tag}${tag === 'th' ? ' scope="col"' : ''}${table.alignments[index] ? ` class="markdown-align-${table.alignments[index]}"` : ''}>${inline(cell)}</${tag}>`;
+        const cellHtml = (cell, index, tag) => `<${tag}${tag === 'th' ? ' scope="col"' : ''}${table.alignments[index] ? ` class="markdown-align-${table.alignments[index]}"` : ''}>${renderInline(cell)}</${tag}>`;
         const rows = [];
         i += 2;
         while (i < lines.length && lines[i].trim()) {
@@ -109,7 +124,7 @@ const TableForgeMarkdown = (() => {
       }
       const paragraph = [];
       while (i < lines.length && lines[i].trim() && (paragraph.length === 0 || (!special(lines[i]) && !tableHeader(lines, i)))) paragraph.push(lines[i++]);
-      out.push(`<p>${paragraph.map(inline).join('<br>')}</p>`);
+      out.push(`<p>${paragraph.map(renderInline).join('<br>')}</p>`);
     }
     return out.join('');
   };

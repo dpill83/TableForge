@@ -234,6 +234,16 @@
       <main id="mainChat" class="main-chat">
         <div id="feed" class="feed">
           <div id="feedInner" class="feed-inner"></div>
+          <div id="narrationPreview" class="feed-inner hidden">
+            <div class="message ai">
+              <div class="avatar">AI</div>
+              <div>
+                <div class="message-head"><strong>AI-DM</strong></div>
+                <div id="narrationPreviewBody" class="message-body markdown-body"></div>
+              </div>
+            </div>
+          </div>
+          <p id="narrationFailure" class="feed-inner narration-failure muted" role="status"></p>
           <section id="startCard" class="start-card hidden" aria-labelledby="startTitle">
             <div class="start-eyebrow">Ready to begin</div>
             <h2 id="startTitle">Adventure</h2>
