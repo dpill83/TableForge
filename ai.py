@@ -1,10 +1,13 @@
 """AI-DM providers and context assembly for table advancement."""
+from contextlib import contextmanager
 import http.client
 import json
 import logging
 import math
 import os
 import re
+import socket
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -60,6 +63,7 @@ COMBAT_OUTCOME_LIMIT = 5
 OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
 OPENAI_TIMEOUT = 60
 NARRATION_STREAM_SECONDS = 180
+NARRATION_DEADLINE_ERROR = 'AI-DM narration reached its time limit. Retry the beat.'
 ROUTER_TIMEOUT = 4
 ROUTER_PROMPT_CAP = 2400
 ROUTER_RESPONSE_CAP = 16_384
@@ -686,6 +690,40 @@ def router_internal_fallback(data, reason):
     return used, ' '.join(detail.split())[:240] if used is True and detail else None
 
 
+@contextmanager
+def enforce_narration_deadline(response, deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise ValueError(NARRATION_DEADLINE_ERROR)
+
+    # urllib's HTTPResponse reads through a socket-backed buffered file.
+    # Shut down that socket to interrupt a read without acquiring the file's lock.
+    upstream = response.fp.raw._sock
+    expired = threading.Event()
+
+    def interrupt_read():
+        expired.set()
+        try:
+            socket.socket.shutdown(upstream, socket.SHUT_RDWR)
+        except OSError:
+            # The response may already have closed at the deadline.
+            pass
+
+    timer = threading.Timer(remaining, interrupt_read)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield
+        if expired.is_set() or time.monotonic() >= deadline:
+            raise ValueError(NARRATION_DEADLINE_ERROR)
+    except (http.client.HTTPException, OSError) as error:
+        if expired.is_set() or time.monotonic() >= deadline:
+            raise ValueError(NARRATION_DEADLINE_ERROR) from error
+        raise
+    finally:
+        timer.cancel()
+
+
 def read_narration_stream(response, on_text, deadline):
     """Read Chat Completions SSE through its successful terminal event."""
     data_lines = []
@@ -696,10 +734,10 @@ def read_narration_stream(response, on_text, deadline):
     finish_reason = None
     while True:
         if time.monotonic() >= deadline:
-            raise ValueError('AI-DM narration reached its time limit. Retry the beat.')
+            raise ValueError(NARRATION_DEADLINE_ERROR)
         line = response.readline(262_145)
         if time.monotonic() >= deadline:
-            raise ValueError('AI-DM narration reached its time limit. Retry the beat.')
+            raise ValueError(NARRATION_DEADLINE_ERROR)
         if not line:
             raise ValueError('AI-DM narration ended before it finished. Retry the beat.')
         wire_bytes += len(line)
@@ -909,15 +947,19 @@ class OpenAIProvider:
         )
         try:
             deadline = time.monotonic() + NARRATION_STREAM_SECONDS
-            with urllib.request.urlopen(request, timeout=OPENAI_TIMEOUT) as response:
+            timeout = OPENAI_TIMEOUT if on_text is None else min(OPENAI_TIMEOUT, NARRATION_STREAM_SECONDS)
+            with urllib.request.urlopen(request, timeout=timeout) as response:
                 if on_text is None:
                     data = json.loads(response.read().decode())
-                elif response.headers.get_content_type() == 'text/event-stream':
-                    data = read_narration_stream(response, on_text, deadline)
-                elif response.headers.get_content_type() == 'application/json':
-                    data = json.loads(response.read(8 * 1024 * 1024).decode())
                 else:
-                    raise ValueError('The AI provider returned an unexpected narration response.')
+                    with enforce_narration_deadline(response, deadline):
+                        content_type = response.headers.get_content_type()
+                        if content_type == 'text/event-stream':
+                            data = read_narration_stream(response, on_text, deadline)
+                        elif content_type == 'application/json':
+                            data = json.loads(response.read(8 * 1024 * 1024).decode())
+                        else:
+                            raise ValueError('The AI provider returned an unexpected narration response.')
         except urllib.error.HTTPError as error:
             if on_text is not None:
                 error.close()

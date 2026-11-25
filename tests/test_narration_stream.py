@@ -4,7 +4,9 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import select
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -209,6 +211,41 @@ class NarrationFlowTest(unittest.TestCase):
         after = self.api(url)
         self.assertEqual(after['messages'], before['messages'])
         self.assertEqual(after['save']['beat'], before['save']['beat'])
+
+    def test_generation_deadline_interrupts_an_unfinished_event(self):
+        save_id, before = self.ready_regular_advance()
+        url = f'/api/saves/{save_id}'
+        disconnected = threading.Event()
+
+        def reply(handler):
+            handler.wfile.write(delta('Mist gathers at the bridge.') + b'data: ')
+            stop = time.monotonic() + 3
+            try:
+                while time.monotonic() < stop:
+                    readable, _, _ = select.select([handler.connection], [], [], 0.05)
+                    if readable and handler.connection.recv(1) == b'':
+                        disconnected.set()
+                        return
+                    # Socket reads keep succeeding, but the SSE line never completes.
+                    handler.wfile.write(b' ')
+            except (BrokenPipeError, ConnectionResetError):
+                disconnected.set()
+
+        with self.upstream(reply), patch.object(ai, 'OPENAI_TIMEOUT', 2), \
+                patch.object(ai, 'NARRATION_STREAM_SECONDS', 0.75), \
+                ThreadPoolExecutor() as pool, self.observe(save_id) as observer:
+            running = pool.submit(self.api_error, url+'/advance', {})
+            self.until(observer, 'streaming')
+            self.assertTrue(disconnected.wait(1.5), 'The provider socket stayed open past the deadline')
+            self.assertIn('time limit', running.result(timeout=2)['error'])
+            self.assertNotIn('text', self.until(observer, 'failed'))
+
+        after = self.api(url)
+        self.assertEqual(after['messages'], before['messages'])
+        self.assertEqual(after['save']['beat'], before['save']['beat'])
+        self.assertIsNone(after['activity']['aiDm'])
+        retried = self.api(url+'/advance', {})
+        self.assertEqual(retried['save']['beat'], before['save']['beat'] + 1)
 
     def test_early_eof_cannot_publish_even_after_stop(self):
         save_id, before = self.ready_regular_advance()
