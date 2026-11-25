@@ -78,6 +78,8 @@ For requests that inherit the server policy, Table play takes priority over envi
 
 Run `python configure_ai_routing.py` on the TableForge host. The terminal editor uses the same `.env` and data directory as the server. For Kilo, use the [deployed routing editor](deploy/kilo/README.md#edit-ai-routing).
 
+In the full-screen editor, use the arrow keys and Enter to select a row, type to filter the model list, and press Escape to go back. The numbered menu is available with `--plain` and on terminals without curses support.
+
 - **Laya tiers** let you set a model and effort for Cheap, Standard, and Heavy as used by TableForge. Laya still supplies the tier. Choose **Follow Laya and server defaults** to keep automatic effort, or **OpenAI model default** to omit the effort parameter.
 - **Request types** cover normal narration, adventure opening, combat aftermath, public OOC, private Pilot Ask, and campaign summaries. Each can inherit the server policy, explicitly use Laya, or use a fixed model and effort. An explicit request effort takes priority over the tier's effort.
 - Search the model IDs available to the server's OpenAI key. Saving newly selected model/effort combinations runs short, token-billed Chat Completions checks. The editor saves host-wide settings in the data directory. The next AI request reads them automatically. Expand the **AI Request Log** entry to see the actual model, effort, and routing decision.
