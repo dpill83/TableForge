@@ -4,6 +4,7 @@ import unittest
 import urllib.error
 import urllib.request
 
+import chat_export
 import server
 import test_flow
 
@@ -35,9 +36,10 @@ class ChatExportTest(unittest.TestCase):
                          '2026-11-12T10:00:00+00:00', json.dumps({'groups': [
                              {'playerId': None, 'options': [{'letter': 'A', 'text': 'Enter'}]}]})))
             for kind, text, stamp in [('ready_override', 'SECRET activity', '10:00:01'),
-                                      ('combat_outcome', '*Victory!*\n\nTwo goblins fled.', '10:00:02'),
-                                      ('combat_correction', 'Correction: one goblin surrendered.', '10:00:03'),
-                                      ('combat_skipped', 'SECRET skip metadata', '10:00:03')]:
+                                      ('combat_started', '', '10:00:02'),
+                                      ('combat_outcome', '*Victory!*\n\nTwo goblins fled.', '10:25:02'),
+                                      ('combat_correction', 'Correction: one goblin surrendered.', '10:25:03'),
+                                      ('combat_skipped', 'SECRET skip metadata', '10:25:03')]:
                 conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) '
                              'VALUES (?,?,?,?,?,?)',
                              (save_id, 'next', player, kind, text, f'2026-11-12T{stamp}+00:00'))
@@ -46,7 +48,7 @@ class ChatExportTest(unittest.TestCase):
             conn.execute('INSERT INTO messages (save_id,session_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?)',
                          (save_id, 'next', 'system', 'System', 'SECRET internal prompt', server.utc()))
             conn.execute('INSERT INTO messages (save_id,session_id,kind,name,body,created_at) VALUES (?,?,?,?,?,?)',
-                         (save_id, 'next', 'ai', 'AI-DM', 'Aftermath narration.', '2026-11-12T10:00:04+00:00'))
+                         (save_id, 'next', 'ai', 'AI-DM', 'Aftermath narration.', '2026-11-12T10:25:04+00:00'))
         # The cartridge need not be mounted for a public-history download.
         (server.DATA / 'cartridges' / (state['cartridge']['id'] + '.zip')).unlink()
         before = self.api(f'/api/saves/{save_id}')
@@ -58,14 +60,22 @@ class ChatExportTest(unittest.TestCase):
         self.assertTrue(text.startswith('# Hollow Well\n\nPlaythrough: Our game'))
         self.assertIn('## Session 1', text)
         self.assertIn('## Session 2', text)
-        self.assertEqual(text.count('### George\n'), 250)
+        at = lambda stamp: chat_export._time(chat_export._parse(stamp))
+        self.assertEqual(text.count('### George · '), 250)
+        self.assertIn(f"### George · {at('2026-11-10T10:00:00+00:00')}\n\nOlder message 0\n", text)
+        self.assertIn('Sessions: 2 · ', text)
+        self.assertIn('Combat: 1 fight · 25m total', text)
+        self.assertIn(f"## Session 2 — {chat_export._date(chat_export._parse('2026-11-12T10:00:00+00:00'))}, "
+                      f"{at('2026-11-12T10:00:00+00:00')} – {at('2026-11-12T10:25:04+00:00')} (25m)", text)
+        self.assertIn(f"### Combat started · {at('2026-11-12T10:00:02+00:00')}", text)
         self.assertLess(text.index('Older message 0\n'), text.index('Older message 249\n'))
-        self.assertIn('### AI-DM\n\n**A doorway.**\n\n> “Who goes there?”\n\n- Listen\n- Wait', text)
+        self.assertIn(f"### AI-DM · {at('2026-11-12T10:00:00+00:00')}\n\n" '**A doorway.**\n\n> “Who goes there?”\n\n- Listen\n- Wait', text)
         self.assertIn('**A.** Enter', text)
-        self.assertIn('### George — Combat outcome\n\n*Victory!*\n\nTwo goblins fled.', text)
+        self.assertIn(f"### George — Combat outcome · {at('2026-11-12T10:25:02+00:00')} (combat lasted 25m)\n\n"
+                      '*Victory!*\n\nTwo goblins fled.', text)
         self.assertLess(text.index('**A doorway.**'), text.index('*Victory!*'))
         self.assertLess(text.index('*Victory!*'), text.index('Aftermath narration.'))
-        self.assertIn('### George — Combat correction\n\nCorrection: one goblin surrendered.', text)
+        self.assertIn(f"### George — Combat correction · {at('2026-11-12T10:25:03+00:00')}\n\n" 'Correction: one goblin surrendered.', text)
         self.assertNotIn('SECRET', text)
         self.assertNotIn('wrong label', text)
         self.assertEqual(before, self.api(f'/api/saves/{save_id}'))
