@@ -451,6 +451,9 @@ class FlowTest(unittest.TestCase):
             self.api(f'/api/saves/{save_id}/advance', {'beat': 1})
         self.assertEqual(preview['messages'], ai.chat_messages(fake.context))
 
+    # Exercises the manual summary path and omission reporting at the old 40k budget.
+    @patch.object(server, 'AUTO_SUMMARIES', False)
+    @patch.object(ai, 'TRANSCRIPT_CEILING', 40_000)
     def test_current_beat_is_never_trimmed_and_omissions_are_reported(self):
         save_id = self.ready_save()
         first, second = [p['id'] for p in self.api(f'/api/saves/{save_id}')['players']]
@@ -468,6 +471,9 @@ class FlowTest(unittest.TestCase):
             self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
         self.assertEqual([m['body'] for m in fake.context['messages']], ['a' * 20000, 'b' * 20000, 'I keep watch.'])
 
+    # Exercises the manual summary path and omission reporting at the old 40k budget.
+    @patch.object(server, 'AUTO_SUMMARIES', False)
+    @patch.object(ai, 'TRANSCRIPT_CEILING', 40_000)
     def test_summary_is_drafted_reviewed_saved_and_used(self):
         save_id = self.ready_save()
         first, second = [p['id'] for p in self.api(f'/api/saves/{save_id}')['players']]
@@ -503,6 +509,320 @@ class FlowTest(unittest.TestCase):
                          len([m for m in saved['messages'] if m['id'] <= draft['throughMessageId']]))
         self.assertEqual(after['report']['transcript']['omitted'], 0)
         self.assertEqual(after['messages'][-1]['content'], 'George: Open beat.')
+
+    def summary_rows(self):
+        with closing(sqlite3.connect(self.path / 'tableforge.sqlite3')) as conn:
+            return conn.execute('SELECT player_id,through_message_id,body FROM summaries ORDER BY id').fetchall()
+
+    def play_without_memory(self, save_id, player, beats):
+        # An older save that outgrew the budget before automatic summaries existed.
+        with patch.object(server, 'AUTO_SUMMARIES', False):
+            self.play_long_history(save_id, player, beats=beats)
+
+    def wait_for_summary(self, count=1):
+        for _ in range(100):
+            if len(self.summary_rows()) >= count and not server.AUTO_SUMMARY:
+                return self.summary_rows()
+            threading.Event().wait(0.05)
+        self.fail('No automatic summary was saved')
+
+    def test_background_summary_condenses_after_narration_at_soft_limit(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        self.play_long_history(save_id, first, beats=3)
+        rows = self.wait_for_summary()
+        self.assertIsNone(rows[0][0])
+        self.assertIn('Mock summary', rows[0][2])
+        state = self.api(f'/api/saves/{save_id}')
+        self.assertIsNone(state['summary']['player_id'])
+        report = self.api(f'/api/saves/{save_id}/context')['report']['transcript']
+        self.assertEqual(report['omitted'], 0)
+        self.assertGreater(report['summarized'], 0)
+        self.assertEqual(report['level'], 'ok')
+        with closing(sqlite3.connect(self.path / 'tableforge.sqlite3')) as conn:
+            self.assertIn('summary', [row[0] for row in conn.execute('SELECT purpose FROM ai_requests')])
+
+    def test_background_summary_waits_for_soft_limit(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        self.play_long_history(save_id, first, beats=2)
+        self.assertIsNone(server.schedule_summary(save_id))
+        self.assertEqual(self.summary_rows(), [])
+        self.assertEqual(self.api(f'/api/saves/{save_id}/context')['report']['transcript']['level'], 'ok')
+
+    def test_advance_at_cap_summarizes_first_then_narrates_once(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        # Reproduce a table that outgrew the cap with no summary, as at Bloodspear Hold.
+        with patch.object(server, 'schedule_summary'):
+            self.play_without_memory(save_id, first, beats=4)
+            before = self.api(f'/api/saves/{save_id}')
+            self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'We press on.'})
+            self.assertEqual(self.api(f'/api/saves/{save_id}/context')['report']['transcript']['level'], 'cap')
+            fake = FakeProvider()
+            real = ai.current_provider
+            # The summary uses the mock provider; the narration is captured.
+            with patch.object(ai, 'current_provider',
+                              side_effect=lambda *a: fake if server.GENERATING.get(save_id) == 'advance' else real()):
+                after = self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
+        self.assertEqual(len([m for m in after['messages'] if m['kind'] == 'ai']),
+                         len([m for m in before['messages'] if m['kind'] == 'ai']) + 1)
+        self.assertIsNone(after['summary']['player_id'])
+        self.assertIn('Mock summary', fake.context['summary']['body'])
+        self.assertEqual(fake.context['messages'][-1]['body'], 'We press on.')
+        self.assertNotIn(save_id, server.GENERATING)
+
+    def test_failed_summary_never_drops_chat_below_ceiling(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        with patch.object(server, 'schedule_summary'), \
+                patch.object(server, 'generate_summary', side_effect=ValueError('provider down')):
+            self.play_without_memory(save_id, first, beats=4)
+            self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'We press on.'})
+            fake = FakeProvider()
+            with patch.object(ai, 'current_provider', return_value=fake):
+                self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
+        self.assertEqual(self.summary_rows(), [])
+        self.assertEqual(self.api(f'/api/saves/{save_id}/context')['report']['transcript']['omitted'], 0)
+        self.assertEqual(fake.context['messages'][-1]['body'], 'We press on.')
+        self.assertIn('0' * 15000, [m['body'] for m in fake.context['messages']])
+        self.assertNotIn(save_id, server.GENERATING)
+
+    def test_failed_summary_past_ceiling_waits_and_keeps_state(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        with patch.object(server, 'schedule_summary'), \
+                patch.object(server, 'generate_summary', side_effect=ValueError('provider down')), \
+                patch.object(ai, 'TRANSCRIPT_CEILING', 60_000):
+            self.play_without_memory(save_id, first, beats=4)
+            before = self.api(f'/api/saves/{save_id}')
+            error = self.api_error(f'/api/saves/{save_id}/advance', self.override(save_id))
+        self.assertIn('Nothing was lost', error['error'])
+        after = self.api(f'/api/saves/{save_id}')
+        self.assertEqual(after['save']['beat'], before['save']['beat'])
+        self.assertEqual(len(after['messages']), len(before['messages']))
+        self.assertEqual([p['ready'] for p in after['players']], [p['ready'] for p in before['players']])
+        self.assertNotIn(save_id, server.GENERATING)
+
+    def test_advance_that_would_be_rejected_does_not_summarize(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        with patch.object(server, 'schedule_summary'):
+            self.play_without_memory(save_id, first, beats=4)
+            beat = self.api(f'/api/saves/{save_id}')['save']['beat']
+            error = self.api_error(f'/api/saves/{save_id}/advance', {'beat': beat})
+        self.assertIn('Ready', error['error'])
+        self.assertEqual(self.summary_rows(), [])
+
+    def test_automatic_summary_never_overwrites_a_newer_pilot_summary(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        with patch.object(server, 'schedule_summary'):
+            self.play_long_history(save_id, first, beats=3)
+        state = self.api(f'/api/saves/{save_id}')
+        history, _ = ai.split_beat(state['messages'])
+
+        def pilot_wins(*args):
+            self.api(f'/api/saves/{save_id}/summaries', {'playerId': first, 'text': 'Pilot correction.',
+                                                         'basedOn': None, 'throughMessageId': history[0]['id']})
+            return 'Stale automatic summary.'
+        with patch.object(server, 'generate_summary', side_effect=pilot_wins):
+            self.assertFalse(server.summarize_now(save_id, ai.TRANSCRIPT_SOFT))
+        self.assertEqual([row[2] for row in self.summary_rows()], ['Pilot correction.'])
+        self.assertNotIn(save_id, server.AUTO_SUMMARY)
+
+    def test_automatic_summary_records_facts_for_players_and_the_ai_dm(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        self.play_long_history(save_id, first, beats=3)
+        self.wait_for_summary()
+        state = self.api(f'/api/saves/{save_id}')
+        self.assertEqual(len(state['facts']), 1)
+        fact = state['facts'][0]
+        self.assertEqual((fact['category'], fact['status'], fact['locked']), ('hook', 'open', 0))
+        self.assertNotIn('tableforge-facts', state['summary']['body'])
+        preview = self.api(f'/api/saves/{save_id}/context')
+        self.assertIn('Established facts from play', preview['messages'][0]['content'])
+        self.assertIn(fact['body'], preview['messages'][0]['content'])
+        self.assertEqual(preview['report']['facts'], {'open': 1})
+
+    def test_facts_route_is_pilot_only_locked_and_revision_checked(self):
+        save_id = self.ready_save()
+        first, second = [p['id'] for p in self.api(f'/api/saves/{save_id}')['players']]
+        add = {'playerId': first, 'action': 'add', 'category': 'promise',
+               'body': 'Viktor owes George safe passage.', 'mutationId': 'add-1'}
+        self.assertIn('Pilot Mode', self.api_error(f'/api/saves/{save_id}/facts', add)['error'])
+        state = self.api(f'/api/saves/{save_id}/facts', {**add, 'pilot': True})
+        fact = state['facts'][0]
+        self.assertEqual((fact['locked'], fact['created_by']), (1, first))
+        edited = self.api(f'/api/saves/{save_id}/facts', {'playerId': second, 'pilot': True, 'action': 'edit',
+                                                          'id': fact['id'], 'revision': fact['revision'],
+                                                          'body': 'Viktor promised George safe passage.', 'mutationId': 'edit-1'})
+        self.assertEqual(edited['facts'][0]['updated_by'], second)
+        request = urllib.request.Request(self.base + f'/api/saves/{save_id}/facts', data=json.dumps({
+            'playerId': first, 'pilot': True, 'action': 'resolve', 'id': fact['id'],
+            'revision': fact['revision'], 'mutationId': 'resolve-1'}).encode(), headers={'Content-Type': 'application/json'})
+        with self.assertRaises(urllib.error.HTTPError) as caught:
+            urllib.request.urlopen(request)
+        self.assertEqual(caught.exception.code, 409)
+        self.assertEqual(json.loads(caught.exception.read())['code'], 'fact_conflict')
+
+    def test_facts_from_a_summary_that_lost_its_race_are_discarded(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        with patch.object(server, 'schedule_summary'):
+            self.play_long_history(save_id, first, beats=3)
+        history, _ = ai.split_beat(self.api(f'/api/saves/{save_id}')['messages'])
+
+        def pilot_wins(*args):
+            self.api(f'/api/saves/{save_id}/summaries', {'playerId': first, 'text': 'Pilot correction.',
+                                                         'basedOn': None, 'throughMessageId': history[0]['id']})
+            return 'Stale.\n```tableforge-facts\n{"add":[{"category":"hook","text":"Stale fact."}]}\n```'
+        with patch.object(server, 'generate_summary', side_effect=pilot_wins):
+            self.assertFalse(server.summarize_now(save_id, ai.TRANSCRIPT_SOFT))
+        self.assertEqual(self.api(f'/api/saves/{save_id}')['facts'], [])
+
+    def chapter_api(self, save_id, player, **payload):
+        return self.api(f'/api/saves/{save_id}/chapters', {'playerId': player, 'pilot': True, **payload})
+
+    def wait_for_recap(self, save_id, index=0):
+        for _ in range(100):
+            listed = self.api(f'/api/saves/{save_id}')['chapters']
+            if listed[index]['recap'] and not server.AUTO_SUMMARY:
+                return listed
+            threading.Event().wait(0.05)
+        self.fail('No chapter recap was saved')
+
+    def test_pilot_ends_a_chapter_and_its_recap_replaces_its_chat(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        with patch.object(server, 'schedule_summary'):
+            self.play_long_history(save_id, first, beats=2, size=2000)
+        self.api(f'/api/saves/{save_id}/messages', {'playerId': first, 'text': 'We head for the warrens.'})
+        state = self.api(f'/api/saves/{save_id}')
+        last_narration = [m['id'] for m in state['messages'] if m['kind'] == 'ai'][-1]
+        self.assertEqual([(c['number'], c['title']) for c in state['chapters']], [(1, 'Chapter 1')])
+        ended = self.chapter_api(save_id, first, action='end', number=1, title='The Warrens')
+        self.assertEqual([(c['number'], c['title'], c['ended_through']) for c in ended['chapters']],
+                         [(1, 'Chapter 1', last_narration), (2, 'The Warrens', None)])
+        listed = self.wait_for_recap(save_id)
+        self.assertIn('Mock recap of Chapter 1', listed[0]['recap'])
+        self.assertIsNone(listed[0]['recap_by'])
+        preview = self.api(f'/api/saves/{save_id}/context')
+        system = preview['messages'][0]['content']
+        self.assertIn('Story so far, by finished chapter', system)
+        self.assertIn('Current chapter: Chapter 2: The Warrens', system)
+        # Chapter 1's chat is covered by its recap; the open beat belongs to Chapter 2.
+        self.assertEqual([m['content'] for m in preview['messages'][1:]], ['George: We head for the warrens.'])
+        self.assertEqual(preview['report']['transcript']['summarized'],
+                         len([m for m in state['messages'] if m['id'] <= last_narration]))
+        self.assertEqual(preview['report']['chapters'], {'recapped': 1, 'pendingRecap': False})
+
+    def test_ending_a_chapter_is_pilot_only_and_guarded(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        self.assertIn('no completed play', self.api_error(f'/api/saves/{save_id}/chapters', {
+            'playerId': first, 'pilot': True, 'action': 'end', 'number': 1})['error'])
+        with patch.object(server, 'schedule_summary'):
+            self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
+            self.assertIn('Pilot Mode', self.api_error(f'/api/saves/{save_id}/chapters', {
+                'playerId': first, 'action': 'end', 'number': 1})['error'])
+            self.chapter_api(save_id, first, action='end', number=1)
+            # A second click for the same chapter must not end the next one too.
+            self.assertIn('already ended', self.api_error(f'/api/saves/{save_id}/chapters', {
+                'playerId': first, 'pilot': True, 'action': 'end', 'number': 1})['error'])
+            self.api(f'/api/saves/{save_id}/mode', {'mode': 'combat', 'playerId': first})
+            self.assertIn('Finish the fight', self.api_error(f'/api/saves/{save_id}/chapters', {
+                'playerId': first, 'pilot': True, 'action': 'end', 'number': 2})['error'])
+
+    def test_ai_dm_suggests_a_chapter_break_that_a_pilot_confirms_or_dismisses(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        fake = FakeProvider('The chief falls and the camp goes quiet.\n[Chapter: The Long Road Home]')
+        with patch.object(server, 'schedule_summary'), patch.object(ai, 'current_provider', return_value=fake):
+            state = self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
+        self.assertEqual(state['messages'][-1]['body'], 'The chief falls and the camp goes quiet.')
+        self.assertEqual(state['chapterSuggestion']['title'], 'The Long Road Home')
+        self.assertEqual(state['chapterSuggestion']['number'], 2)
+        self.assertIn('[Chapter: Short title', ai.chat_messages(fake.context)[0]['content'])
+        dismissed = self.chapter_api(save_id, first, action='dismiss')
+        self.assertIsNone(dismissed['chapterSuggestion'])
+        self.assertEqual(len(dismissed['chapters']), 1)
+        with patch.object(server, 'schedule_summary'), patch.object(ai, 'current_provider', return_value=fake):
+            self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
+            accepted = self.chapter_api(save_id, first, action='end', number=1,
+                                        title='The Long Road Home', source='suggestion')
+        self.assertEqual(accepted['chapters'][-1]['title'], 'The Long Road Home')
+        self.assertEqual(accepted['chapters'][0]['closed_source'], 'suggestion')
+        self.assertIsNone(accepted['chapterSuggestion'])
+
+    def test_pilot_recap_edit_wins_over_a_late_automatic_recap(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        with patch.object(server, 'schedule_summary'):
+            self.api(f'/api/saves/{save_id}/advance', self.override(save_id))
+            self.chapter_api(save_id, first, action='end', number=1)
+        closed = self.api(f'/api/saves/{save_id}')['chapters'][0]
+
+        def pilot_first(*args):
+            with closing(sqlite3.connect(self.path / 'tableforge.sqlite3')) as conn:
+                conn.execute("UPDATE chapters SET recap='Pilot recap.',recap_by=?,revision=revision+1 WHERE id=?",
+                             (first, closed['id']))
+                conn.commit()
+            return 'Late automatic recap.'
+        with patch.object(server, 'generate_summary', side_effect=pilot_first):
+            self.assertFalse(server.summarize_now(save_id, ai.TRANSCRIPT_SOFT))
+        listed = self.api(f'/api/saves/{save_id}')['chapters']
+        self.assertEqual(listed[0]['recap'], 'Pilot recap.')
+        edited = self.chapter_api(save_id, first, action='recap', chapterId=closed['id'],
+                                  revision=listed[0]['revision'], recap='Pilot recap, corrected.')
+        self.assertEqual(edited['chapters'][0]['recap'], 'Pilot recap, corrected.')
+        self.assertIn('changed since', self.api_error(f'/api/saves/{save_id}/chapters', {
+            'playerId': first, 'pilot': True, 'action': 'recap', 'chapterId': closed['id'],
+            'revision': listed[0]['revision'], 'recap': 'Stale.'})['error'])
+
+    @patch.object(server, 'AUTO_SUMMARIES', False)
+    def test_combat_reports_stay_verbatim_until_a_summary_covers_them(self):
+        save_id = self.ready_save()
+        first = self.api(f'/api/saves/{save_id}')['players'][0]['id']
+        self.play_long_history(save_id, first, beats=4, size=12000)
+        state = self.api(f'/api/saves/{save_id}')
+        narrations = [m for m in state['messages'] if m['kind'] == 'ai']
+        early, late = narrations[1], narrations[-1]
+        with closing(sqlite3.connect(self.path / 'tableforge.sqlite3')) as conn:
+            session = conn.execute('SELECT id FROM sessions WHERE save_id=?', (save_id,)).fetchone()[0]
+            # Seven fights: more than the old latest-five window.
+            for number in range(7):
+                stamp = early['created_at'] if number < 3 else late['created_at']
+                conn.execute("INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) "
+                             "VALUES (?,?,?,'combat_outcome',?,?)", (save_id, session, first, f'FIGHT-{number} ended.', stamp))
+            conn.commit()
+        before = self.api(f'/api/saves/{save_id}/context')
+        self.assertEqual(before['report']['combatOutcomes'], {'total': 7, 'sent': 7, 'summarized': 0, 'omitted': 0})
+        self.assertIn('FIGHT-0 ended.', before['messages'][0]['content'])
+
+        fake = FakeProvider('Summary text.')
+        with patch.object(ai, 'current_provider', return_value=fake):
+            self.api(f'/api/saves/{save_id}/summary-draft', {'playerId': first})
+        # The summary request carries the fights in its stretch so it can fold them in.
+        self.assertIn('FIGHT-0 ended.', ai.chat_messages(fake.context)[1]['content'])
+        self.api(f'/api/saves/{save_id}/summaries', {'playerId': first, 'text': 'The first three fights went well.',
+                                                     'basedOn': None, 'throughMessageId': early['id']})
+        after = self.api(f'/api/saves/{save_id}/context')
+        self.assertEqual(after['report']['combatOutcomes'], {'total': 7, 'sent': 4, 'summarized': 3, 'omitted': 0})
+        system = after['messages'][0]['content']
+        self.assertNotIn('FIGHT-0 ended.', system)
+        self.assertIn('FIGHT-6 ended.', system)
+
+        with closing(sqlite3.connect(self.path / 'tableforge.sqlite3')) as conn:
+            conn.execute("INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) "
+                         "VALUES (?,?,?,'combat_correction',?,?)",
+                         (save_id, session, first, 'Correction: FIGHT-0 left the boss alive.', late['created_at']))
+            conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (late['created_at'], save_id))
+            conn.commit()
+        # A correction to an already-summarized fight still reaches the AI-DM.
+        corrected = self.api(f'/api/saves/{save_id}/context')['messages'][0]['content']
+        self.assertIn('Correction: FIGHT-0 left the boss alive.', corrected)
 
     FOCUSED_MODULE = """# Well Job
 Always-known premise.

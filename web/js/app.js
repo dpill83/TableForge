@@ -492,15 +492,17 @@
     const s=state.save,el=$('typingIndicator');if(!s||!el)return;
     const names=s.players.filter(p=>p.id!==state.identity&&s.activity?.typing?.includes(p.id)).map(p=>p.character);
     const live=currentNarration();
-    const narrating=(aiDmBusy('advance')||live?.status==='waiting'||live?.status==='streaming')&&live?.status!=='failed';
-    const who=narrating&&!live?.text?'AI-DM':names.length>2?'Several players':names.join(' and ');
-    const text=who?`${who} ${names.length>1&&who!=='AI-DM'?'are':'is'} typing`:'';
+    // An Advance past the normal context cap waits for an automatic summary first.
+    const summarizing=s.activity?.aiDm==='summary-advance';
+    const narrating=!summarizing&&(aiDmBusy('advance')||live?.status==='waiting'||live?.status==='streaming')&&live?.status!=='failed';
+    const who=summarizing||narrating&&!live?.text?'AI-DM':names.length>2?'Several players':names.join(' and ');
+    const text=summarizing?'Summarizing the adventure':who?`${who} ${names.length>1&&who!=='AI-DM'?'are':'is'} typing`:'';
     if(el.dataset.text!==text){
       el.dataset.text=text;
       el.classList.toggle('ai',who==='AI-DM');
-      el.innerHTML=text?`<strong>${esc(who)}</strong>${esc(text.slice(who.length))} ${dots()}`:'';
+      el.innerHTML=!text?'':summarizing?`<strong>${esc(text)}</strong> ${dots()}`:`<strong>${esc(who)}</strong>${esc(text.slice(who.length))} ${dots()}`;
     }
-    $('tableStatus').textContent=narrating?(live?.text?'The AI-DM is narrating':'The AI-DM is typing'):`Session ${s.sessions.at(-1)?.number || 1} · ${combatPending()?'Combat paused':`${s.players.filter(p=>p.ready).length} of ${s.players.length} Ready`}`;
+    $('tableStatus').textContent=summarizing?'Summarizing the adventure…':narrating?(live?.text?'The AI-DM is narrating':'The AI-DM is typing'):`Session ${s.sessions.at(-1)?.number || 1} · ${combatPending()?'Combat paused':`${s.players.filter(p=>p.ready).length} of ${s.players.length} Ready`}`;
     const status=$('pilotAskStatus');
     if(status) status.innerHTML=aiDmBusy('ask')?'The AI-DM is typing '+dots():'';
   };
@@ -857,6 +859,7 @@
     $('correctCombat').classList.toggle('hidden',s.combat?.phase!=='complete');
     $('correctCombat').disabled=busy||locked;
     $('combatToggle').disabled=busy||locked;
+    renderChapterControls(s,busy||locked||unstarted);
     $('readyOverride').disabled=busy||locked;
     $('readyOverride').classList.toggle('hidden',locked||unstarted);
     $('combatStatus').classList.toggle('hidden',!locked);
@@ -1707,7 +1710,10 @@
     }
     if(transcript.omitted) flags.push({level:'warn',text:`${plural(transcript.omitted,'older message')} (${count(transcript.omittedChars)} characters, ${when(transcript.omittedFrom)} – ${when(transcript.omittedThrough)}) are not sent and not covered by a summary.`});
     if(outcomes?.omitted) flags.push({level:'warn',text:`${plural(outcomes.omitted,'older combat outcome')} not sent; only the latest ${count(outcomes.total-outcomes.omitted)} are included.`});
+    if(outcomes?.summarized) flags.push({level:'info',text:`${plural(outcomes.summarized,'earlier combat outcome')} ${outcomes.summarized===1?'is':'are'} folded into the summary or chapter recaps; ${count(outcomes.sent)} newer ${outcomes.sent===1?'is':'are'} sent word for word.`});
     if(transcript.currentBeatOverBudget) flags.push({level:'info',text:`The current beat is ${count(transcript.currentBeatChars)} characters, over the ${count(transcript.cap)}-character transcript budget. It is still sent in full.`});
+    if(transcript.level==='soft') flags.push({level:'info',text:`${count(transcript.unsummarizedChars)} characters of chat are not yet summarized. TableForge condenses older history automatically after the next narration.`});
+    if(transcript.level==='cap'||transcript.level==='ceiling') flags.push({level:'info',text:`${count(transcript.unsummarizedChars)} characters of chat are not yet summarized. The next Advance summarizes older history first, then narrates.`});
     if(transcript.summarized) flags.push({level:'info',text:`${plural(transcript.summarized,'earlier message')} are represented by the saved summary instead of verbatim.`});
     if(module.staleLocation) flags.push({level:'warn',text:'The saved party location no longer exists in this cartridge. Approach is used until a Pilot picks the right area.'});
     if(report.opening?.withheldCompanionFiles?.length) flags.push({level:'info',text:`Opening stage: ${report.opening.stage}. ${plural(report.opening.withheldCompanionFiles.length,'companion file')} withheld until exploration so future outcomes cannot be mistaken for history.`});
@@ -1724,8 +1730,12 @@
       const preview=await request('saves/'+state.save.save.id+'/context');
       state.locations=preview.report.locations||[];renderLocation();
       const warnings=contextFlags(preview.report).filter(flag=>flag.level==='warn').length;
+      const transcript=preview.report.transcript,level=transcript.level==='ceiling'?'cap':transcript.level||'ok';
       button.classList.toggle('flagged',!!warnings);
-      button.textContent=warnings?`Review Context · ${plural(warnings,'omission')}`:'Review Context';
+      // Context gauge: green below the soft limit, yellow while condensing is due, red at the cap.
+      button.dataset.memory=level;
+      button.title=`${count(transcript.unsummarizedChars)} characters of chat not yet summarized. Condensing starts at ${count(transcript.soft)}; an Advance summarizes first at ${count(transcript.normalCap)}.`;
+      button.textContent=warnings?`Review Context · ${plural(warnings,'omission')}`:`Review Context · ${Math.round(transcript.unsummarizedChars/1000)}k`;
     }catch(error){contextFlagKey='';console.error(error);}
   };
   const renderLocation=()=>{
@@ -1764,7 +1774,7 @@
       ${upgrade?`<p>This cartridge provides different instructions. Review them before changing future narration in this save. History and Ready states are preserved.</p><details class="context-message"><summary>Review cartridge ${esc(promptLabel(upgrade))}</summary><pre>${esc(upgrade.instructions)}</pre></details><div class="actions"><button class="btn" id="upgradeNarrationPrompt"${state.identity&&!state.save.activity.aiDm?'':' disabled'}>Use cartridge instructions for this save…</button></div>`:''}
       ${preview.promptUpdateError?`<p class="muted">${esc(preview.promptUpdateError)} The saved instructions remain in use.</p>`:''}</div>`;
     const flags=contextFlags(report).map(flag=>`<li class="context-flag ${flag.level}">${esc(flag.text)}</li>`).join('');
-    const summaryBlock=summary?`<div class="context-summary"><div class="muted">Saved by ${esc(summary.player_character||'a Pilot')} · ${esc(when(summary.created_at))}</div><div class="markdown-body">${TableForgeMarkdown.render(summary.body)}</div></div>`:'<p>No summary saved yet.</p>';
+    const summaryBlock=summary?`<div class="context-summary"><div class="muted">Saved by ${esc(summary.player_id?summary.player_character||'a Pilot':'TableForge (automatic)')} · ${esc(when(summary.created_at))}</div><div class="markdown-body">${TableForgeMarkdown.render(summary.body)}</div></div>`:'<p>No summary saved yet.</p>';
     const canSummarize=report.summaryAvailable>0;
     const payload=messages.map((m,i)=>`<details class="context-message"${i===messages.length-1?' open':''}><summary><strong>${esc(m.role)}</strong> · ${count(m.content.length)} characters</summary><pre>${esc(m.content)}</pre></details>`).join('');
     modal(`<h3>Review Context</h3>
@@ -1949,7 +1959,130 @@
     sharedNotesDialog={refresh};$('sharedNoteAdd').onclick=()=>editor(session.edit(null,category));
     refresh();session.resume();
   };
-  setInterval(()=>{notesSession()?.resume();sharedNotesDialog?.refresh();},3000);
+  // Journal: player-safe record of play. Facts come only from shared table chat; any player reads them,
+  // Pilots add, edit, resolve, or remove them, and a Pilot change locks the fact from automatic summaries.
+  const factCategories={location:'Where everyone is',promise:'Open promises and bargains',item:'Important items',condition:'Conditions',hook:'Unresolved hooks'};
+  let journalDialog=null;
+  const openJournal=()=>{
+    const s=state.save;if(!s)return;
+    const saveId=s.save.id;
+    let editing=null,markup='';
+    modal(`<h3>Journal</h3><p class="muted">What the table has established in play. TableForge keeps it up to date as it condenses older chat, and the AI-DM reads the open facts every turn.</p><div id="journal"><div class="section-title">Story so far</div><div id="journalStory" class="journal-story"></div><div class="section-title">Facts</div><div id="journalFacts" class="journal-facts"></div><div id="journalAdd"></div><div class="actions"><button class="btn" data-close>Close</button></div></div>`,'wide');
+    const root=$('journal');
+    const name=id=>state.save?.players.find(p=>p.id===id)?.character||'a Pilot';
+    const send=async body=>{
+      try{
+        const result=await request(`saves/${saveId}/facts`,{playerId:state.identity,pilot:true,mutationId:newRequestId(),...body});
+        if(state.save?.save.id===saveId){state.save=result;render();}
+        editing=null;refresh(true);return true;
+      }catch(error){notify(error);if(error.code==='fact_conflict'){editing=null;refresh(true);}return false;}
+    };
+    const meta=f=>f.locked?`Kept by ${esc(name(f.updated_by||f.created_by))}`:f.reason&&f.status==='open'&&f.updated_by===null&&f.revision>1?`Updated by TableForge · ${esc(f.reason)}`:'Recorded by TableForge';
+    const item=f=>{
+      const pilot=state.pilot&&state.identity;
+      if(editing===f.id)return `<li class="journal-fact editing" data-fact="${f.id}"><select class="fact-category">${Object.entries(factCategories).map(([k,v])=>`<option value="${k}"${k===f.category?' selected':''}>${esc(v)}</option>`).join('')}</select><textarea class="fact-body" rows="2" maxlength="500"></textarea><div class="actions"><button class="btn small fact-cancel">Cancel</button><button class="btn small good fact-save">Save</button></div></li>`;
+      const actions=!pilot?'':f.status==='open'?`<span class="note-actions"><button class="btn small fact-edit">Edit</button><button class="btn small fact-resolve">Resolve</button><button class="btn small warn fact-remove">Remove</button></span>`:`<span class="note-actions"><button class="btn small fact-reopen">Reopen</button></span>`;
+      return `<li class="journal-fact" data-fact="${f.id}"><div class="row"><span>${esc(f.body)}</span>${actions}</div><div class="muted note-meta">${f.status==='resolved'?esc(f.reason||'Resolved'):meta(f)}${f.locked?' · locked':''}</div></li>`;
+    };
+    let storyKey='',editingRecap=null;
+    const renderStory=()=>{
+      const listed=state.save?.save.id===saveId?state.save.chapters||[]:[];
+      const key=JSON.stringify([listed,state.save?.summary?.body,state.pilot,editingRecap]);
+      if(key===storyKey)return;
+      storyKey=key;
+      const pilot=!!(state.pilot&&state.identity);
+      const open=listed.at(-1),summary=state.save?.summary;
+      // The rolling summary describes the open chapter once it starts after the last recapped chapter.
+      const sofar=summary&&open&&summary.through_message_id>open.started_after?summary.body:'';
+      $('journalStory').innerHTML=listed.map(c=>{
+        const heading=`<h4>${esc(chapterName(c))}</h4>`;
+        if(c.ended_through===null)return `<section class="journal-chapter current">${heading}<p class="muted">In progress.</p>${sofar?`<div class="markdown-body">${TableForgeMarkdown.render(sofar)}</div>`:''}</section>`;
+        if(editingRecap===c.id)return `<section class="journal-chapter" data-chapter="${c.id}">${heading}<textarea class="recap-body" rows="8" maxlength="20000"></textarea><div class="actions"><button class="btn small recap-cancel">Cancel</button><button class="btn small good recap-save">Save recap</button></div></section>`;
+        const by=c.recap_by?`Edited by ${esc(name(c.recap_by))}`:'Written by TableForge';
+        return `<section class="journal-chapter" data-chapter="${c.id}">${heading}${c.recap?`<div class="markdown-body">${TableForgeMarkdown.render(c.recap)}</div><div class="muted note-meta">${by}${pilot?' · <button class="btn small recap-edit">Edit recap</button>':''}</div>`:'<p class="muted">Recap being written…</p>'}</section>`;
+      }).join('')||'<p>The story begins with the first narration.</p>';
+      const chapter=el=>listed.find(c=>c.id===Number(el.closest('[data-chapter]').dataset.chapter));
+      root.querySelectorAll('.recap-edit').forEach(b=>b.onclick=()=>{const c=chapter(b);editingRecap=c.id;renderStory();const el=root.querySelector(`[data-chapter="${c.id}"] .recap-body`);el.value=c.recap;el.focus();});
+      root.querySelectorAll('.recap-cancel').forEach(b=>b.onclick=()=>{editingRecap=null;renderStory();});
+      root.querySelectorAll('.recap-save').forEach(b=>b.onclick=async()=>{
+        const c=chapter(b),recap=b.closest('[data-chapter]').querySelector('.recap-body').value.trim();
+        if(!recap)return notify(Error('The recap cannot be empty.'));
+        try{
+          const result=await request(`saves/${saveId}/chapters`,{playerId:state.identity,pilot:true,action:'recap',chapterId:c.id,revision:c.revision,recap});
+          if(state.save?.save.id===saveId){state.save=result;render();}
+          editingRecap=null;renderStory();
+        }catch(error){notify(error);}
+      });
+    };
+    const refresh=(force=false)=>{
+      if(!root.isConnected)return;
+      if(editingRecap===null)renderStory();
+      if(editing!==null&&!force)return;  // Never clobber a fact being edited.
+      const all=state.save?.save.id===saveId?state.save.facts||[]:[];
+      const open=all.filter(f=>f.status==='open'),resolved=all.filter(f=>f.status==='resolved');
+      const groups=Object.entries(factCategories).map(([key,label])=>{
+        const list=open.filter(f=>f.category===key);
+        return list.length?`<section class="journal-group"><h4>${esc(label)}</h4><ul>${list.map(item).join('')}</ul></section>`:'';
+      }).join('');
+      const key=JSON.stringify([all,state.pilot,editing]);
+      if(key!==markup){
+        markup=key;
+        $('journalFacts').innerHTML=(groups||'<p>No facts recorded yet. TableForge adds them as it condenses older chat.</p>')
+          +(resolved.length?`<details class="journal-resolved"><summary>Resolved (${resolved.length})</summary><ul>${resolved.map(item).join('')}</ul></details>`:'');
+        const fact=el=>all.find(f=>f.id===Number(el.closest('[data-fact]').dataset.fact));
+        root.querySelectorAll('.fact-edit').forEach(b=>b.onclick=()=>{editing=fact(b).id;refresh(true);const f=fact(b);const el=root.querySelector(`[data-fact="${f.id}"] .fact-body`);el.value=f.body;el.focus();});
+        root.querySelectorAll('.fact-cancel').forEach(b=>b.onclick=()=>{editing=null;refresh(true);});
+        root.querySelectorAll('.fact-save').forEach(b=>b.onclick=()=>{const f=fact(b),li=b.closest('[data-fact]');send({action:'edit',id:f.id,revision:f.revision,category:li.querySelector('.fact-category').value,body:li.querySelector('.fact-body').value});});
+        root.querySelectorAll('.fact-resolve').forEach(b=>b.onclick=()=>{const f=fact(b);send({action:'resolve',id:f.id,revision:f.revision});});
+        root.querySelectorAll('.fact-reopen').forEach(b=>b.onclick=()=>{const f=fact(b);send({action:'reopen',id:f.id,revision:f.revision});});
+        root.querySelectorAll('.fact-remove').forEach(b=>b.onclick=()=>{const f=fact(b);if(confirm(`Remove “${f.body}”? It stays in the save history but leaves the Journal and the AI-DM's context.`))send({action:'remove',id:f.id,revision:f.revision});});
+      }
+      const add=$('journalAdd'),pilot=!!(state.pilot&&state.identity);
+      if(add.dataset.pilot!==String(pilot)){
+        add.dataset.pilot=String(pilot);
+        add.innerHTML=pilot?`<div class="journal-add"><select id="factCategory">${Object.entries(factCategories).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join('')}</select><input id="factBody" maxlength="500" placeholder="Add a fact the AI-DM must keep straight"><button class="btn small primary" id="factAdd">Add fact</button></div>`:'';
+        if(pilot)$('factAdd').onclick=async()=>{const body=$('factBody').value.trim();if(!body)return notify(Error('Enter the fact to add.'));if(await send({action:'add',category:$('factCategory').value,body}))$('factBody').value='';};
+      }
+    };
+    journalDialog={refresh};
+    refresh(true);
+  };
+  $('showJournal').onclick=openJournal;
+  // Chapters: the prologue ends on its own when the party enters the site. After that the AI-DM may
+  // suggest a break, and any Pilot can end the chapter. Its recap then replaces its chat for the AI-DM.
+  const chapterName=c=>c.title===`Chapter ${c.number}`?c.title:`Chapter ${c.number}: ${c.title}`;
+  const endChapter=async(number,title,source)=>{
+    try{
+      state.save=await request(`saves/${state.save.save.id}/chapters`,{playerId:state.identity,pilot:true,action:'end',number,title,source});
+      render();journalDialog?.refresh();return true;
+    }catch(error){notify(error);return false;}
+  };
+  function renderChapterControls(s,blocked){
+    const listed=s.chapters||[],open=listed.at(-1),suggestion=s.chapterSuggestion;
+    const box=$('chapterSuggestion');
+    const key=JSON.stringify([suggestion,open?.number,blocked]);
+    if(box.dataset.key!==key){
+      box.dataset.key=key;
+      const show=!!(suggestion&&open&&suggestion.number===open.number+1);
+      box.classList.toggle('hidden',!show);
+      box.innerHTML=show?`The AI-DM thinks ${esc(chapterName(open))} is complete.<div class="actions"><button class="btn small primary" id="chapterAccept"${blocked?' disabled':''}>Start ${esc(chapterName(suggestion))}</button><button class="btn small" id="chapterDismiss">Not yet</button></div>`:'';
+      if(show){
+        $('chapterAccept').onclick=()=>endChapter(open.number,suggestion.title,'suggestion');
+        $('chapterDismiss').onclick=async()=>{
+          try{state.save=await request(`saves/${s.save.id}/chapters`,{playerId:state.identity,pilot:true,action:'dismiss'});render();}
+          catch(error){notify(error);}
+        };
+      }
+    }
+    $('endChapter').disabled=blocked||!open;
+    $('endChapter').textContent=open?`End Chapter ${open.number}…`:'End chapter…';
+  };
+  $('endChapter').onclick=()=>{
+    const s=state.save,open=s?.chapters?.at(-1);if(!open||!state.pilot||!state.identity)return;
+    modal(`<h3>End ${esc(chapterName(open))}?</h3><p>Everything up to the latest AI-DM narration becomes this chapter's recap in the Journal, and the recap replaces that chat in the AI-DM's context. Messages sent since then start the next chapter.</p><label>Next chapter title <span class="muted">(optional)</span><input id="nextChapterTitle" maxlength="80" placeholder="Chapter ${open.number+1}"></label><div class="actions"><button class="btn" data-close>Cancel</button><button class="btn primary" id="confirmEndChapter">End chapter</button></div>`);
+    $('confirmEndChapter').onclick=async()=>{if(await endChapter(open.number,$('nextChapterTitle').value.trim(),'pilot'))$('modalRoot').replaceChildren();};
+  };
+  setInterval(()=>{notesSession()?.resume();sharedNotesDialog?.refresh();journalDialog?.refresh();},3000);
   const openModuleViewer=async()=>{
     if(!state.pilot){
       modal('<h3>Module Viewer</h3><p>Enable Pilot Mode to read the adventure module, which may contain spoilers.</p><div class="actions"><button class="btn" data-close>Close</button></div>');

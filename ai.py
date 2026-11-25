@@ -14,7 +14,9 @@ import urllib.request
 
 import module_context
 import cartridge_geometry
+import chapters
 import combat
+import facts
 import narration_choices
 import narration_pacing
 import opening_flow
@@ -31,7 +33,10 @@ SUMMARY_PROMPT = (
     'You maintain the durable campaign summary for a TableForge playthrough. '
     'Rewrite the previous summary and the new transcript into one cumulative summary of what has happened: '
     'party decisions, discoveries, NPCs met and their attitudes, locations visited, items gained or lost, '
-    'combat outcomes, and open threads. Use only facts from the summary and transcript. '
+    'combat outcomes, and open threads. Always keep where each character currently is (even when '
+    'the party is split), offers or bargains still awaiting an answer and who has not answered, '
+    'declared actions or rolls not yet resolved, and objects whose condition changed. '
+    'Use only facts from the summary and transcript. '
     'Preserve relevant public DM rulings with their scene and conditions. '
     'Do not turn hypothetical attempts or pending rolls into events. '
     'Be concise, use plain prose or short bullet lists, and do not narrate a new beat.'
@@ -55,11 +60,19 @@ GENERIC_START_REQUEST = (
 )
 START_NOTES_LIMIT = 20_000
 MODULE_CAP = 60_000
-TRANSCRIPT_CAP = 40_000
-# Older history is summarized so the verbatim window keeps headroom for new play.
-SUMMARY_WINDOW = TRANSCRIPT_CAP // 2
+# Unsummarized table chat, in characters. At the soft limit TableForge condenses
+# older history in the background after the next narration. An Advance at the cap
+# summarizes first. Chat is only left out past the ceiling, so nothing is dropped
+# without a summary covering it unless summarizing keeps failing.
+TRANSCRIPT_SOFT = 40_000
+TRANSCRIPT_CAP = 60_000
+TRANSCRIPT_CEILING = 120_000
+PILOT_TRANSCRIPT_CAP = 40_000
+# Summaries leave this much recent history verbatim so new play has headroom.
+SUMMARY_WINDOW = 20_000
 SUMMARY_INPUT_CAP = 120_000
-COMBAT_OUTCOME_LIMIT = 5
+# Combat outcomes and corrections stay verbatim until a summary or chapter recap covers them.
+COMBAT_KINDS = ('combat_outcome', 'combat_correction')
 OPENAI_URL = 'https://api.openai.com/v1/chat/completions'
 OPENAI_TIMEOUT = 60
 NARRATION_STREAM_SECONDS = 180
@@ -171,13 +184,32 @@ def recent_history(history, budget):
     return kept
 
 
-def select_transcript(messages, summary=None, cap=TRANSCRIPT_CAP):
+def unsummarized_chars(messages, summary=None):
+    """Size of the table chat a summary does not yet cover, open beat included."""
+    # Public OOC questions never reach narration context, so they do not count.
+    table = context_messages([m for m in messages if m['kind'] != 'ooc'])
+    return sum(message_size(m) for m in unsummarized(table, summary))
+
+
+def memory_level(chars):
+    if chars >= TRANSCRIPT_CEILING:
+        return 'ceiling'
+    if chars >= TRANSCRIPT_CAP:
+        return 'cap'
+    if chars >= TRANSCRIPT_SOFT:
+        return 'soft'
+    return 'ok'
+
+
+def select_transcript(messages, summary=None, cap=None):
     """Always keep the open beat; fill the remaining budget with the newest unsummarized history."""
+    cap = TRANSCRIPT_CEILING if cap is None else cap
     messages = context_messages(messages)
     history, current = split_beat(unsummarized(messages, summary))
     current_chars = sum(message_size(message) for message in current)
     kept = recent_history(history, max(0, cap - current_chars))
     omitted = history[:len(history) - len(kept)]
+    chars = current_chars + sum(message_size(message) for message in history)
     report = {
         'total': len(messages),
         'summarized': len(messages) - len(history) - len(current),
@@ -190,13 +222,20 @@ def select_transcript(messages, summary=None, cap=TRANSCRIPT_CAP):
         'omittedFrom': omitted[0]['created_at'] if omitted else None,
         'omittedThrough': omitted[-1]['created_at'] if omitted else None,
         'cap': cap,
+        'unsummarizedChars': chars,
+        'level': memory_level(chars),
+        'soft': TRANSCRIPT_SOFT,
+        'normalCap': TRANSCRIPT_CAP,
     }
     return kept + current, report
 
 
-def summary_range(messages, summary=None):
-    """Oldest unsummarized history outside the recent window, sized for one summary request."""
+def summary_range(messages, summary=None, limit=None):
+    """Oldest unsummarized history outside the recent window, sized for one summary request.
+    `limit` stops the range at a finished chapter whose recap is still pending."""
     history, current = split_beat(unsummarized(messages, summary))
+    if limit is not None:
+        history = [m for m in history if m['id'] <= limit]
     current_chars = sum(message_size(message) for message in current)
     kept = recent_history(history, max(0, SUMMARY_WINDOW - current_chars))
     candidates = history[:len(history) - len(kept)]
@@ -209,7 +248,76 @@ def summary_range(messages, summary=None):
     return selected
 
 
-def trim_transcript(messages, cap=TRANSCRIPT_CAP):
+def summary_due(messages, summary=None, threshold=TRANSCRIPT_SOFT, limit=None):
+    """Whether unsummarized chat reached `threshold` and older history can be condensed."""
+    return (unsummarized_chars(messages, summary) >= threshold
+            and bool(summary_range(messages, summary, limit)))
+
+
+def effective_summary(state):
+    """What already covers older chat: chapter recaps, then the rolling summary of play since.
+
+    Returns a summary-shaped dict whose through_message_id is the coverage point, or None.
+    A rolling summary that ends inside recapped chapters is superseded and not sent."""
+    end = chapters.recapped_end(state.get('chapters') or [])
+    summary = state.get('summary')
+    if summary and summary['through_message_id'] > end:
+        return summary
+    if end:
+        return {'id': summary['id'] if summary else None, 'body': '', 'through_message_id': end}
+    return None
+
+
+def summary_limit(state):
+    pending = chapters.pending_recap(state.get('chapters') or [])
+    return pending['ended_through'] if pending else None
+
+
+def recap_chars(state, chapter):
+    covered = (effective_summary(state) or {}).get('through_message_id', 0)
+    return sum(message_size(m) for m in context_messages(state['messages'])
+               if covered < m['id'] <= chapter['ended_through'])
+
+
+def message_time(state, message_id):
+    return next((m.get('created_at') for m in state['messages'] if m['id'] == message_id), None) if message_id else None
+
+
+def combat_reports(state, after=None, through=None):
+    """Recorded combat outcomes and corrections after `after` and up to `through` (timestamps)."""
+    return [e for e in state.get('events', []) if e['kind'] in COMBAT_KINDS
+            and (after is None or e['created_at'] > after)
+            and (through is None or e['created_at'] <= through)]
+
+
+def covered_time(state):
+    """Combat reports recorded up to this time are folded into a summary or chapter recap."""
+    summary = effective_summary(state)
+    return message_time(state, summary['through_message_id']) if summary else None
+
+
+def report_inputs(state, through_message_id):
+    """Combat reports a summary through `through_message_id` must fold in."""
+    through = message_time(state, through_message_id)
+    if through is None:
+        return []  # Without a time to bound the stretch, fold in nothing rather than later fights.
+    return [{'kind': e['kind'], 'body': e['body']}
+            for e in combat_reports(state, covered_time(state), through)]
+
+
+def memory_due(state, threshold=TRANSCRIPT_SOFT):
+    """The next automatic memory job: 'recap' for a finished chapter, 'summary', or None."""
+    pending = chapters.pending_recap(state.get('chapters') or [])
+    summary = effective_summary(state)
+    if pending:
+        if recap_chars(state, pending) <= SUMMARY_INPUT_CAP:
+            return 'recap'
+        # Condense the chapter's older play first so its recap request stays bounded.
+        return 'summary' if summary_range(state['messages'], summary, pending['ended_through']) else None
+    return 'summary' if summary_due(state['messages'], summary, threshold) else None
+
+
+def trim_transcript(messages, cap=PILOT_TRANSCRIPT_CAP):
     kept = []
     total = 0
     for message in reversed(list(messages)):
@@ -259,9 +367,12 @@ def build_context(state, data_dir, purpose='advance', start_notes=None):
     # Public questions can establish rulings but never declare player actions. Keep
     # them outside beat detection, retrieval, opening progression, and choices.
     rulings = public_questions.recent_rulings(state['messages'])
+    # Measured before OOC messages are set aside: a summary may end on one.
+    combat_after = covered_time(state)
     state = {**state, 'messages': [m for m in state['messages'] if m['kind'] != 'ooc']}
     cartridge = state['cartridge']
-    summary = state.get('summary')
+    summary = effective_summary(state)
+    listed = state.get('chapters') or []
     adventure = module_context.load(data_dir, cartridge['id'], cartridge['resources'])
     prompt = runtime_prompts.load_saved(data_dir, state['save']['id']) if purpose != 'ask' else None
     opening_stage = (state['save'].get('opening_stage') if prompt and prompt['kind'] == 'stage3'
@@ -296,7 +407,14 @@ def build_context(state, data_dir, purpose='advance', start_notes=None):
         'module': module[:MODULE_CAP],
         'location': location,
         'beat': state['save']['beat'],
-        'summary': {'body': summary['body'], 'throughMessageId': summary['through_message_id']} if summary else None,
+        'summary': ({'body': summary['body'], 'throughMessageId': summary['through_message_id']}
+                    if summary and summary['body'] else None),
+        'chapterRecaps': [{'number': c['number'], 'title': c['title'], 'recap': c['recap']}
+                          for c in listed if c['ended_through'] is not None and c['recap']
+                          and c['ended_through'] <= (summary or {}).get('through_message_id', 0)],
+        'chapter': ({'number': listed[-1]['number'], 'title': listed[-1]['title']} if listed else None),
+        'facts': [{'category': f['category'], 'body': f['body'], 'status': f['status']}
+                  for f in facts.open_facts(state.get('facts'))],
         'messages': [{'kind': m['kind'], 'name': m['name'], 'body': m['body']} for m in messages],
         # Companion artifacts include future continuity and completed outcomes.
         # They are authored references, not the record of the new playthrough.
@@ -307,9 +425,15 @@ def build_context(state, data_dir, purpose='advance', start_notes=None):
                    'roomsInRunData': len(adventure.rooms), 'staleLocation': stale_location},
         'locations': adventure.locations() if adventure.focused else [],
         'transcript': transcript,
-        'summaryAvailable': len(summary_range(state['messages'], summary)),
+        'summaryAvailable': len(summary_range(state['messages'], summary, summary_limit(state))),
+        'chapters': {'recapped': sum(1 for c in listed if c['recap']),
+                     'pendingRecap': bool(chapters.pending_recap(listed))},
+        'facts': {'open': len(facts.open_facts(state.get('facts')))},
     }
-    context['combatCorrections'] = [e['body'] for e in state.get('events', []) if e['kind'] == 'combat_correction']
+    # A correction to a fight that was already summarized is newer than the summary, so it
+    # stays verbatim until a later summary folds it in.
+    reports = combat_reports(state, after=combat_after)
+    context['combatCorrections'] = [e['body'] for e in reports if e['kind'] == 'combat_correction']
     handoff = state.get('combat')
     if handoff and handoff['phase'] in ('resuming', 'failed'):
         context['combatResume'] = {key: handoff[key] for key in ('id', 'outcome', 'skipped')}
@@ -352,18 +476,24 @@ def build_context(state, data_dir, purpose='advance', start_notes=None):
         context['arrival'] = {'connectionId': arrival_id if endpoint else None, 'endpoint': endpoint}
         report['arrival'] = context['arrival']
     context['locationInstructions'] = adventure.marker_instructions()
+    if not opening_stage:
+        context['chapterInstructions'] = chapters.INSTRUCTIONS
     outcomes = [event for event in state.get('events', []) if event['kind'] == 'combat_outcome']
     context['checkpoint'] = state.get('checkpoint')
-    context['combatOutcomes'] = [{'body': event['body'], 'createdAt': event['created_at']}
-                                 for event in outcomes[-COMBAT_OUTCOME_LIMIT:]]
-    report['combatOutcomes'] = {'total': len(outcomes), 'omitted': max(0, len(outcomes) - COMBAT_OUTCOME_LIMIT)}
+    sent = [event for event in reports if event['kind'] == 'combat_outcome']
+    context['combatOutcomes'] = [{'body': event['body'], 'createdAt': event['created_at']} for event in sent]
+    report['combatOutcomes'] = {'total': len(outcomes), 'sent': len(sent),
+                                'summarized': len(outcomes) - len(sent), 'omitted': 0}
     return context
 
 
-def build_summary_context(state):
-    """Context for rolling the oldest out-of-window history into the durable summary."""
-    summary = state.get('summary')
-    selected = summary_range(state['messages'], summary)
+def build_summary_context(state, with_facts=False):
+    """Context for rolling the oldest out-of-window history into the durable summary.
+
+    Automatic summaries also maintain the facts ledger; Pilot drafts stay summary-only.
+    """
+    summary = effective_summary(state)
+    selected = summary_range(state['messages'], summary, summary_limit(state))
     if not selected:
         raise ValueError('There is no older history to summarize yet')
     return {
@@ -371,20 +501,64 @@ def build_summary_context(state):
         'title': state['cartridge']['title'],
         'beat': state['save']['beat'],
         'previousSummary': summary['body'] if summary else '',
-        'messages': [{'kind': m['kind'], 'name': m['name'],
-                      'body': ('Public OOC question (no action performed): ' + m['body']
-                               + '\nPublic AI-DM answer: ' + (m.get('ooc', {}).get('answer') or '(pending)'))
-                              if m['kind'] == 'ooc' else m['body']} for m in selected],
+        'messages': summary_messages(selected),
+        'combatReports': report_inputs(state, selected[-1]['id']),
         'fromMessageId': selected[0]['id'],
         'throughMessageId': selected[-1]['id'],
+        **(ledger(state) if with_facts else {}),
+    }
+
+
+def summary_messages(selected):
+    return [{'kind': m['kind'], 'name': m['name'],
+             'body': ('Public OOC question (no action performed): ' + m['body']
+                      + '\nPublic AI-DM answer: ' + (m.get('ooc', {}).get('answer') or '(pending)'))
+                     if m['kind'] == 'ooc' else m['body']} for m in selected]
+
+
+def ledger(state):
+    return {'facts': [{'id': f['id'], 'category': f['category'], 'body': f['body'],
+                       'status': f['status'], 'locked': f['locked']}
+                      for f in facts.open_facts(state.get('facts'))]}
+
+
+def build_recap_context(state, chapter):
+    """Context for the recap of a finished chapter: its rolling summary plus the rest of its chat."""
+    summary = effective_summary(state)
+    covered = summary['through_message_id'] if summary else 0
+    selected = [m for m in context_messages(state['messages']) if covered < m['id'] <= chapter['ended_through']]
+    previous = summary['body'] if summary else ''
+    if covered > chapter['ended_through']:
+        # A summary that started before the chapter closed may run past its end.
+        previous = '(This summary may include events after the chapter ended; recap only up to its end.)\n' + previous
+    return {
+        'purpose': 'summary',
+        'recap': True,
+        'title': state['cartridge']['title'],
+        'beat': state['save']['beat'],
+        'chapterId': chapter['id'],
+        'chapter': {'number': chapter['number'], 'title': chapter['title']},
+        'previousSummary': previous,
+        'messages': summary_messages(selected),
+        'combatReports': report_inputs(state, chapter['ended_through']),
+        'throughMessageId': chapter['ended_through'],
+        **ledger(state),
     }
 
 
 def summary_text(context):
-    if not context.get('summary'):
-        return ''
-    return ('\n\nSummary of earlier play (older transcript messages are not repeated below):\n'
-            + context['summary']['body'])
+    text = ''
+    recaps = context.get('chapterRecaps') or []
+    if recaps:
+        text += ('\n\nStory so far, by finished chapter (their transcript messages are not repeated below):\n'
+                 + '\n\n'.join(chapters.label(c['number'], c['title']) + '\n' + c['recap'] for c in recaps))
+    chapter = context.get('chapter')
+    if chapter and (recaps or chapter['number'] > 1):
+        text += '\n\nCurrent chapter: ' + chapters.label(chapter['number'], chapter['title'])
+    if context.get('summary'):
+        text += ('\n\nSummary of earlier play (older transcript messages are not repeated below):\n'
+                 + context['summary']['body'])
+    return text
 
 
 def chat_messages(context):
@@ -395,6 +569,7 @@ def chat_messages(context):
     if context.get('purpose') == 'summary':
         return summary_chat_messages(context)
     system = context['narrationPrompt']['instructions'] + context.get('locationInstructions', '')
+    system += context.get('chapterInstructions', '')
     system += combat.INSTRUCTIONS
     system += narration_pacing.INSTRUCTIONS
     if context.get('choiceInstructions'):
@@ -403,6 +578,7 @@ def chat_messages(context):
     system += f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
     system += optional_resource_text(context)
     system += summary_text(context)
+    system += facts.narration_text(context.get('facts'))
     if context.get('publicRulings'):
         system += ('\n\nPublic OOC exchanges are NEVER actions or outcomes. Carry forward explicit AI-DM '
                    'rulings for the character, scene, and conditions they apply to, including when '
@@ -509,6 +685,7 @@ def ask_chat_messages(context):
     system = ASK_PROMPT + f"\n\nAdventure: {context['title']}\n\nModule:\n{context['module']}"
     system += optional_resource_text(context)
     system += summary_text(context)
+    system += facts.narration_text(context.get('facts'))
     if context.get('combatCorrections'):
         system += '\n\nRecorded combat corrections:\n' + '\n'.join(context['combatCorrections'])
     table = context.get('messages') or []
@@ -547,10 +724,25 @@ def optional_resource_text(context):
 
 def summary_chat_messages(context):
     transcript = '\n\n'.join(f"{item['name']}: {item['body']}" for item in context['messages'])
+    if context.get('recap'):
+        chapter = context['chapter']
+        system = chapters.RECAP_PROMPT
+        user = (chapters.label(chapter['number'], chapter['title']) + "\n\nSummary of this chapter's earlier play:\n"
+                + (context['previousSummary'] or '(none)'))
+    else:
+        system = SUMMARY_PROMPT
+        user = 'Previous summary:\n' + (context['previousSummary'] or '(none yet)')
+    if 'facts' in context:
+        system += '\n\n' + facts.INSTRUCTIONS
+        user += '\n\nCurrent facts ledger:\n' + facts.summary_input(context['facts'])
+    if context.get('combatReports'):
+        # Humans run combat; their reports are the record of how each fight ended.
+        user += ('\n\nRecorded combat reports in this stretch (the table\'s own account of how each fight '
+                 'ended; treat them as what happened, and apply corrections over earlier reports):\n'
+                 + '\n'.join('- ' + item['body'] for item in context['combatReports']))
     return [
-        {'role': 'system', 'content': SUMMARY_PROMPT + f"\n\nAdventure: {context['title']}"},
-        {'role': 'user', 'content': 'Previous summary:\n' + (context['previousSummary'] or '(none yet)')
-                                    + '\n\nNew transcript to fold in:\n' + transcript},
+        {'role': 'system', 'content': system + f"\n\nAdventure: {context['title']}"},
+        {'role': 'user', 'content': user + '\n\nNew transcript to fold in:\n' + transcript},
     ]
 
 
@@ -604,7 +796,16 @@ class MockProvider:
             on_request(json.dumps({'model': runtime_status()['model'], 'messages': chat_messages(context)}))
         if context.get('purpose') == 'summary':
             previous = context['previousSummary'] + ' ' if context['previousSummary'] else ''
-            return f"Mock summary: {previous}{len(context['messages'])} more messages of play happened."
+            text = f"Mock summary: {previous}{len(context['messages'])} more messages of play happened."
+            if context.get('recap'):
+                text = (f"Mock recap of {chapters.label(context['chapter']['number'], context['chapter']['title'])}. "
+                        f"{len(context['messages'])} messages of play since the last summary.")
+            if 'facts' in context:
+                # Lets mock play exercise the ledger without a provider.
+                operations = {'add': [{'category': 'hook', 'text':
+                              f"Mock fact: play through message {context['throughMessageId']} was summarized."}]}
+                text += '\n\n```tableforge-facts\n' + json.dumps(operations) + '\n```'
+            return text
         if context.get('purpose') == 'ask':
             return 'Mock AI-DM (Pilot): This is an operational answer. No table beat was advanced.'
         if context.get('purpose') == 'ooc':

@@ -35,6 +35,8 @@ import opening_flow
 import runtime_prompts
 import table_map
 import public_questions
+import facts
+import chapters
 from local_config import load_env
 
 ROOT = Path(__file__).resolve().parent
@@ -42,8 +44,12 @@ load_env(ROOT / '.env')
 WEB = ROOT / "web"
 DATA = Path(os.environ.get("TABLEFORGE_DATA", ROOT / "data"))
 LOCK = threading.RLock()
-# save_id -> 'advance' | 'ask' while the AI-DM is generating.
+# save_id -> 'advance' | 'ask' | 'summary' | 'summary-advance' while the AI-DM is generating.
 GENERATING = {}
+# save_id -> threading.Event for a running automatic summary; it never holds GENERATING.
+AUTO_SUMMARY = {}
+AUTO_SUMMARIES = True
+AUTO_SUMMARY_WAIT = 120
 # save_id -> {player_id: monotonic expiry}; presence only, never saved.
 TYPING = {}
 TYPING_SECONDS = 6
@@ -282,6 +288,8 @@ def initialize():
         conn.execute('CREATE UNIQUE INDEX IF NOT EXISTS party_note_client ON party_notes(save_id,client_key) '
                      'WHERE client_key IS NOT NULL')
         public_questions.initialize(conn, utc())
+        facts.initialize(conn)
+        chapters.initialize(conn)
         columns = {row['name'] for row in conn.execute('PRAGMA table_info(pilot_messages)')}
         if 'thread_player_id' not in columns:
             # NULL retains the old shared archive without guessing reply ownership.
@@ -688,6 +696,9 @@ def snapshot(conn, save_id, pilot_player_id=None):
         'events': [dict(row) for row in conn.execute('SELECT * FROM session_events WHERE save_id=? ORDER BY id', (save_id,))],
         'checkpoint': checkpoint,
         'summary': dict(summary) if summary else None,
+        'facts': facts.visible(conn, save_id),
+        'chapters': chapters.visible(conn, dict(save)),
+        'chapterSuggestion': json.loads(save['chapter_suggestion']) if save['chapter_suggestion'] else None,
         'notes': [dict(row) for row in conn.execute(
             'SELECT id,category,title,body,created_by,created_at,updated_by,updated_at,revision,client_key FROM party_notes '
             'WHERE save_id=? AND removed_at IS NULL ORDER BY category, title COLLATE NOCASE, id', (save_id,))],
@@ -795,8 +806,9 @@ def fail_combat_resume(conn, save_id, context):
         conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
 
 
-def begin_advance(conn, save_id, payload):
-    state = snapshot(conn, save_id)
+def check_advance(conn, save_id, state, payload):
+    """Reject an Advance that cannot run; returns the Pilot who overrode Ready, if any."""
+    initiator = None
     if not state['cartridge']['available']:
         raise ValueError('Locate the cartridge before advancing')
     if not active_session(conn, save_id):
@@ -808,11 +820,17 @@ def begin_advance(conn, save_id, payload):
         initiator = require_player(state, payload.get('playerId'))
     elif not all(p['ready'] for p in state['players']):
         raise ValueError('Waiting for all players to be Ready')
-    beat = state['save']['beat']
-    if payload.get('beat') is not None and int(payload['beat']) != beat:
+    if payload.get('beat') is not None and int(payload['beat']) != state['save']['beat']:
         raise ValueError('This beat has already advanced')
     if save_id in GENERATING:
         raise ValueError('The AI-DM is already responding')
+    return initiator
+
+
+def begin_advance(conn, save_id, payload):
+    state = snapshot(conn, save_id)
+    initiator = check_advance(conn, save_id, state, payload)
+    beat = state['save']['beat']
     context = ai.build_context(state, DATA)
     GENERATING[save_id] = 'advance'
     if payload.get('override'):
@@ -933,24 +951,210 @@ def begin_summary(conn, save_id, payload):
     return context
 
 
-def save_summary(conn, save_id, payload):
-    state = snapshot(conn, save_id)
-    player = require_player(state, payload.get('playerId'))
-    body = str(payload.get('text') or '').strip()
+def store_summary(conn, state, body, based_on, through, player_id):
+    """Save a summary unless a newer one won the race. player_id None means automatic."""
+    body = str(body or '').strip()
     if not body or len(body) > 20000:
         raise ValueError('Summary must contain 1 to 20,000 characters')
     current = state['summary']
-    if payload.get('basedOn') != (current['id'] if current else None):
+    if based_on != (current['id'] if current else None):
         raise ValueError('Another summary was saved first. Draft a new summary from the latest one.')
-    through = int(payload.get('throughMessageId'))
     history, _ = ai.split_beat(state['messages'])
     if not any(message['id'] == through for message in history):
         raise ValueError('Summaries can only cover completed beats')
-    if current and through <= current['through_message_id']:
+    covered = ai.effective_summary(state)
+    if covered and through <= covered['through_message_id']:
         raise ValueError('This history is already summarized')
-    conn.execute('INSERT INTO summaries (save_id,through_message_id,based_on,body,player_id,created_at) VALUES (?,?,?,?,?,?)',
-                 (save_id, through, current['id'] if current else None, body, player['id'], utc()))
+    limit = ai.summary_limit(state)
+    if limit is not None and through > limit:
+        # A chapter closed meanwhile; its recap covers this stretch instead.
+        raise ValueError('A chapter ended inside this history. Draft a new summary.')
+    save_id = state['save']['id']
+    summary_id = conn.execute('INSERT INTO summaries (save_id,through_message_id,based_on,body,player_id,created_at) VALUES (?,?,?,?,?,?)',
+                              (save_id, through, current['id'] if current else None, body, player_id, utc())).lastrowid
     conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+    return summary_id
+
+
+def save_summary(conn, save_id, payload):
+    state = snapshot(conn, save_id)
+    player = require_player(state, payload.get('playerId'))
+    store_summary(conn, state, payload.get('text'), payload.get('basedOn'),
+                  int(payload.get('throughMessageId')), player['id'])
+
+
+def auto_summary_context(conn, save_id, threshold):
+    """Context for the next automatic memory job: a finished chapter's recap first,
+    otherwise a rolling summary once unsummarized chat reached `threshold`."""
+    state = snapshot(conn, save_id)
+    session = active_session(conn, save_id)
+    kind = ai.memory_due(state, threshold) if session else None
+    if kind == 'recap':
+        return ai.build_recap_context(state, chapters.pending_recap(state['chapters'])), session['id']
+    if kind != 'summary':
+        return None, None
+    context = ai.build_summary_context(state, with_facts=True)
+    context['basedOn'] = state['summary']['id'] if state['summary'] else None
+    return context, session['id']
+
+
+def generate_summary(save_id, session_id, context):
+    """One provider summary request with the usual audit and metering. Returns the text."""
+    audit_id = str(uuid.uuid4())
+    runtime = ai.runtime_status()
+    with LOCK, db() as conn:
+        conn.execute('''INSERT INTO ai_requests
+            (id,save_id,session_id,purpose,provider,configured_model,status,started_at)
+            VALUES (?,?,?,?,?,?,?,?)''',
+            (audit_id, save_id, session_id, 'summary', runtime['provider'], runtime['model'], 'sending', utc()))
+    try:
+        generated = ai.current_provider(DATA).generate(context)
+        text = str(generated or '').strip()
+        if not text:
+            raise ValueError('The summary came back empty')
+    except Exception:
+        with LOCK, db() as conn:
+            conn.execute("UPDATE ai_requests SET status='failed',finished_at=?,error=? WHERE id=?",
+                         (utc(), 'Automatic summary failed', audit_id))
+        raise
+    with LOCK, db() as conn:
+        if isinstance(generated, ai.GeneratedText):
+            values = metering.record(generated.model or 'unknown', generated.usage, generated.service_tier)
+            conn.execute('''INSERT INTO ai_usage
+                (save_id,session_id,purpose,model,input_tokens,cached_tokens,cache_write_tokens,
+                 output_tokens,total_tokens,estimated_cost_usd,service_tier,created_at,request_id)
+                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)''',
+                (save_id, session_id, 'summary', *values, utc(), audit_id))
+            conn.execute('''UPDATE ai_requests SET configured_model=COALESCE(?,configured_model),
+                requested_model=?,reported_model=?,routing=? WHERE id=?''',
+                (generated.configured_model, generated.requested_model, generated.reported_model,
+                 json.dumps(generated.routing) if generated.routing is not None else None, audit_id))
+        conn.execute("UPDATE ai_requests SET status='complete',finished_at=? WHERE id=?", (utc(), audit_id))
+    return text
+
+
+def summarize_now(save_id, threshold):
+    """Write one automatic summary if due. True when saved, False when it lost a race,
+    None when nothing was due or another automatic summary is already running."""
+    with LOCK:
+        if save_id in AUTO_SUMMARY:
+            return None
+        with db() as conn:
+            context, session_id = auto_summary_context(conn, save_id, threshold)
+        if not context:
+            return None
+        done = AUTO_SUMMARY[save_id] = threading.Event()
+    try:
+        text, operations = facts.extract(generate_summary(save_id, session_id, context))
+        with LOCK, db() as conn:
+            try:
+                if context.get('recap'):
+                    chapters.store_recap(conn, context['chapterId'], text, None, utc())
+                    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+                    summary_id = None
+                else:
+                    summary_id = store_summary(conn, snapshot(conn, save_id), text, context['basedOn'],
+                                               context['throughMessageId'], None)
+            except ValueError:
+                return False  # A Pilot edit or newer summary won; never overwrite it.
+            # Applied only alongside the summary that proposed them, under the same lock.
+            facts.apply_summary(conn, save_id, operations, summary_id, utc())
+        return True
+    finally:
+        with LOCK:
+            AUTO_SUMMARY.pop(save_id, None)
+        done.set()
+
+
+def schedule_summary(save_id, check=True):
+    """After a narration, condense older chat in the background once it reaches the soft limit.
+    Never holds the AI-DM lock, so Ready and Advance keep working while it runs.
+    Callers inside an uncommitted request pass check=False; the job checks once that commits."""
+    if not AUTO_SUMMARIES:
+        return None
+    if check:
+        with LOCK:
+            if save_id in AUTO_SUMMARY:
+                return None
+            with db() as conn:
+                if not ai.memory_due(snapshot(conn, save_id)):
+                    return None
+
+    def work():
+        try:
+            # A recap can leave a rolling summary due, or the reverse; finish a few in a row.
+            for _ in range(4):
+                if not summarize_now(save_id, ai.TRANSCRIPT_SOFT):
+                    break
+        except Exception:
+            pass  # Recorded as a failed request; the Advance fallback retries when it matters.
+    thread = threading.Thread(target=work, daemon=True)
+    thread.start()
+    return thread
+
+
+def ensure_memory(save_id, payload):
+    """Before an Advance at the normal cap, wait for a summary so chat is not dropped.
+    If summarizing fails, the Advance still sends everything up to the ceiling."""
+    if not AUTO_SUMMARIES:
+        return
+    with LOCK, db() as conn:
+        state = snapshot(conn, save_id)
+        if (ai.unsummarized_chars(state['messages'], ai.effective_summary(state)) < ai.TRANSCRIPT_CAP
+                or not ai.memory_due(state, ai.TRANSCRIPT_CAP)):
+            return
+        # Only make the table wait for an Advance that would otherwise go ahead.
+        check_advance(conn, save_id, state, payload)
+        GENERATING[save_id] = 'summary-advance'
+        running = AUTO_SUMMARY.get(save_id)
+    failed = False
+    try:
+        if running:
+            running.wait(AUTO_SUMMARY_WAIT)
+        try:
+            summarize_now(save_id, ai.TRANSCRIPT_CAP)
+        except Exception:
+            failed = True
+    finally:
+        with LOCK:
+            if GENERATING.get(save_id) == 'summary-advance':
+                GENERATING.pop(save_id, None)
+    if failed:
+        with LOCK, db() as conn:
+            state = snapshot(conn, save_id)
+            if ai.unsummarized_chars(state['messages'], ai.effective_summary(state)) >= ai.TRANSCRIPT_CEILING:
+                raise ValueError('Summarizing the adventure failed, so the AI-DM did not respond. '
+                                 'Nothing was lost. Advance again to retry.')
+
+
+def change_chapters(conn, state, payload):
+    """Pilot chapter actions: end the current chapter, dismiss a suggestion, or edit a recap."""
+    player = require_player(state, payload.get('playerId'))
+    if payload.get('pilot') is not True:
+        raise ValueError('Enable Pilot Mode to change chapters')
+    save_id, stamp, action = state['save']['id'], utc(), payload.get('action')
+    if action == 'end':
+        listed = state['chapters']
+        if payload.get('number') != chapters.current(listed)['number']:
+            raise ValueError('That chapter already ended')
+        if save_id in GENERATING:
+            raise ValueError('Wait for the AI-DM to finish before ending the chapter')
+        if state['save']['mode'] != 'normal' or combat.pending(state.get('combat')):
+            raise ValueError('Finish the fight before ending the chapter')
+        # The chapter ends with the latest narration; the open beat belongs to the next one.
+        narrated = [m['id'] for m in state['messages'] if m['kind'] == 'ai']
+        chapters.close(conn, state['save'], max(narrated) if narrated else None,
+                       payload.get('title'), player['id'], payload.get('source') or 'pilot', stamp)
+    elif action == 'dismiss':
+        conn.execute('UPDATE saves SET chapter_suggestion=NULL WHERE id=?', (save_id,))
+    elif action == 'recap':
+        revision = payload.get('revision')
+        if type(revision) is not int:
+            raise ValueError('Recap edits require the revision you opened')
+        chapters.store_recap(conn, payload.get('chapterId'), payload.get('recap'), player['id'], stamp, revision)
+    else:
+        raise ValueError('Unknown chapter action')
+    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (stamp, save_id))
 
 
 NOTE_CATEGORIES = ('npc', 'location', 'world')
@@ -1054,6 +1258,7 @@ def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=
         choices = None
     arrival_marked, arrival = module_context.take_arrival(text)
     text, marked, location = module_context.take_marker(text)
+    text, suggested_chapter = chapters.take_marker(text)
     opening_stage = state['save'].get('opening_stage')
     next_opening_stage = opening_stage
     if opening_stage in opening_flow.GUIDANCE:
@@ -1097,6 +1302,16 @@ def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=
                      (save_id, session['id'], start['playerId'], 'adventure_start', start['notes'], stamp))
     conn.execute('UPDATE saves SET beat=beat+1, opening_stage=?, updated_at=? WHERE id=?',
                  (next_opening_stage, utc(), save_id))
+    if opening_stage in opening_flow.GUIDANCE and next_opening_stage == 'exploration':
+        # Entering the site ends the prologue; this narration opens Chapter 2.
+        earlier = [m['id'] for m in state['messages']]
+        if earlier:
+            chapters.close(conn, state['save'], max(earlier), None, None, 'opening', stamp)
+    elif suggested_chapter and opening_stage not in opening_flow.GUIDANCE:
+        listed = chapters.visible(conn, state['save'])
+        conn.execute('UPDATE saves SET chapter_suggestion=? WHERE id=?', (json.dumps(
+            {'title': suggested_chapter, 'number': chapters.current(listed)['number'] + 1,
+             'messageId': message_id}), save_id))
     conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
     if combat_started:
         combat.start(conn, save_id, session['id'], None, stamp)
@@ -1525,6 +1740,18 @@ class Handler(BaseHTTPRequestHandler):
                 if action == 'notes':
                     save_note(conn, state, payload)
                     return self.respond(snapshot(conn, save_id))
+                if action == 'chapters':
+                    change_chapters(conn, state, payload)
+                    result = snapshot(conn, save_id)
+                    schedule_summary(save_id, check=False)  # A finished chapter gets its recap right away.
+                    return self.respond(result)
+                if action == 'facts':
+                    player = require_player(state, payload.get('playerId'))
+                    if payload.get('pilot') is not True:
+                        raise ValueError('Enable Pilot Mode to change facts')
+                    facts.pilot_change(conn, save_id, player['id'], payload, utc())
+                    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+                    return self.respond(snapshot(conn, save_id))
                 if action == 'table-map':
                     # A visual aid: allowed during generation and combat.
                     player = require_player(state, payload.get('playerId'))
@@ -1635,12 +1862,16 @@ class Handler(BaseHTTPRequestHandler):
                     if player_id is not None:
                         require_player(state, player_id)
                     combat.start(conn, save_id, session['id'], player_id, utc())
+                    # Combat start is a clean break: condense while the table fights in person.
+                    schedule_summary(save_id, check=False)
                 else:
                     return self.send_error(404)
                 conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
                 return self.respond(snapshot(conn, save_id))
         except NoteConflict as error:
             self.respond({'error': str(error), 'code': 'note_conflict'}, 409)
+        except facts.FactConflict as error:
+            self.respond({'error': str(error), 'code': 'fact_conflict'}, 409)
         except StaleBeat as error:
             self.respond({'error': str(error), 'code': 'stale_beat', 'beat': error.beat}, 409)
         except (ValueError, KeyError, TypeError, json.JSONDecodeError, zipfile.BadZipFile, UnicodeDecodeError) as error:
@@ -2024,13 +2255,16 @@ class Handler(BaseHTTPRequestHandler):
                 if streaming:
                     NARRATION_PREVIEWS.finish(save_id, attempt, message_id)
             result['activity'] = activity(save_id)
+        if context.get('purpose') == 'advance':
+            # Every published narration is a beat boundary: a clean point to condense.
+            schedule_summary(save_id)
         return self.respond(result)
 
     def handle_delete_save(self, save_id, payload):
         with LOCK:
             if payload.get('confirmed') is not True or payload.get('confirmation') != 'DELETE':
                 raise ValueError('Confirm deletion and type DELETE exactly')
-            if save_id in GENERATING:
+            if save_id in GENERATING or save_id in AUTO_SUMMARY:
                 raise ValueError('Wait for the AI-DM to finish before deleting this playthrough')
             with db() as conn:
                 save = conn.execute('SELECT name FROM saves WHERE id=?', (save_id,)).fetchone()
@@ -2051,7 +2285,7 @@ class Handler(BaseHTTPRequestHandler):
                     known = {'players', 'player_portraits', 'messages', 'chat_images', 'pilot_messages',
                              'sessions', 'session_events', 'checkpoints', 'summaries', 'ai_usage',
                              'ai_requests', 'party_notes', 'revealed_assets', 'scene_images', 'combat_handoffs',
-                             'map_tokens', 'public_questions'}
+                             'map_tokens', 'public_questions', 'facts', 'fact_changes', 'chapters'}
                     for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").fetchall():
                         table = row['name']
                         quoted = '"' + table.replace('"', '""') + '"'
@@ -2071,7 +2305,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_restore(self, name):
         with LOCK:
-            if GENERATING:
+            if GENERATING or AUTO_SUMMARY:
                 raise ValueError('Wait for the AI-DM to finish before restoring a backup')
             with db() as conn:
                 if conn.execute("SELECT 1 FROM scene_images WHERE status='generating'").fetchone():
@@ -2089,6 +2323,7 @@ class Handler(BaseHTTPRequestHandler):
         return self.respond({**result, 'live': live})
 
     def handle_advance(self, save_id, payload):
+        ensure_memory(save_id, payload)
         override = {}
 
         def begin(conn, save_id, payload):
