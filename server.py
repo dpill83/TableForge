@@ -3,6 +3,7 @@ import argparse
 import base64
 import binascii
 import hashlib
+import http.client
 import io
 import json
 import os
@@ -35,6 +36,7 @@ import opening_flow
 import runtime_prompts
 import table_map
 import public_questions
+import read_aloud
 import facts
 import chapters
 from local_config import load_env
@@ -748,6 +750,8 @@ def activity(save_id):
     result = {'aiDm': GENERATING.get(save_id), 'typing': typing_players(save_id)}
     if narration_stream_enabled():
         result['narrationStream'] = True
+    if read_aloud.port() is not None:
+        result['readAloud'] = True
     return result
 
 
@@ -1443,12 +1447,50 @@ class Handler(BaseHTTPRequestHandler):
             except OSError:
                 pass
 
+    def stream_read_aloud(self, save_id, message_id, player_id):
+        port = read_aloud.port()
+        if port is None:
+            return self.respond({'error': 'Read Aloud is disabled.'}, 404)
+        with LOCK, db() as conn:
+            player = conn.execute('SELECT 1 FROM players WHERE save_id=? AND id=?',
+                                  (save_id, player_id)).fetchone()
+            if not player:
+                return self.respond({'error': 'Join this table to use Read Aloud.'}, 403)
+            message = conn.execute("SELECT body FROM messages WHERE save_id=? AND id=? AND kind='ai'",
+                                   (save_id, message_id)).fetchone()
+        if not message:
+            return self.respond({'error': 'Choose a saved AI-DM message.'}, 404)
+        text = read_aloud.spoken_text(message['body'])
+        if len(text) > read_aloud.MAX_TEXT or not any(c.isalnum() for c in text):
+            return self.respond({'error': 'This narration cannot be read aloud.'}, 422)
+        try:
+            upstream, audio = read_aloud.connect(port, text)
+        except (OSError, http.client.HTTPException):
+            return self.respond({'error': 'Read Aloud is unavailable. Try again in a moment.'}, 503)
+        try:
+            with audio:
+                if (audio.status != 200 or audio.getheader('Content-Type') != 'audio/mpeg'
+                        or not (audio.chunked or audio.length and 0 < audio.length <= read_aloud.MAX_AUDIO)):
+                    return self.respond({'error': 'Read Aloud is unavailable. Try again in a moment.'}, 503)
+                try:
+                    read_aloud.send_audio(self, read_aloud.audio_chunks(audio),
+                                          length=None if audio.chunked else audio.length)
+                except (OSError, http.client.HTTPException, ValueError):
+                    # Close an interrupted media response without sending a success terminator.
+                    pass
+        finally:
+            upstream.close()
+
     def do_GET(self):
-        path = urlparse(self.path).path
+        url = urlparse(self.path)
+        path = url.path
         try:
             parts = path.strip('/').split('/')
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'narration':
                 return self.stream_narration(parts[2])
+            if len(parts) == 5 and parts[:2] == ['api', 'saves'] and parts[3] == 'read-aloud':
+                player = parse_qs(url.query).get('playerId', [None])[0]
+                return self.stream_read_aloud(parts[2], parts[4], player)
             if len(parts) == 4 and parts[:2] == ['api', 'saves'] and parts[3] == 'chat.md':
                 with LOCK, db() as conn:
                     filename, content = chat_export.export_chat(conn, parts[2])

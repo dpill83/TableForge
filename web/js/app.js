@@ -188,6 +188,7 @@
     finally{button.disabled=false;}
   };
   const show = async id => {
+    if(id !== 'play') readAloud.stop();
     screens.forEach(el => el.classList.toggle('active', el.id === id));
     syncNarrationView();
     if(id === 'load') await refreshSaves();
@@ -696,8 +697,29 @@
       try{localStorage.setItem('tableforge-map-width',String(width));}catch{/* Not remembered. */}
     };
   };
+  const updateReadAloud=()=>{
+    for(const controls of $('feedInner').querySelectorAll('[data-read-aloud]')){
+      const mode=readAloud.status(controls.dataset.readAloud);
+      const button=controls.querySelector('button');
+      const label=mode==='loading'?'Preparing audio':mode==='playing'?'Pause Read Aloud':mode==='paused'?'Resume Read Aloud':'Read Aloud';
+      button.innerHTML=TableForgeReadAloud.icons[mode==='playing'?'pause':mode==='paused'?'play':'speaker'];
+      button.title=label;
+      button.setAttribute('aria-label',label);
+      button.disabled=mode==='loading';
+      controls.querySelector('.read-aloud-stop').classList.toggle('hidden',!['loading','playing','paused'].includes(mode));
+      const status=controls.querySelector('[role="status"]');
+      const text=mode==='loading'?'Preparing audio…':mode==='error'?'Read Aloud couldn’t play. Try again.':'';
+      if(status.textContent!==text)status.textContent=text;
+    }
+  };
+  const readAloud=TableForgeReadAloud.create(()=>new Audio(),updateReadAloud);
+  window.addEventListener('pagehide',readAloud.stop);
+  let readAloudScope=null;
   const render=()=>{
     const s=state.save;if(!s)return;
+    const canRead=!!s.activity?.readAloud&&s.players.some(p=>p.id===state.identity);
+    const scope=canRead?s.save.id+'/'+state.identity:null;
+    if(scope!==readAloudScope){readAloudScope=scope;readAloud.stop();}
     syncNarrationView();
     renderNarration();
     restoreTableMap();syncTableMap();
@@ -706,7 +728,7 @@
     $('partyList').querySelector('.portrait-button')?.addEventListener('click',openPortraitEditor);
     $('illustrateScene').disabled=!state.identity||!s.messages.some(m=>m.kind==='ai');
     // Rebuild the feed only when its content changes, so Ready/typing updates keep the reading position.
-    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,s.messages.map(m=>[m.id,m.body.length,m.ooc,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.filter(a=>a.messageId===m.id).map(a=>a.id).join()]),s.players.map(p=>[p.id,p.character,p.portraitUrl]),s.events.filter(e=>['adventure_start','combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind))]);
+    const feed=$('feed'),feedKey=JSON.stringify([s.save.id,state.identity,canRead,s.messages.map(m=>[m.id,m.body.length,m.ooc,m.choices,m.image_id,!!s.images?.some(i=>i.id===m.image_id),s.attachments?.filter(a=>a.messageId===m.id).map(a=>a.id).join()]),s.players.map(p=>[p.id,p.character,p.portraitUrl]),s.events.filter(e=>['adventure_start','combat_outcome','combat_skipped','combat_override','combat_correction'].includes(e.kind))]);
     const feedChanged=feedKey!==state.feedKey,sameSave=state.feedSaveId===s.save.id,previousIds=new Set(state.feedKey?[...$('feedInner').children].map(el=>el.id):[]);
     const followLatest=state.followLatest!==false;
     if(feedChanged){
@@ -818,9 +840,22 @@
         if(!copied)notify(Error('Copy failed. Select the message text to copy it.'));
         setTimeout(()=>{button.innerHTML=TableForgeMessageActions.copyIcon;button.title='Copy message';button.setAttribute('aria-label','Copy message');button.classList.remove('copied','copy-failed');button.disabled=false;},1200);
       };
+      if(canRead&&m.kind==='ai'){
+        const controls=document.createElement('span');
+        controls.className='read-aloud-controls';
+        controls.dataset.readAloud='/api/saves/'+encodeURIComponent(s.save.id)+'/read-aloud/'+
+          encodeURIComponent(m.id)+'?playerId='+encodeURIComponent(state.identity);
+        controls.innerHTML='<button class="read-aloud-button" type="button"></button>'+
+          '<button class="read-aloud-button read-aloud-stop hidden" type="button" title="Stop Read Aloud" aria-label="Stop Read Aloud">'+
+          TableForgeReadAloud.icons.stop+'</button><span class="muted" role="status"></span>';
+        controls.querySelector('button').onclick=()=>readAloud.toggle(controls.dataset.readAloud);
+        controls.querySelector('.read-aloud-stop').onclick=readAloud.stop;
+        row.querySelector('.copy-message').after(controls);
+      }
       row.dataset.searchText=[m.name,m.body,m.ooc?.status==='complete'?m.ooc.answer:''].join(' ').toLowerCase();$('feedInner').append(row);
     }
     while(combatEventIndex<combatEvents.length)appendCombatEvent(combatEvents[combatEventIndex++]);
+    updateReadAloud();
     applySearch();
     const added=s.messages.filter(m=>!previousIds.has('message-'+m.id));
     if(sameSave&&document.hidden&&aiNotificationsEnabled())added.filter(m=>m.kind==='ai').forEach(announceAIMessage);

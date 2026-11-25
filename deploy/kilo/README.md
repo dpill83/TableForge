@@ -94,6 +94,28 @@ The empty key intentionally starts the mock AI-DM. Copy any desired API key and
 model/router settings yourself from Windows `.env`; do not copy its data path.
 No provider credentials are written to the repository or workflow.
 
+## Enable Kokoro Read Aloud
+
+Read Aloud uses the Kokoro v1.0 model on KILO's CPU. It runs as a separate loopback service on port 8770. The speech process starts with a loaded model and does work when a player presses Read Aloud. It runs one synthesis at a time with two inference threads and caches up to eight completed clips in memory. It requires FFmpeg with the `libmp3lame` encoder and Python with venv support.
+
+Use the [full-precision Kokoro v1.0 archive](https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2) for KILO. Download and unpack it as your normal user before copying the extracted files into the service directory. The [Kokoro model](https://huggingface.co/hexgrad/Kokoro-82M) uses the Apache-2.0 license.
+
+```bash
+curl -fLO https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/kokoro-multi-lang-v1_0.tar.bz2
+echo '60703707bc05ccd48d60e1eb723f38b07d6e474795a0b6a588d7220400e0f7a4  kokoro-multi-lang-v1_0.tar.bz2' | sha256sum -c
+tar -xjf kokoro-multi-lang-v1_0.tar.bz2
+sudo install -d -m 0755 /opt/tableforge/kokoro
+sudo cp -a kokoro-multi-lang-v1_0 /opt/tableforge/kokoro/
+sudo python3 -m venv /opt/tableforge/kokoro/venv
+sudo /opt/tableforge/kokoro/venv/bin/python -m pip install 'sherpa-onnx==1.13.6'
+sudo install -m 0644 /opt/tableforge/repo/deploy/kilo/tableforge-kokoro.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now tableforge-kokoro.service
+sudo journalctl -u tableforge-kokoro.service -n 10 --no-pager
+```
+
+Once the journal shows that Kokoro is listening, set `TABLEFORGE_KOKORO_PORT=8770` in `/etc/tableforge/tableforge.env` and restart `tableforge.service`. Join the table and try the speaker on an existing AI-DM message. The GitHub deployment continues to build the TableForge application from `main`. The local model and its venv live outside the checkout.
+
 ## Edit AI routing
 
 On KILO, run the terminal editor with the same environment file and account as the deployed service.
