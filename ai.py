@@ -15,6 +15,7 @@ import narration_choices
 import narration_pacing
 import opening_flow
 import public_questions
+import routing_settings
 import runtime_prompts
 
 ASK_PROMPT = (
@@ -61,7 +62,10 @@ ROUTER_TIMEOUT = 4
 ROUTER_PROMPT_CAP = 2400
 ROUTER_RESPONSE_CAP = 16_384
 REASONING_EFFORTS = ('low', 'medium', 'high', 'xhigh')
-EFFORT_MODELS = ('gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.2-sol', 'gpt-6-astra')
+EFFORT_MODELS = (
+    'gpt-6-luna', 'gpt-6-sol', 'gpt-6.1-sol', 'gpt-6.2-sol', 'gpt-6.1-terra',
+    'gpt-6-astra', 'gpt-6.2-astra',
+)
 TABLE_PLAY_MODEL = 'gpt-6.2-sol'
 LOGGER = logging.getLogger(__name__)
 
@@ -89,19 +93,24 @@ def table_play_routing():
     return setting == 'table-play'
 
 
+def configured_model():
+    return (os.environ.get('TABLEFORGE_AIDM_MODEL', '').strip()
+            or os.environ.get('TABLEFORGE_MODEL', '').strip() or 'gpt-4o-mini')
+
+
 def runtime_status():
     key = os.environ.get('TABLEFORGE_OPENAI_API_KEY', '').strip()
-    model = (os.environ.get('TABLEFORGE_AIDM_MODEL', '').strip()
-             or os.environ.get('TABLEFORGE_MODEL', '').strip() or 'gpt-4o-mini')
     if key:
-        return {'provider': 'openai', 'model': TABLE_PLAY_MODEL if table_play_routing() else model}
+        return {'provider': 'openai', 'model': TABLE_PLAY_MODEL if table_play_routing() else configured_model()}
     return {'provider': 'mock', 'model': 'local mock runtime'}
 
 
-def current_provider():
+def current_provider(data_path=None):
     status = runtime_status()
     if status['provider'] == 'openai':
-        return OpenAIProvider(os.environ.get('TABLEFORGE_OPENAI_API_KEY', '').strip(), status['model'])
+        overrides = routing_settings.load(data_path) if data_path is not None else None
+        return OpenAIProvider(os.environ.get('TABLEFORGE_OPENAI_API_KEY', '').strip(), status['model'],
+                              overrides=overrides, fallback_model=configured_model())
     return MockProvider()
 
 
@@ -616,20 +625,26 @@ def routing_state(enabled):
             'requestedEffort': None, 'effortSource': None, 'effortNotice': None}
 
 
-def table_play_route(context):
-    """Choose model and effort from the server's request purpose and play state."""
+def request_type(context):
+    """Classify the request from its server-side purpose and current play state."""
     purpose = context.get('purpose', 'advance')
-    if purpose == 'summary':
-        return 'gpt-6-luna', 'medium', 'Campaign summary'
-    if purpose == 'ooc':
-        return TABLE_PLAY_MODEL, 'low', 'Public OOC question'
-    if purpose == 'ask':
-        return TABLE_PLAY_MODEL, 'medium', 'Private Pilot Ask'
+    if purpose in ('summary', 'ooc', 'ask'):
+        return purpose
     if context.get('combatResume'):
-        return TABLE_PLAY_MODEL, 'high', 'Combat aftermath'
+        return 'aftermath'
     if context.get('startRequest') or context.get('opening') or context.get('openingStage') in opening_flow.GUIDANCE:
-        return TABLE_PLAY_MODEL, 'high', 'Adventure opening'
-    return TABLE_PLAY_MODEL, 'medium', 'Normal narration'
+        return 'opening'
+    return 'advance'
+
+
+def table_play_route(purpose):
+    if purpose == 'summary':
+        return 'gpt-6-luna', 'medium'
+    if purpose == 'ooc':
+        return TABLE_PLAY_MODEL, 'low'
+    if purpose in ('aftermath', 'opening'):
+        return TABLE_PLAY_MODEL, 'high'
+    return TABLE_PLAY_MODEL, 'medium'
 
 
 def configured_effort(name):
@@ -657,28 +672,52 @@ def router_internal_fallback(data, reason):
 
 
 class OpenAIProvider:
-    def __init__(self, key, model, router_url=None):
+    def __init__(self, key, model, router_url=None, *, overrides=None, fallback_model=None):
         self.key = key
         self.model = model
+        self.fallback_model = fallback_model or model
         self.table_play_routing = table_play_routing()
         self.router_url = (os.environ.get('TABLEFORGE_ROUTER_URL', '')
                            if router_url is None else router_url).strip()
+        self.request_overrides = (overrides or {}).get('requests', {})
+        self.tier_overrides = (overrides or {}).get('tiers', {})
         self.effort = None
         self.tier_efforts = {}
-        if not self.table_play_routing:
+        if not self.table_play_routing or any(row['mode'] == 'laya' for row in self.request_overrides.values()):
             self.effort = configured_effort('TABLEFORGE_REASONING_EFFORT')
             self.tier_efforts = {tier: configured_effort('TABLEFORGE_ROUTER_EFFORT_' + tier.upper())
-                                 for tier in ('cheap', 'standard', 'heavy')}
+                                 for tier in routing_settings.TIERS}
 
     def select_model(self, context):
-        if self.table_play_routing:
-            model, effort, reason = table_play_route(context)
+        purpose = request_type(context)
+        override = self.request_overrides.get(purpose)
+        if override and override['mode'] == 'fixed':
+            return override['model'], {**routing_state(False), 'policy': 'custom', 'requestMode': 'fixed',
+                                      'requestRoute': routing_settings.REQUESTS[purpose],
+                                      'effortOverride': override['effort'], 'effortSource': 'request settings'}
+        if self.table_play_routing and not override:
+            model, effort = table_play_route(purpose)
             return model, {**routing_state(True), 'policy': 'table-play', 'model': model,
-                           'reason': reason, 'requestedEffort': effort, 'effortSource': 'TableForge policy',
+                           'reason': routing_settings.REQUESTS[purpose],
+                           'requestedEffort': effort, 'effortSource': 'TableForge policy',
                            'routerInternalFallbackUsed': False}
+        model, routing = self.select_laya_model(context)
+        tier = self.tier_overrides.get(routing['tier'], {})
+        if override or tier:
+            routing.update(policy='custom', requestMode='laya', requestRoute=routing_settings.REQUESTS[purpose])
+            if tier.get('model'):
+                model = tier['model']
+                routing['modelOverride'] = model
+            if override and override.get('effort', 'auto') != 'auto':
+                routing.update(effortOverride=override['effort'], effortSource='request settings')
+            elif tier.get('effort', 'auto') != 'auto':
+                routing.update(effortOverride=tier['effort'], effortSource='Laya tier settings')
+        return model, routing
+
+    def select_laya_model(self, context):
         routing = routing_state(bool(self.router_url))
         if not self.router_url:
-            return self.model, routing
+            return self.fallback_model, routing
         routing.update(fallback=True, tableforgeRouterFallbackUsed=True)
         try:
             request = urllib.request.Request(
@@ -695,10 +734,10 @@ class OpenAIProvider:
             data = json.loads(body.decode('utf-8'))
             model = data.get('model') if isinstance(data, dict) else None
             if (not isinstance(model, str) or len(model) > 200
-                    or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._:/-]*', model.strip())):
+                    or not routing_settings.MODEL_ID.fullmatch(model.strip())):
                 raise ValueError('Router returned no valid model')
             routing.update(model=model.strip(), fallback=False, tableforgeRouterFallbackUsed=False,
-                           tier=data.get('tier') if data.get('tier') in ('cheap', 'standard', 'heavy') else None,
+                           tier=data.get('tier') if data.get('tier') in routing_settings.TIERS else None,
                            reason=' '.join(data['reason'].split())[:240]
                            if isinstance(data.get('reason'), str) else None)
             internal_used, internal_reason = router_internal_fallback(data, routing['reason'])
@@ -747,12 +786,16 @@ class OpenAIProvider:
                    context.get('purpose', 'advance'), routing['tier'], routing['model'],
                    routing['routerContacted'], routing['routerInternalFallbackUsed'],
                    routing['tableforgeRouterFallbackUsed'], routing['tableforgeRouterFallbackReason'])
-        return self.model if routing['fallback'] else routing['model'], routing
+        return self.fallback_model if routing['fallback'] else routing['model'], routing
 
     def generate(self, context, on_request=None, on_metadata=None):
         model, routing = self.select_model(context)
         routing['configuredEffort'] = self.effort
-        if not routing['requestedEffort']:
+        if routing.get('effortOverride'):
+            effort = routing['effortOverride']
+            if effort != 'default':
+                routing['requestedEffort'] = effort
+        elif not routing['requestedEffort']:
             tier_effort = self.tier_efforts.get(routing['tier']) if not routing['fallback'] else None
             effort = routing['routerSelectedEffort'] or tier_effort or self.effort
             if effort and supports_effort(model):
@@ -765,8 +808,9 @@ class OpenAIProvider:
                 routing['effortSource'] = 'provider default'
         LOGGER.info('TableForge reasoning: model=%s requested_effort=%s source=%s',
                     model, routing['requestedEffort'], routing['effortSource'])
+        default_model = self.fallback_model if routing.get('requestMode') == 'laya' else self.model
         if on_metadata:
-            on_metadata({'configuredModel': self.model, 'requestedModel': model, 'routing': routing})
+            on_metadata({'configuredModel': default_model, 'requestedModel': model, 'routing': routing})
         payload_data = {'model': model, 'messages': chat_messages(context)}
         if routing['requestedEffort']:
             payload_data['reasoning_effort'] = routing['requestedEffort']
@@ -795,5 +839,5 @@ class OpenAIProvider:
             raise ValueError('OpenAI returned an empty response')
         return GeneratedText(text, usage=data.get('usage'), model=data.get('model') or model,
                              service_tier=data.get('service_tier'), routing=routing,
-                             configured_model=self.model, requested_model=model,
+                             configured_model=default_model, requested_model=model,
                              reported_model=data.get('model'))

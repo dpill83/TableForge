@@ -94,6 +94,16 @@ The empty key intentionally starts the mock AI-DM. Copy any desired API key and
 model/router settings yourself from Windows `.env`; do not copy its data path.
 No provider credentials are written to the repository or workflow.
 
+## Edit AI routing
+
+On KILO, run the terminal editor with the same environment file and account as the deployed service.
+
+```bash
+sudo -u tableforge /opt/tableforge/venv/bin/python -B /opt/tableforge/repo/configure_ai_routing.py --env-file /etc/tableforge/tableforge.env
+```
+
+The editor saves to `/var/lib/tableforge/ai-routing.sqlite3` with the default KILO data path. Settings apply to the next TableForge AI request. Laya tier overrides apply to requests from this TableForge host.
+
 ## Register GitHub runner
 
 The initial installer also extracts the runner and installs cloudflared, without

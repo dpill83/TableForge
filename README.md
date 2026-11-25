@@ -72,7 +72,15 @@ Set `TABLEFORGE_ROUTING_POLICY=table-play` and restart TableForge to select the 
 - Public OOC questions use GPT-6.2 Sol at `low`.
 - Campaign summaries use GPT-6 Luna at `medium`.
 
-TableForge selects these routes locally and gives the policy priority over configured models, effort overrides, and the LAN router. The Pilot AI Request Log shows the selected route and the effort sent to OpenAI. Clear `TABLEFORGE_ROUTING_POLICY` to return to the configured default model or the LAN router.
+For requests that inherit the server policy, Table play takes priority over environment model and effort defaults and the LAN router. The Pilot AI Request Log shows the selected route and the effort sent to OpenAI. Clear `TABLEFORGE_ROUTING_POLICY` to use the configured default model or the LAN router for inherited requests.
+
+### Customize AI routing
+
+Run `python configure_ai_routing.py` on the TableForge host. The terminal editor uses the same `.env` and data directory as the server. For Kilo, use the [deployed routing editor](deploy/kilo/README.md#edit-ai-routing).
+
+- **Laya tiers** let you set a model and effort for Cheap, Standard, and Heavy as used by TableForge. Laya still supplies the tier. Choose **Follow Laya and server defaults** to keep automatic effort, or **OpenAI model default** to omit the effort parameter.
+- **Request types** cover normal narration, adventure opening, combat aftermath, public OOC, private Pilot Ask, and campaign summaries. Each can inherit the server policy, explicitly use Laya, or use a fixed model and effort. An explicit request effort takes priority over the tier's effort.
+- Search the model IDs available to the server's OpenAI key. Saving newly selected model/effort combinations runs short, token-billed Chat Completions checks. The editor saves host-wide settings in the data directory. The next AI request reads them automatically. Expand the **AI Request Log** entry to see the actual model, effort, and routing decision.
 
 ### Optional LAN model routing
 
