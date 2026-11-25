@@ -1101,8 +1101,10 @@ class OpenAIProvider:
                    routing['tableforgeRouterFallbackUsed'], routing['tableforgeRouterFallbackReason'])
         return self.fallback_model if routing['fallback'] else routing['model'], routing
 
-    def generate(self, context, on_request=None, on_metadata=None, on_text=None):
+    def generate(self, context, on_request=None, on_metadata=None, on_text=None, *, narration_deadline=None):
         model, routing = self.select_model(context)
+        if narration_deadline is not None and time.monotonic() >= narration_deadline:
+            raise ValueError(NARRATION_DEADLINE_ERROR)
         routing['configuredEffort'] = self.effort
         if routing.get('effortOverride'):
             effort = routing['effortOverride']
@@ -1147,8 +1149,15 @@ class OpenAIProvider:
             headers={'Authorization': 'Bearer ' + self.key, 'Content-Type': 'application/json'},
         )
         try:
-            deadline = time.monotonic() + NARRATION_STREAM_SECONDS
-            timeout = OPENAI_TIMEOUT if on_text is None else min(OPENAI_TIMEOUT, NARRATION_STREAM_SECONDS)
+            timeout = OPENAI_TIMEOUT
+            if on_text is not None:
+                now = time.monotonic()
+                deadline = now + NARRATION_STREAM_SECONDS
+                if narration_deadline is not None:
+                    deadline = min(deadline, narration_deadline)
+                if deadline <= now:
+                    raise ValueError(NARRATION_DEADLINE_ERROR)
+                timeout = min(timeout, deadline - now)
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 if on_text is None:
                     data = json.loads(response.read().decode())

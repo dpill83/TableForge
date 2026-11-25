@@ -195,7 +195,7 @@ Ask AI-DM is a private conversation for the selected player profile. It shows pl
 
 Ordinary save responses exclude Ask history. Pilot Mode loads the selected player's thread, and AI Request Log shows only their Ask requests and temporary payloads. Existing shared Ask history remains in the database and backups but is excluded from new private threads; old AI replies are not assigned to players by inference. Privacy follows the selected player profile in TableForge's trusted-group model; choosing another profile selects its thread, and the host's whole-save backups retain all threads.
 
-For local staging, set `TABLEFORGE_STREAM_NARRATION=1` before starting the server. Regular Advance shows a live preview and saves the message after validation. The mock provider supplies a delayed response when no OpenAI key is configured. The flag is off by default.
+Set `TABLEFORGE_STREAM_NARRATION=1` before starting the server to see live AI-DM narration during adventure openings, regular advances, and combat aftermath. TableForge saves each message after validation. The mock provider supplies a delayed response when no OpenAI key is configured. The flag is off by default.
 
 Run the HTTP workflow tests with `python3 -m unittest discover -s tests -v`.
 Run frontend tests with `node --test tests/*.cjs` and syntax checks with `node --check web/js/app.js` and `node --check web/js/request-log.js`.

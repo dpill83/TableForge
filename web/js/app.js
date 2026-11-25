@@ -537,7 +537,7 @@
     }
     row.classList.toggle('hidden',!text);
     const status=$('narrationFailure');
-    const failure=event?.status==='failed'?'The AI-DM narration was discarded. Use Ready or Ready Override to retry.':'';
+    const failure=event?.status==='failed'?'The AI-DM narration was discarded.':'';
     if(status.textContent!==failure)status.textContent=failure;
     if(changed&&text){
       if(state.followLatest!==false)scrollFeedToLatest();
