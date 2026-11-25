@@ -16,7 +16,9 @@ import ai
 import combat
 from narration_stream import contains_control, preview_text
 import server
+import test_combat
 import test_flow
+import test_opening_flow
 
 
 def event(data):
@@ -63,6 +65,7 @@ class NarrationFlowTest(unittest.TestCase):
     api_error = test_flow.FlowTest.api_error
     ready_save = test_flow.FlowTest.ready_save
     override = test_flow.FlowTest.override
+    cartridge_zip = test_flow.FlowTest.cartridge_zip
 
     def ready_regular_advance(self):
         save_id = self.ready_save()
@@ -117,6 +120,111 @@ class NarrationFlowTest(unittest.TestCase):
             if value and value['status'] == status:
                 return value
         self.fail(f'Status {status} did not arrive')
+
+    def test_start_and_early_advance_stream_without_progressing_before_commit(self):
+        state = test_opening_flow.OpeningFlowTest.new_save(self)
+        save_id, player = state['save']['id'], state['players'][0]['id']
+        url = f'/api/saves/{save_id}'
+        for action, prose, payload in [
+            ('start', 'A quiet lane stretches before you.\n\nWhere are your characters this morning?',
+             {'playerId': player, 'beat': 1}),
+            ('advance', 'Alicia steadies herself and looks at the wedged wheel. "Is either of you hurt?"',
+             {'playerId': player, 'override': True}),
+        ]:
+            with self.subTest(action=action):
+                before = self.api(url)
+                release = threading.Event()
+
+                def reply(handler):
+                    handler.wfile.write(delta(prose + '\n\n[Open'))
+                    if release.wait(4):
+                        handler.wfile.write(delta('ing: hook]') + delta(finish='stop') + event('[DONE]'))
+
+                with self.upstream(reply) as received, ThreadPoolExecutor() as pool, self.observe(save_id) as observer:
+                    running = pool.submit(self.api, url+'/'+action, payload)
+                    try:
+                        self.assertEqual(self.until(observer, 'streaming')['text'], prose)
+                        current = self.api(url)
+                        self.assertEqual(current['messages'], before['messages'])
+                        self.assertEqual(current['save']['beat'], before['save']['beat'])
+                        self.assertEqual(current['save']['opening_stage'], before['save']['opening_stage'])
+                        self.assertEqual(current['started'], before['started'])
+                    finally:
+                        release.set()
+                    saved = running.result(timeout=4)
+                    self.assertEqual(self.until(observer, 'committed')['messageId'], saved['messages'][-1]['id'])
+                    self.assertTrue(received[0]['stream'])
+                self.assertTrue(saved['started'])
+                self.assertEqual(saved['save']['beat'], before['save']['beat'] + 1)
+                self.assertEqual(saved['save']['opening_stage'], 'hook')
+                self.assertEqual(saved['messages'][-1]['body'], prose)
+
+    def test_aftermath_deadline_closes_stream_and_retry_publishes_once(self):
+        combat_flow = test_combat.CombatFlowTest
+        save_id, before = combat_flow.enter(self, automatic=True)
+        before = combat_flow.finish(self, save_id, before)
+        payload = combat_flow.payload(self, before)
+        url = f'/api/saves/{save_id}'
+        disconnected = threading.Event()
+        release_retry = threading.Event()
+        final = 'The ogre disappears into the forest.'
+
+        def stall(handler):
+            handler.wfile.write(delta('For a moment, nothing moves.') + b'data: ')
+            stop = time.monotonic() + 4
+            try:
+                while time.monotonic() < stop:
+                    readable, _, _ = select.select([handler.connection], [], [], 0.05)
+                    if readable and handler.connection.recv(1) == b'':
+                        disconnected.set()
+                        return
+                    handler.wfile.write(b' ')
+            except (BrokenPipeError, ConnectionResetError):
+                disconnected.set()
+
+        def retry(handler):
+            handler.wfile.write(delta(final))
+            if release_retry.wait(4):
+                handler.wfile.write(delta(finish='stop') + event('[DONE]'))
+
+        with self.upstream(stall), patch.object(server, 'COMBAT_GENERATION_TIMEOUT', 1), \
+                ThreadPoolExecutor() as pool, self.observe(save_id) as observer:
+            running = pool.submit(self.api_error, url+'/combat-outcome', payload)
+            preview = self.until(observer, 'streaming')
+            self.assertIn('nothing moves', preview['text'])
+            mid = self.api(url)
+            self.assertEqual(mid['messages'], before['messages'])
+            self.assertEqual(mid['save']['beat'], before['save']['beat'])
+            self.assertEqual(mid['save']['mode'], 'combat')
+            self.assertEqual(mid['combat']['phase'], 'resuming')
+            self.assertEqual(mid['combat']['outcome'], payload['text'])
+            self.assertIn('stalled', running.result(timeout=3)['error'])
+            self.assertNotIn('text', self.until(observer, 'failed'))
+            self.assertTrue(disconnected.wait(1.5), 'The aftermath provider was still streaming after timeout')
+
+        failed = self.api(url)
+        self.assertEqual(failed['combat']['phase'], 'failed')
+        self.assertEqual(failed['save']['mode'], 'combat')
+        self.assertEqual(failed['messages'], before['messages'])
+        retry_payload = {'playerId': failed['players'][1]['id'], 'handoffId': payload['handoffId']}
+        with self.upstream(retry) as received, ThreadPoolExecutor() as pool, self.observe(save_id) as observer:
+            running = pool.submit(self.api, url+'/combat-retry', retry_payload)
+            try:
+                preview = self.until(observer, 'streaming')
+                self.assertEqual(preview['text'], final)
+                self.assertEqual(self.api(url+'/combat-retry', retry_payload)['combat']['phase'], 'resuming')
+            finally:
+                release_retry.set()
+            after = running.result(timeout=4)
+            self.assertEqual(self.until(observer, 'committed')['messageId'], after['combat']['message_id'])
+            self.assertEqual(len(received), 1)
+            self.assertIn(payload['text'], received[0]['messages'][0]['content'])
+        self.assertEqual(after['combat']['phase'], 'complete')
+        self.assertEqual(after['save']['mode'], 'normal')
+        self.assertEqual(after['save']['beat'], before['save']['beat'] + 1)
+        self.assertEqual(after['messages'][:-1], before['messages'])
+        self.assertEqual(after['messages'][-1]['body'], final)
+        self.assertEqual([e['body'] for e in after['events'] if e['kind'] == 'combat_outcome'], [payload['text']])
 
     def test_two_listeners_and_rejoin_see_the_preview_before_combat_commits(self):
         save_id, before = self.ready_regular_advance()

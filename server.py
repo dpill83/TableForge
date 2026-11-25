@@ -2161,8 +2161,10 @@ class Handler(BaseHTTPRequestHandler):
                         request_entry['payload'] = body
                         AI_REQUEST_LOGS.setdefault(save_id, []).append(request_entry)
 
-            streaming = (allow_preview and narration_stream_enabled() and ai.request_type(context) == 'advance'
+            streaming = (allow_preview and narration_stream_enabled()
                          and isinstance(provider, (ai.OpenAIProvider, ai.MockProvider)))
+            combat_deadline = (time.monotonic() + COMBAT_GENERATION_TIMEOUT
+                               if context.get('combatResume') else None)
             if streaming:
                 NARRATION_PREVIEWS.start(save_id, attempt, session['id'], context['beat'])
             draft = ''
@@ -2171,8 +2173,10 @@ class Handler(BaseHTTPRequestHandler):
 
             def capture_text(delta):
                 nonlocal draft, visible, last_update
-                draft += delta
                 now = time.monotonic()
+                if combat_deadline is not None and now >= combat_deadline:
+                    return
+                draft += delta
                 if now - last_update < 0.1:
                     return
                 safe = preview_text(draft)
@@ -2183,6 +2187,8 @@ class Handler(BaseHTTPRequestHandler):
             def generate():
                 callbacks = {'on_text': capture_text} if streaming else {}
                 if isinstance(provider, ai.OpenAIProvider):
+                    if streaming and combat_deadline is not None:
+                        callbacks['narration_deadline'] = combat_deadline
                     return provider.generate(context, on_request=capture_request, on_metadata=capture_metadata,
                                              **callbacks)
                 elif isinstance(provider, ai.MockProvider):
@@ -2191,7 +2197,7 @@ class Handler(BaseHTTPRequestHandler):
                     return provider.generate(context, on_request=capture_request, **callbacks)
                 else:
                     return provider.generate(context)
-            if context.get('combatResume'):
+            if combat_deadline is not None:
                 results = queue.Queue(maxsize=1)
                 def worker():
                     try:
@@ -2200,7 +2206,9 @@ class Handler(BaseHTTPRequestHandler):
                         results.put((None, error))
                 threading.Thread(target=worker, daemon=True).start()
                 try:
-                    generated, generation_error = results.get(timeout=COMBAT_GENERATION_TIMEOUT)
+                    generated, generation_error = results.get(timeout=max(0, combat_deadline - time.monotonic()))
+                    if time.monotonic() >= combat_deadline:
+                        raise queue.Empty
                 except queue.Empty:
                     raise ValueError('Aftermath narration stalled; the outcome is saved. Retry aftermath.')
                 if generation_error:
@@ -2353,10 +2361,10 @@ class Handler(BaseHTTPRequestHandler):
             start.update(details)
             return context
 
-        def publish(conn, save_id, text):
-            return publish_advance(conn, save_id, text, start=start)
+        def publish(conn, save_id, text, *, streamed=False):
+            return publish_advance(conn, save_id, text, start=start, streamed=streamed)
 
-        return self.run_generation(save_id, begin, publish, payload)
+        return self.run_generation(save_id, begin, publish, payload, allow_preview=True)
 
     def handle_combat_resume(self, save_id, payload, retry=False):
         handoff_id = {}
@@ -2404,17 +2412,17 @@ class Handler(BaseHTTPRequestHandler):
             GENERATING[save_id] = 'advance'
             return context
 
-        def publish(conn, save_id, text):
+        def publish(conn, save_id, text, *, streamed=False):
             # Commit completion and narration together; a new handoff may start in this response.
             conn.execute("UPDATE combat_handoffs SET phase='complete' WHERE id=?", (handoff_id['id'],))
             conn.execute("UPDATE saves SET mode='normal' WHERE id=?", (save_id,))
             result = publish_advance(conn, save_id, text,
-                                     accepted_combat_outcome=handoff_id['accepted_outcome'])
+                                     accepted_combat_outcome=handoff_id['accepted_outcome'], streamed=streamed)
             message_id = result['messages'][-1]['id']
             conn.execute('UPDATE combat_handoffs SET message_id=? WHERE id=?', (message_id, handoff_id['id']))
             return snapshot(conn, save_id)
 
-        return self.run_generation(save_id, begin, publish, payload)
+        return self.run_generation(save_id, begin, publish, payload, allow_preview=True)
 
     def handle_combat_correction(self, save_id, payload):
         def begin(conn, save_id, payload):
