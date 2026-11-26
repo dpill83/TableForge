@@ -811,6 +811,48 @@ def fail_combat_resume(conn, save_id, context):
         conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
 
 
+def claim_combat_resume(conn, save_id, payload, retry):
+    """Save a submitted outcome, or claim a failed one for retry, and mark it resuming.
+    Returns the handoff id, or None when this request is a duplicate with nothing to do."""
+    state = snapshot(conn, save_id)
+    player = require_player(state, payload.get('playerId'))
+    handoff = state.get('combat')
+    if not handoff or payload.get('handoffId') != handoff['id']:
+        raise ValueError('This combat handoff is no longer current')
+    session = active_session(conn, save_id)
+    if not session or not state['cartridge']['available']:
+        raise ValueError('Start a session and locate the cartridge before resuming')
+    if retry:
+        if handoff['phase'] != 'failed':
+            # Retries delivered after success or while running are harmless.
+            return None
+    else:
+        try:
+            request_id = str(uuid.UUID(str(payload.get('requestId'))))
+        except ValueError as error:
+            raise ValueError('A valid combat request ID is required') from error
+        if handoff['request_id']:
+            if handoff['request_id'] == request_id and handoff['player_id'] != player['id']:
+                raise ValueError('This combat request belongs to another player')
+            return None
+        combat.require_editor(handoff, payload)
+        outcome = str(payload.get('text') or '').strip()
+        if payload.get('skip') or not outcome or len(outcome) > 20000:
+            raise ValueError('Combat outcome must contain 1 to 20,000 characters; skipping is unavailable')
+    if save_id in GENERATING:
+        raise ValueError('The AI-DM is already responding')
+    if not retry:
+        conn.execute("""UPDATE combat_handoffs SET outcome=?,draft=?,skipped=0,player_id=?,
+            request_id=?,override=0,revision=revision+1 WHERE id=?""",
+            (outcome, outcome, player['id'], request_id, handoff['id']))
+        conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
+            (save_id, session['id'], player['id'], 'combat_outcome', outcome, utc()))
+        conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
+    conn.execute("UPDATE combat_handoffs SET phase='resuming' WHERE id=?", (handoff['id'],))
+    conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
+    return handoff['id']
+
+
 def check_advance(conn, save_id, state, payload):
     """Reject an Advance that cannot run; returns the Pilot who overrode Ready, if any."""
     initiator = None
@@ -1098,18 +1140,22 @@ def schedule_summary(save_id, check=True):
     return thread
 
 
-def ensure_memory(save_id, payload):
-    """Before an Advance at the normal cap, wait for a summary so chat is not dropped.
-    If summarizing fails, the Advance still sends everything up to the ceiling."""
+def ensure_memory(save_id, payload, guard=None, retry_hint='Advance again to retry.'):
+    """Before narration at the normal cap, wait for a summary so chat is not dropped.
+    If summarizing fails, narration still sends everything up to the ceiling.
+    guard(conn, state) rejects narration that could not run; Advance checks Ready by default."""
     if not AUTO_SUMMARIES:
         return
+    if guard is None:
+        def guard(conn, state):
+            check_advance(conn, save_id, state, payload)
     with LOCK, db() as conn:
         state = snapshot(conn, save_id)
         if (ai.unsummarized_chars(state['messages'], ai.effective_summary(state)) < ai.TRANSCRIPT_CAP
                 or not ai.memory_due(state, ai.TRANSCRIPT_CAP)):
             return
         # Only make the table wait for an Advance that would otherwise go ahead.
-        check_advance(conn, save_id, state, payload)
+        guard(conn, state)
         GENERATING[save_id] = 'summary-advance'
         running = AUTO_SUMMARY.get(save_id)
     try:
@@ -1137,7 +1183,7 @@ def ensure_memory(save_id, payload):
         state = snapshot(conn, save_id)
         if ai.unsummarized_chars(state['messages'], ai.effective_summary(state)) >= ai.TRANSCRIPT_CEILING:
             raise ValueError('Summarizing the adventure did not finish, so the AI-DM did not respond. '
-                             'Nothing was lost. Advance again to retry.')
+                             'Nothing was lost. ' + retry_hint)
 
 
 def change_chapters(conn, state, payload):
@@ -1262,10 +1308,15 @@ def set_location(conn, state, location, player_id, source, arrival=None, arrival
 
 
 def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=False, start=None,
-                    *, streamed=False):
+                    *, streamed=False, ending_combat=False):
     session = active_session(conn, save_id)
     state = snapshot(conn, save_id)
     text, combat_started = combat.extract(text)
+    # Aftermath narration ends the fight it reports. A fresh initiative call here would
+    # reopen the handoff the table just closed, so discard it and publish a neutral prompt.
+    repeated_combat = ending_combat and combat_started
+    if repeated_combat:
+        combat_started = False
     text, choices = narration_choices.extract(text, state['players'], state['save']['beat'] + 1)
     if combat_started:
         choices = None
@@ -1289,6 +1340,8 @@ def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=
                 opening_stage == 'arrival' and next_opening_stage == 'exploration'):
             raise ValueError('The AI-DM entered the site before the players did. '
                              'No narration was published. Retry the beat.')
+    if repeated_combat:
+        text, choices = combat.ENDED_FALLBACK, None
     if not text:
         raise ValueError('The AI-DM returned an empty response')
     narration_pacing.validate_public_narration(text)
@@ -2417,62 +2470,51 @@ class Handler(BaseHTTPRequestHandler):
         return self.run_generation(save_id, begin, publish, payload, allow_preview=True)
 
     def handle_combat_resume(self, save_id, payload, retry=False):
-        handoff_id = {}
+        # 1. Save the outcome (or claim a failed one for retry) before any AI work.
+        with LOCK, db() as conn:
+            handoff_id = claim_combat_resume(conn, save_id, payload, retry)
+            if handoff_id is None:
+                # A duplicate submission, or a retry delivered after success or while running.
+                return self.respond(snapshot(conn, save_id))
+        accepted = {}
+
+        def still_claimed(conn, state):
+            handoff = state.get('combat')
+            if not handoff or handoff['id'] != handoff_id or handoff['phase'] != 'resuming':
+                raise ValueError('This combat handoff is no longer current')
+            if save_id in GENERATING:
+                raise ValueError('The AI-DM is already responding')
 
         def begin(conn, save_id, payload):
             state = snapshot(conn, save_id)
-            player = require_player(state, payload.get('playerId'))
-            handoff = state.get('combat')
-            if not handoff or payload.get('handoffId') != handoff['id']:
-                raise ValueError('This combat handoff is no longer current')
-            session = active_session(conn, save_id)
-            if not session or not state['cartridge']['available']:
-                raise ValueError('Start a session and locate the cartridge before resuming')
-            if retry:
-                if handoff['phase'] != 'failed':
-                    # Retries delivered after success or while running are harmless.
-                    return None
-            else:
-                try:
-                    request_id = str(uuid.UUID(str(payload.get('requestId'))))
-                except ValueError as error:
-                    raise ValueError('A valid combat request ID is required') from error
-                if handoff['request_id']:
-                    if handoff['request_id'] == request_id and handoff['player_id'] != player['id']:
-                        raise ValueError('This combat request belongs to another player')
-                    return None
-                combat.require_editor(handoff, payload)
-                outcome = str(payload.get('text') or '').strip()
-                if payload.get('skip') or not outcome or len(outcome) > 20000:
-                    raise ValueError('Combat outcome must contain 1 to 20,000 characters; skipping is unavailable')
-                conn.execute("""UPDATE combat_handoffs SET outcome=?,draft=?,skipped=0,player_id=?,
-                    request_id=?,override=0,revision=revision+1 WHERE id=?""",
-                    (outcome, outcome, player['id'], request_id, handoff['id']))
-                conn.execute('INSERT INTO session_events (save_id,session_id,player_id,kind,body,created_at) VALUES (?,?,?,?,?,?)',
-                    (save_id, session['id'], player['id'], 'combat_outcome', outcome, utc()))
-                conn.execute('UPDATE players SET ready=0 WHERE save_id=?', (save_id,))
-            if save_id in GENERATING:
-                raise ValueError('The AI-DM is already responding')
-            conn.execute("UPDATE combat_handoffs SET phase='resuming' WHERE id=?", (handoff['id'],))
-            conn.execute('UPDATE saves SET updated_at=? WHERE id=?', (utc(), save_id))
-            context = ai.build_context(snapshot(conn, save_id), DATA)
-            handoff_id['id'] = handoff['id']
-            accepted = context.get('combatResume') or {}
-            handoff_id['accepted_outcome'] = bool(accepted.get('outcome') and not accepted.get('skipped'))
+            still_claimed(conn, state)
+            context = ai.build_context(state, DATA)
+            resume = context.get('combatResume') or {}
+            accepted['outcome'] = bool(resume.get('outcome') and not resume.get('skipped'))
             GENERATING[save_id] = 'advance'
             return context
 
         def publish(conn, save_id, text, *, streamed=False):
-            # Commit completion and narration together; a new handoff may start in this response.
-            conn.execute("UPDATE combat_handoffs SET phase='complete' WHERE id=?", (handoff_id['id'],))
+            # Commit completion and narration together.
+            conn.execute("UPDATE combat_handoffs SET phase='complete' WHERE id=?", (handoff_id,))
             conn.execute("UPDATE saves SET mode='normal' WHERE id=?", (save_id,))
-            result = publish_advance(conn, save_id, text,
-                                     accepted_combat_outcome=handoff_id['accepted_outcome'], streamed=streamed)
+            result = publish_advance(conn, save_id, text, accepted_combat_outcome=accepted['outcome'],
+                                     streamed=streamed, ending_combat=True)
             message_id = result['messages'][-1]['id']
-            conn.execute('UPDATE combat_handoffs SET message_id=? WHERE id=?', (message_id, handoff_id['id']))
+            conn.execute('UPDATE combat_handoffs SET message_id=? WHERE id=?', (message_id, handoff_id))
             return snapshot(conn, save_id)
 
-        return self.run_generation(save_id, begin, publish, payload, allow_preview=True)
+        try:
+            # 2. The same memory catch-up as Advance, so older chat is not dropped.
+            ensure_memory(save_id, payload, guard=still_claimed,
+                          retry_hint='Use Retry aftermath to try again.')
+            # 3. Narrate the aftermath.
+            return self.run_generation(save_id, begin, publish, payload, allow_preview=True)
+        except Exception:
+            # The saved outcome stays; any player can Retry aftermath with it.
+            with LOCK, db() as conn:
+                fail_combat_resume(conn, save_id, {'combatResume': {'id': handoff_id}})
+            raise
 
     def handle_combat_correction(self, save_id, payload):
         def begin(conn, save_id, payload):

@@ -226,6 +226,26 @@ class NarrationFlowTest(unittest.TestCase):
         self.assertEqual(after['messages'][-1]['body'], final)
         self.assertEqual([e['body'] for e in after['events'] if e['kind'] == 'combat_outcome'], [payload['text']])
 
+    def test_streamed_aftermath_that_calls_initiative_again_ends_the_fight(self):
+        combat_flow = test_combat.CombatFlowTest
+        save_id, before = combat_flow.enter(self, automatic=True)
+        before = combat_flow.finish(self, save_id, before)
+        handoff = before['combat']['id']
+        url = f'/api/saves/{save_id}'
+
+        def reply(handler):
+            handler.wfile.write(delta('The ogre falls, but its mate charges in! Roll initiative.\n') +
+                                delta(combat.MARKER) + delta(finish='stop') + event('[DONE]'))
+
+        with self.upstream(reply) as received:
+            after = self.api(url+'/combat-outcome', combat_flow.payload(self, before))
+        self.assertEqual(len(received), 1)
+        self.assertEqual(after['messages'][-1]['body'], combat.ENDED_FALLBACK)
+        self.assertEqual(after['save']['mode'], 'normal')
+        self.assertEqual(after['combat']['id'], handoff)
+        self.assertEqual(after['combat']['phase'], 'complete')
+        self.assertEqual([e['kind'] for e in after['events']].count('combat_started'), 1)
+
     def test_two_listeners_and_rejoin_see_the_preview_before_combat_commits(self):
         save_id, before = self.ready_regular_advance()
         release = threading.Event()

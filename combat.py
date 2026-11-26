@@ -3,6 +3,8 @@ import re
 import uuid
 
 MARKER = '[[TABLEFORGE_COMBAT:START]]'
+# Published instead of aftermath narration that tried to start another fight.
+ENDED_FALLBACK = 'Combat has ended. What do you do next?'
 INSTRUCTIONS = '''\n\nTableForge combat runtime contract (takes precedence for handoff behavior):
 When you call initiative and hand combat to humans, stop narration and append
 [[TABLEFORGE_COMBAT:START]] as the exact final line, after any other metadata.
