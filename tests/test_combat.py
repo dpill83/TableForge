@@ -296,6 +296,26 @@ class CombatFlowTest(unittest.TestCase):
         self.assertNotEqual(again['combat']['id'], handoff)
         self.assertEqual(again['combat']['phase'], 'fighting')
 
+    focused_save = test_flow.FlowTest.focused_save
+    cartridge_zip = test_flow.FlowTest.cartridge_zip
+    FOCUSED_MODULE = test_flow.FlowTest.FOCUSED_MODULE
+    FOCUSED_RUN_DATA = test_flow.FlowTest.FOCUSED_RUN_DATA
+
+    def test_rejected_aftermath_cannot_move_the_party_or_suggest_a_chapter(self):
+        save_id, player = self.focused_save()
+        state = self.api(f'/api/saves/{save_id}/mode', {'mode': 'combat', 'playerId': player})
+        state = self.finish(save_id, state)
+        before = state['save']
+        repeat = test_flow.FakeProvider('The ogre falls; you chase its mate into the hall. Roll initiative.\n'
+                                        '[Chapter: The Hall]\n[Location: Area 2]\n' + combat.MARKER)
+        with patch('ai.current_provider', return_value=repeat):
+            after = self.api(f'/api/saves/{save_id}/combat-outcome', self.payload(state))
+        self.assertEqual(after['messages'][-1]['body'], combat.ENDED_FALLBACK)
+        self.assertEqual(after['save']['location'], before['location'])
+        self.assertEqual(after['save'].get('chapter_suggestion'), before.get('chapter_suggestion'))
+        self.assertEqual(after['save'].get('opening_stage'), before.get('opening_stage'))
+        self.assertFalse([e for e in after['events'] if e['kind'] == 'location'])
+
     def enter_with_backlog(self):
         save_id = self.ready_save()
         player = self.api(f'/api/saves/{save_id}')['players'][0]['id']

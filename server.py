@@ -1323,9 +1323,12 @@ def publish_advance(conn, save_id, text, override=None, accepted_combat_outcome=
     arrival_marked, arrival = module_context.take_arrival(text)
     text, marked, location = module_context.take_marker(text)
     text, suggested_chapter = chapters.take_marker(text)
+    if repeated_combat:
+        # The discarded narration cannot move the party, suggest a chapter, or advance the opening.
+        arrival_marked, arrival, marked, location, suggested_chapter = False, None, False, None, None
     opening_stage = state['save'].get('opening_stage')
     next_opening_stage = opening_stage
-    if opening_stage in opening_flow.GUIDANCE:
+    if opening_stage in opening_flow.GUIDANCE and not repeated_combat:
         first = (state['save']['beat'] == 1 and not any(
             message['kind'] == 'ai' for message in state['messages']))
         # Hypothetical OOC questions cannot authorize travel or site entry.
